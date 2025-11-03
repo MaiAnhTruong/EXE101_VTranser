@@ -1,9 +1,0 @@
-node_modules/
-dist/
-.build/
-.env
-*.log
-.DS_Store
-
-# large model
-my-tab-audio-ext/fw-small.zip

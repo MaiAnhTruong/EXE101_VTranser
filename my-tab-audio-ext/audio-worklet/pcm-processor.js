@@ -1,29 +1,21 @@
+//home/truong/EXE/my-tab-audio-ext/audio-worklet/pcm-processor.js:
 class PCMProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
     const opts = options?.processorOptions || {};
-    this.chunkSize = opts.chunkSize || 4096;     
+    this.chunkSize = opts.chunkSize || 2048;
     this.buffer = new Float32Array(0);
     this.meterEveryNChunks = Math.max(1, opts.meterEveryNChunks || 8);
     this._chunksSinceMeter = 0;
   }
-
   _emitChunks() {
     while (this.buffer.length >= this.chunkSize) {
       const slice = this.buffer.subarray(0, this.chunkSize);
 
+      // optional meter (không forward ở offscreen)
       this._chunksSinceMeter++;
       if (this._chunksSinceMeter >= this.meterEveryNChunks) {
         this._chunksSinceMeter = 0;
-        let sumSq = 0, peak = 0;
-        for (let i = 0; i < slice.length; i++) {
-          const s = Math.max(-1, Math.min(1, slice[i]));
-          sumSq += s * s;
-          const a = Math.abs(s);
-          if (a > peak) peak = a;
-        }
-        const rms = Math.sqrt(sumSq / slice.length);
-        this.port.postMessage({ type: 'meter', rms, peak });
       }
 
       const out = new Int16Array(slice.length);
@@ -32,11 +24,9 @@ class PCMProcessor extends AudioWorkletProcessor {
         out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
       this.port.postMessage({ type: 'pcm-int16', payload: out.buffer }, [out.buffer]);
-
       this.buffer = this.buffer.subarray(this.chunkSize);
     }
   }
-
   process(inputs) {
     const input = inputs[0];
     if (input && input[0] && input[0].length) {
