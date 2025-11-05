@@ -83,7 +83,7 @@ html.stt-panel-open {
 .stt-btn {
   display: inline-flex; justify-content: center; align-items: center;
   padding: 10px 12px; border-radius: 8px; font-weight: 700; cursor: pointer;
-  border: 1px solid transparent; user-select: none;
+  border: 1px solid transparent;
 }
 .stt-btn.purple { background: #ede9fe; border-color: #c4b5fd; color: #5b21b6; }
 .stt-btn.gray { background: #f3f4f6; color: #111827; }

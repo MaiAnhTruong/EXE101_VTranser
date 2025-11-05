@@ -1,4 +1,4 @@
-//home/truong/EXE/my-tab-audio-ext/panel.js:
+//home/truong/EXE/my-tab-audio-ext/panel.js
 (() => {
   const ROOT_ID = 'stt-sidepanel-root';
   if (window.__stt_panel_injected__) return;
@@ -65,9 +65,8 @@
     const $sub = root.querySelector('#stt-sp-sub');
     function setActive(on) { $sub.textContent = on ? '• Đang ghi' : ''; }
 
-    // transcript rendering (đơn giản, tạo dòng khi có stable; delta chỉ thể hiện ở overlay)
+    // transcript rendering: GIỮ LẠI 1 CÂU CUỐI (pending), chỉ ghi các câu hoàn chỉnh trước đó
     const $log = root.querySelector('#stt-log');
-    let lastStable = '';
 
     function addRow(timeStr, text, meta = '') {
       const row = document.createElement('div');
@@ -83,20 +82,23 @@
       $log.parentElement?.scrollTo({ top: $log.parentElement.scrollHeight, behavior: 'smooth' });
     }
 
-    // tách câu để thêm mục giống ảnh
-    function sentencesDiff(prev, now) {
-      const seg = (s)=> (s||'').match(/[^.!?…]*[.!?…]+(?:["”’']+)?|\S[\s\S]*$/g) || [];
-      const a = seg(prev).join('');
-      const b = seg(now).join('');
-      if (b.startsWith(a)) {
-        const tail = now.slice(a.length);
-        const newSents = seg(tail).filter(x => /[.!?…]|\n$/.test(x) || x.length > 20);
-        return newSents;
+    // --- Sentence splitter (giống overlay) ---
+    function splitSentencesAndTail(text) {
+      const sents = [];
+      const re = /[^.!?…]*[.!?…]+(?:["”’']+)?(?:\s+|$)/g;
+      let lastEnd = 0, m;
+      while ((m = re.exec(text)) !== null) {
+        sents.push(m[0]);
+        lastEnd = re.lastIndex;
       }
-      return [now]; // fallback
+      const tail = text.slice(lastEnd);
+      return { sents, tail };
     }
 
-    // message hub (panel cũng nhận transcript như overlay)
+    // Đếm số câu đã log (không tính 1 câu cuối đang pending)
+    let loggedSentCount = 0;
+
+    // message hub (panel nhận transcript stable)
     chrome.runtime.onMessage.addListener((m) => {
       if (!m || !m.__cmd) return;
 
@@ -111,18 +113,25 @@
 
       if (m.__cmd === '__TRANSCRIPT_STABLE__') {
         const full = String(m.payload?.full ?? m.full ?? '');
-        if (full && full.length >= lastStable.length) {
-          const news = sentencesDiff(lastStable, full);
-          const now = new Date();
-          news.forEach(s => addRow(now.toLocaleTimeString(), s.trim(), 'Speaker • en • live'));
-          lastStable = full;
+        if (!full) return;
+
+        // Tách câu hoàn chỉnh + tail; luôn giữ lại 1 câu cuối (pending)
+        const { sents } = splitSentencesAndTail(full);
+        const targetCount = Math.max(0, sents.length - 1); // giữ lại 1 câu cuối
+
+        // Ghi thêm các câu mới (mỗi dòng = 1 câu)
+        if (targetCount > loggedSentCount) {
+          const now = new Date().toLocaleTimeString();
+          for (let i = loggedSentCount; i < targetCount; i++) {
+            const s = sents[i].trim();
+            if (s) addRow(now, s, 'Speaker • en • live');
+          }
+          loggedSentCount = targetCount;
           setActive(true);
         }
       }
 
-      if (m.__cmd === '__TRANSCRIPT_DELTA__') {
-        // delta để overlay xử lý overlap; panel không cần
-      }
+      // delta chỉ dùng cho overlay; panel không cần
     });
 
     // ping SW để sync state lần đầu
