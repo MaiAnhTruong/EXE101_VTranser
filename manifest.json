@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "V-Transer",
+  "version": "2.1.0",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabCapture",
+    "offscreen",
+    "tabs"
+  ],
+    "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "V-Transer"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "audio-worklet/pcm-processor.js",
+        "offscreen.html",
+        "offscreen.js",
+        "overlay.css",
+        "overlay.js",
+        "panel.css",
+        "panel.js",
+        "icons/*.svg"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "16": "logos/icon16.png",
+    "32": "logos/icon32.png",
+    "48": "logos/icon48.png",
+    "128": "logos/icon128.png"
+  }
+}
