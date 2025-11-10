@@ -60,7 +60,7 @@
                 </button>
               </div>
 
-              <div class="chat-history-area" style="margin-top:12px; height: 260px; overflow:auto; border:1px solid var(--border); border-radius:8px; padding:12px; background:#fff;"></div>
+              <div class="chat-history-area" style="margin-top:12px; height: 420px; overflow:auto; border:1px solid var(--border); border-radius:8px; padding:12px; background:#fff;"></div>
 
               <div class="chat-input-area">
                 <div class="input-header">

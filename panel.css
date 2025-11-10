@@ -190,7 +190,7 @@ html.stt-panel-open body {
 
 /* ===== CHAT INPUT ===== */
 #stt-sidepanel-root .chat-input-area {
-  flex-shrink: 0; border-top: 1px solid var(--border); padding-top: 16px; margin-top: 455px;
+  flex-shrink: 0; border-top: 1px solid var(--border); padding-top: 16px;
 }
 #stt-sidepanel-root .input-btn-icon { width: 16px; height: 16px; display: inline-block; margin-right: 5px; }
 #stt-sidepanel-root .input-header, 
