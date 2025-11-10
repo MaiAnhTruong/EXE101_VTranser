@@ -77,7 +77,7 @@
                   <textarea placeholder="Nhập câu hỏi, Enter để gửi • Shift+Enter xuống dòng"></textarea>
                 </div>
                 <div class="input-footer">
-                  <button class="login-btn" id="stt-chat-api-edit" title="Sửa API base">API</button>
+                  <button class="login-btn" id="stt-chat-api-edit" title="Sửa API base">Login</button>
                   <div class="icon-group">
                     <button class="icon-btn-simple" title="gift"  style="background-image:url('${iconURL('gift.svg')}')"></button>
                     <button class="icon-btn-simple" title="heart" style="background-image:url('${iconURL('heart.svg')}')"></button>
@@ -107,15 +107,12 @@
 
               <div class="transcript-actions-row">
                 <button class="transcript-btn purple">
-                  <img src="${iconURL('biendich.svg')}" class="action-btn-icon" />
                   Biên dịch
                 </button>
                 <button class="transcript-btn">
-                  <img src="${iconURL('headphones.svg')}" class="action-btn-icon" />
                   Phiên dịch
                 </button>
                 <button class="transcript-btn">
-                  <img src="${iconURL('speaker.svg')}" class="action-btn-icon" />
                   Thuyết minh
                 </button>
               </div>
@@ -130,8 +127,8 @@
         </div>
 
         <div class="toolbar">
-          <button id="btn-chat" class="icon-btn active" title="Chat"></button>
           <button id="btn-transcript" class="icon-btn" title="Transcript"></button>
+          <button id="btn-chat" class="icon-btn active" title="Chat"></button>
           <button id="btn-setting" class="icon-btn" title="Setting"></button>
           <button id="btn-account" class="icon-btn" title="Account"></button>
         </div>
