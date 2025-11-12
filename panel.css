@@ -223,13 +223,26 @@ html.stt-panel-open body {
 /* ===== CHAT HISTORY ===== */
 #stt-sidepanel-root .chat-history-area {
   margin-top: 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
   padding: 12px;
-  height: 42vh;
+  height: 45vh;
+  overflow-y: auto;
+  background: #ffffff;
+}
+
+#stt-sidepanel-root .chat-content.focus-mode .main-header,
+#stt-sidepanel-root .chat-content.focus-mode .action-buttons {
+  display: none;
+}
+
+#stt-sidepanel-root .chat-content.focus-mode .chat-history-area {
+  flex: 1;
+  margin-top: 12px;
+  padding: 12px;
+  height: 603px;
   overflow-y: auto;
   background: #fff;
 }
+
 #stt-sidepanel-root .msg-row {
   display: flex;
   margin-bottom: 10px;
