@@ -18,7 +18,7 @@ html.stt-panel-open body {
   z-index: 2147483647;
   pointer-events: auto;
 
-  /* Theme vars – scope trong panel */
+  /* Theme vars – scoped inside panel */
   --accent: #7C3AED;
   --border: #E5E7EB;
   --bg: #FFFFFF;
@@ -37,7 +37,7 @@ html.stt-panel-open body {
   box-shadow: 0 2px 10px rgba(0,0,0,0.08);
 }
 
-/* ===== Tay cầm kéo rộng panel ===== */
+/* ===== Resize Grip ===== */
 #stt-sidepanel-root .stt-resize-grip {
   position: absolute;
   top: 0;
@@ -188,31 +188,73 @@ html.stt-panel-open body {
 #stt-sidepanel-root .transcript-btn.red:hover { background: #DC2626; }
 #stt-sidepanel-root .placeholder-text { color: var(--text-muted); font-style: italic; padding: 16px; }
 
-/* ===== CHAT INPUT ===== */
+/* New Large Transcript Button */
+#stt-sidepanel-root .transcript-btn1 {
+  margin: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-size: contain;
+  border: none;
+  width: 150px;
+  height: 150px;
+  background-repeat: no-repeat;
+}
+#stt-sidepanel-root .transcript-btn1.start { background-image: url("icons/start.svg"); }
+#stt-sidepanel-root .transcript-btn1.start.active { background-image: url("icons/stop.svg"); }
+
+
+/* ===== CHAT INPUT AREA ===== */
 #stt-sidepanel-root .chat-input-area {
-  flex-shrink: 0; border-top: 1px solid var(--border); padding-top: 16px;
+  flex-shrink: 0; 
+  border-top: 1px solid var(--border); 
+  padding-top: 16px;
+  margin-top: 57px; /* Updated to match sidepanel.css */
 }
 #stt-sidepanel-root .input-btn-icon { width: 16px; height: 16px; display: inline-block; margin-right: 5px; }
 #stt-sidepanel-root .input-header, 
 #stt-sidepanel-root .input-footer { display: flex; justify-content: space-between; align-items: center; }
 #stt-sidepanel-root .icon-group { display: flex; gap: 4px; }
+
 #stt-sidepanel-root .icon-btn-simple {
   width: 30px; height: 30px; border: none; border-radius: 8px; cursor: pointer; transition: background 0.2s;
   background-color: transparent; background-repeat: no-repeat; background-position: center; background-size: 60%;
 }
+#stt-sidepanel-root .icon-btn-simple:hover { color: var(--text); }
+
 #stt-sidepanel-root .chip-button {
   background: white; border: white; color: rgb(129, 129, 129);
   font-size: 13px; font-weight: 500; cursor: pointer; display: flex; align-items: center;
 }
 #stt-sidepanel-root .chip-button.active { background: white; color: rgb(97, 115, 192); border-color: white; }
 #stt-sidepanel-root .chip-button span { color: var(--text-muted); margin-left: 4px; }
-#stt-sidepanel-root .textarea-wrapper { width: 100%; margin: 12px 0; }
+
+/* Updated Textarea Wrapper */
+#stt-sidepanel-root .textarea-wrapper { 
+  width: 100%; 
+  margin: 0px; 
+  gap: 6px;
+  display: flex;
+  align-items: center;
+}
+
+/* Updated Textarea Styles */
 #stt-sidepanel-root .textarea-wrapper textarea {
-  width: 100%; height: 80px; border-radius: 8px; border: 1px solid var(--border); padding: 10px;
-  resize: none; box-sizing: border-box; font-family: inherit; font-size: 14px; outline-color: var(--accent);
+  position: relative;
+  width: 85%; /* Reduced width to fit button next to it */
+  border-radius: 8px; 
+  border: 1px solid var(--border); 
+  height: 25px; /* Reduced height */
+  padding: 10px;
+  resize: none; 
+  box-sizing: border-box; 
+  font-family: inherit; 
+  font-size: 14px; 
+  border-width: 0;
   background-color: #ebebeb;
 }
 #stt-sidepanel-root .textarea-wrapper textarea::placeholder { color: var(--text-muted); }
+
 #stt-sidepanel-root .input-toggles { display: flex; gap: 8px; margin-bottom: 12px; }
 #stt-sidepanel-root .input-footer { margin-top: auto; align-content: center; }
 #stt-sidepanel-root .login-btn {
@@ -224,11 +266,12 @@ html.stt-panel-open body {
 #stt-sidepanel-root .chat-history-area {
   margin-top: 12px;
   padding: 12px;
-  height: 45vh;
+  min-height: 45vh;
   overflow-y: auto;
   background: #ffffff;
 }
 
+/* Focus Mode */
 #stt-sidepanel-root .chat-content.focus-mode .main-header,
 #stt-sidepanel-root .chat-content.focus-mode .action-buttons {
   display: none;
@@ -238,11 +281,12 @@ html.stt-panel-open body {
   flex: 1;
   margin-top: 12px;
   padding: 12px;
-  height: 603px;
+  height: 603px; /* Specific height from sidepanel.css */
   overflow-y: auto;
   background: #fff;
 }
 
+/* Message Bubbles */
 #stt-sidepanel-root .msg-row {
   display: flex;
   margin-bottom: 10px;
@@ -272,7 +316,7 @@ html.stt-panel-open body {
   margin-top: 4px;
 }
 
-/* ===== TOOLBAR BUTTONS ===== */
+/* ===== TOOLBAR BUTTONS & ICONS ===== */
 #stt-sidepanel-root .icon-btn {
   width: 36px; height: 36px; border: none; border-radius: 8px; cursor: pointer; transition: background 0.2s;
   background-color: transparent; background-repeat: no-repeat; background-position: center; background-size: 60%;
@@ -285,7 +329,7 @@ html.stt-panel-open body {
   background-color: #3d3aed; color: #ffffff;
 }
 
-/* fallback icon */
+/* Icon Mappings */
 #stt-sidepanel-root #btn-chat       { background-image: url('icons/message.svg'); }
 #stt-sidepanel-root #btn-transcript { background-image: url('icons/transcript.svg'); }
 #stt-sidepanel-root #btn-setting    { background-image: url('icons/setting.svg'); margin-top: auto; }
@@ -295,39 +339,13 @@ html.stt-panel-open body {
 #stt-sidepanel-root #icon-btn-help  { background-image: url('icons/help.svg'); }
 #stt-sidepanel-root #icon-btn-mail  { background-image: url('icons/mail.svg'); }
 
-/* ========== CHAT HISTORY ========== */
-#stt-sidepanel-root .chat-history-area {
-  margin-top: 16px;
-  flex: 1;
-  overflow-y: auto;
-  padding-right: 6px;
-}
+/* New Icons from sidepanel.css */
+#stt-sidepanel-root #icon-btn-paperclip { background-image: url('icons/paperclip.svg'); }
+#stt-sidepanel-root #icon-btn-more      { background-image: url('icons/more.svg'); }
 
-#stt-sidepanel-root .chat-msg {
-  display: flex;
-  margin-bottom: 10px;
-}
-
-#stt-sidepanel-root .chat-msg .bubble {
-  max-width: 85%;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  line-height: 1.45;
-}
-
-#stt-sidepanel-root .chat-msg.user {
-  justify-content: flex-end;
-}
-#stt-sidepanel-root .chat-msg.user .bubble {
-  background: #EEF2FF;
-  border-color: #E0E7FF;
-}
-
-#stt-sidepanel-root .chat-msg.assistant {
-  justify-content: flex-start;
-}
-#stt-sidepanel-root .chat-msg.assistant .bubble {
-  background: #F9FAFB;
-  border-color: #E5E7EB;
+/* Send Button specific style */
+#stt-sidepanel-root #icon-btn-send {
+  width: 70px;
+  height: 70px;
+  background-image: url('icons/send.svg');
 }

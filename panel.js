@@ -75,9 +75,12 @@
                 </div>
                 <div class="textarea-wrapper">
                   <textarea placeholder="Nhập câu hỏi, Enter để gửi • Shift+Enter xuống dòng"></textarea>
+                  <button id="icon-btn-paperclip" class="icon-btn-simple" title="paperclip"></button>
+                  <button id="icon-btn-more" class="icon-btn-simple" title="more"></button>
+                  <button id="icon-btn-send" class="icon-btn-simple" title="send"></button>
                 </div>
                 <div class="input-footer">
-                  <button class="login-btn" id="stt-chat-api-edit" title="Sửa API base">Login</button>
+                  <button class="login-btn" id="stt-chat-api-edit" title="Sửa API base">Đăng nhập</button>
                   <div class="icon-group">
                     <button class="icon-btn-simple" title="gift"  style="background-image:url('${iconURL('gift.svg')}')"></button>
                     <button class="icon-btn-simple" title="heart" style="background-image:url('${iconURL('heart.svg')}')"></button>
@@ -105,21 +108,23 @@
 
               <div id="stt-live-clock" class="live-timestamp">${escapeHtml(nowTime())}</div>
 
-              <div class="transcript-actions-row">
-                <button class="transcript-btn purple">
-                  Biên dịch
-                </button>
-                <button class="transcript-btn">
-                  Phiên dịch
-                </button>
-                <button class="transcript-btn">
-                  Thuyết minh
-                </button>
+              <div class="transcript-controls-row">
+                <button class="transcript-btn1 start"></button>
               </div>
 
-              <div class="transcript-controls-row">
-                <button id="stt-btn-start" class="transcript-btn green"><span>▶</span> Bắt đầu</button>
-                <button id="stt-btn-stop"  class="transcript-btn red"><span>■</span> Dừng</button>
+              <div class="transcript-actions-row">
+                <button class="transcript-btn"><img src="icons/phude.svg" alt="" class="action-btn-icon" />Phụ đề</button>
+                <button class="transcript-btn"><img src="icons/dichphude.svg" alt="" class="action-btn-icon"/>Dịch phụ đề</button>
+                <button class="transcript-btn"><img src="icons/giongnoi.svg" alt="" class="action-btn-icon" />Giọng nói</button>
+              </div>
+              <div class="input-footer transcript">
+                  <button class="login-btn">Đăng nhập</button>
+                  <div class="icon-group">
+                    <button id="icon-btn-gift" class="icon-btn-simple" title="gift"></button>
+                    <button id="icon-btn-heart" class="icon-btn-simple" title="heart"></button>
+                    <button id="icon-btn-help" class="icon-btn-simple" title="help"></button>
+                    <button id="icon-btn-mail" class="icon-btn-simple" title="mail"></button>
+                  </div>
               </div>
             </div>
 
