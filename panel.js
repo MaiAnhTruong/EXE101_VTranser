@@ -162,6 +162,7 @@
     const chatHeader  = root.querySelector('.main-header');
     const chatActions = root.querySelector('.action-buttons');
     const chatInputWrap   = root.querySelector('.textarea-wrapper');
+    const transcriptStart =document.querySelector('.transcript-btn1.start');
 
     function showView(viewId, clicked) {
       views.forEach(v => v && v.classList.add('hidden'));
@@ -182,6 +183,12 @@
     chatBtn.addEventListener('click', () => showView('chat-content', chatBtn));
     tranBtn.addEventListener('click', () => showView('transcript-content', tranBtn));
     showView('chat-content', chatBtn);
+    transcriptStart.addEventListener('click', () => {
+      if (transcriptStart.classList.contains('active')) {
+        transcriptStart.classList.remove('active');
+      }else{
+      transcriptStart.classList.add('active');}
+    });
 
     // ===== Transcript logic (giữ như cũ)
     const $body       = $('#stt-transcript-body');
