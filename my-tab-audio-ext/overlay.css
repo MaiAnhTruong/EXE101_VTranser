@@ -1,4 +1,3 @@
-/*home/truong/EXE/my-tab-audio-ext/overlay.css:
 /* Caption khung cố định (center), nền đen mở theo chữ */
 #stt-yt-overlay {
   position: fixed;
@@ -25,6 +24,17 @@
   contain: content;
 }
 
+/* NEW: Bong bóng thứ 2 cho bản dịch VI (màu hơi khác để phân biệt) */
+#stt-yt-overlay .bubble-vi {
+  display: inline-block;
+  margin-top: 6px;
+  background: rgba(10, 10, 10, 0.72);
+  color: #e9f7ff; /* nhẹ xanh lam */
+  border-radius: 4px;
+  padding: 6px 10px;
+  contain: content;
+}
+
 /* Dòng chữ (không auto-wrap; wrap do JS cắt) */
 #stt-yt-overlay .line {
   white-space: nowrap;
@@ -35,6 +45,11 @@
   line-height: 1.4;
   color: rgba(255,255,255,1);
   text-shadow: 0 0 2px rgba(0,0,0,.85), 0 0 6px rgba(0,0,0,.5);
+}
+
+/* VI dùng cùng kích thước, chỉ đổi màu chữ chút nếu muốn */
+#stt-yt-overlay .bubble-vi .line {
+  color: rgba(230, 248, 255, 1);
 }
 
 #stt-yt-overlay .line2 { margin-top: 4px; }

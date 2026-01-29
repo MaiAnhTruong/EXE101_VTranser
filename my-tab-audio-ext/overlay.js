@@ -1,4 +1,4 @@
-// /home/truong/EXE/my-tab-audio-ext/overlay.js
+// overlay.js
 (() => {
   const ROOT_ID = 'stt-yt-overlay';
   if (document.getElementById(ROOT_ID)) return;
@@ -16,24 +16,52 @@
   root.setAttribute('aria-live', 'polite');
   root.innerHTML = `
     <div class="frame">
-      <div class="bubble">
+      <div class="bubble" id="bubble-en">
         <div class="line line1" id="stt-line1"></div>
         <div class="line line2" id="stt-line2"></div>
+      </div>
+      <div class="bubble-vi" id="bubble-vi">
+        <div class="line line1" id="stt-line1-vi"></div>
+        <div class="line line2" id="stt-line2-vi"></div>
       </div>
     </div>`;
   document.documentElement.appendChild(root);
 
   const $frame  = root.querySelector('.frame');
-  const $bubble = root.querySelector('.bubble');
-  const $l1 = root.querySelector('#stt-line1');
-  const $l2 = root.querySelector('#stt-line2');
-  $l2.classList.add('compact');
+  const $bubbleEN = root.querySelector('#bubble-en');
+  const $bubbleVI = root.querySelector('#bubble-vi');
+
+  const $l1EN = root.querySelector('#stt-line1');
+  const $l2EN = root.querySelector('#stt-line2');
+  const $l1VI = root.querySelector('#stt-line1-vi');
+  const $l2VI = root.querySelector('#stt-line2-vi');
+
+  $l2EN.classList.add('compact');
+  $l2VI.classList.add('compact');
+
+  // NEW: điều khiển hiển thị overlay theo mode từ sidepanel
+  let showEN = false;
+  let showVI = false;
+
+  function applyOverlayMode(enOn, viOn) {
+    showEN = !!enOn;
+    showVI = !!viOn;
+    const any = showEN || showVI;
+    root.style.display = any ? '' : 'none';
+    if ($bubbleEN) $bubbleEN.style.display = showEN ? '' : 'none';
+    if ($bubbleVI) $bubbleVI.style.display = showVI ? '' : 'none';
+  }
+
+  // Ban đầu ẩn overlay, đợi sidepanel gửi mode
+  applyOverlayMode(false, false);
+
 
   // ---------- measurer để đo bề rộng text ----------
   const measurer = document.createElement('div');
   document.documentElement.appendChild(measurer);
   const syncMeasureStyle = () => {
-    const cs = getComputedStyle($l2);
+    // dùng font của EN (hai khung dùng một kiểu)
+    const cs = getComputedStyle($l2EN);
     measurer.style.cssText = `
       position: fixed; left: -99999px; top: -99999px;
       visibility: hidden; white-space: nowrap;
@@ -47,18 +75,15 @@
   const textWidth = (s) => { measurer.textContent = s; return measurer.scrollWidth; };
 
   // bề rộng tối đa dùng cho text bên trong (khung - padding bong bóng)
-  const innerMaxPx = () => {
+  const innerMaxPx = (bubbleEl) => {
     const frameW = $frame.clientWidth;
-    const cs = getComputedStyle($bubble);
+    const cs = getComputedStyle(bubbleEl);
     const padL = parseFloat(cs.paddingLeft) || 0;
     const padR = parseFloat(cs.paddingRight) || 0;
     return Math.max(0, frameW - padL - padR);
   };
 
-  // ---------- model (toàn văn realtime, áp patch) ----------
-  let fullText = '';
-
-  // 1) tách thành câu hoàn chỉnh + tail (chưa kết câu)
+  // ---------- tools ----------
   function splitSentencesAndTail(text) {
     const sents = [];
     const re = /[^.!?…]*[.!?…]+(?:["”’']+)?(?:\s+|$)/g;
@@ -71,11 +96,9 @@
     return { sents, tail };
   }
 
-  // 2) cắt 1 câu theo bề rộng còn lại (không vượt maxPx).
-  //    Ưu tiên cắt theo token (từ/space); nếu 1 token quá dài -> cắt theo ký tự (binary search).
   function fitPrefixByWidth(sentence, remPx) {
     if (remPx <= 0) return { fit: '', rest: sentence };
-    const tokens = String(sentence).split(/(\s+)/); // giữ khoảng trắng
+    const tokens = String(sentence).split(/(\s+)/);
     let fit = '';
     for (let i = 0; i < tokens.length; i++) {
       const tok = tokens[i];
@@ -84,7 +107,6 @@
       if (textWidth(next) <= remPx) {
         fit = next;
       } else {
-        // token quá to hoặc không còn chỗ -> thử cắt ký tự trong tok
         if (!fit) {
           let lo = 0, hi = tok.length, best = 0;
           while (lo <= hi) {
@@ -96,27 +118,22 @@
           }
           const cut = tok.slice(0, best);
           const restTok = tok.slice(best);
-          fit = cut;
           const rest = restTok + tokens.slice(i + 1).join('');
-          return { fit, rest };
+          return { fit: cut, rest };
         }
-        // đã có fit, dừng tại đây
         return { fit, rest: tokens.slice(i).join('') };
       }
     }
-    return { fit, rest: '' }; // câu fit trọn
+    return { fit, rest: '' };
   }
 
-  // 3) chuyển toàn văn -> danh sách "dòng" theo quy tắc:
-  //    - Mỗi dòng chứa tối đa K=MAX_SENTENCES_PER_LINE "câu".
-  //    - Khi chèn 1 câu mà không đủ chỗ, cắt phần thừa xuống dòng (và phần thừa đếm là 1 câu).
-  function buildLines(text) {
+  function buildLines(text, bubbleEl) {
     const { sents, tail } = splitSentencesAndTail(text);
     const queue = sents.slice();
     if (tail) queue.push(tail);
 
     const lines = [];
-    const maxPx = innerMaxPx();
+    const maxPx = innerMaxPx(bubbleEl);
 
     while (queue.length) {
       let line = '';
@@ -128,35 +145,30 @@
         const candidate = line + sentence;
 
         if (textWidth(candidate) <= maxPx) {
-          // nguyên câu vừa khung
           line = candidate;
           used += 1;
           continue;
         }
 
-        // không vừa: lấy phần prefix vừa khung -> phần còn lại trả lại hàng đợi (đếm như 1 câu)
         const remPx = maxPx - textWidth(line);
         if (remPx <= 0) {
-          // dòng đã kín -> trả câu lại để dòng sau xử lý
           queue.unshift(sentence);
           break;
         }
         const { fit, rest } = fitPrefixByWidth(sentence, remPx);
         if (fit) {
           line += fit;
-          used += 1;                 // phần đã fit tính là 1 câu
-          if (rest) queue.unshift(rest); // phần thừa cho dòng sau (1 câu)
+          used += 1;
+          if (rest) queue.unshift(rest);
         } else {
-          // không fit được gì (edge case) -> kết thúc dòng
           queue.unshift(sentence);
         }
-        break; // sau khi cắt một câu -> dừng thêm nữa cho dòng này
+        break;
       }
 
       if (line) {
         lines.push(line);
       } else {
-        // fallback để tránh kẹt: ép lấy ít nhất 1 ký tự từ câu đầu
         const s = queue.shift();
         const { fit, rest } = fitPrefixByWidth(s, maxPx);
         lines.push(fit || s.slice(0, 1));
@@ -167,9 +179,8 @@
     return lines;
   }
 
-  // 4) render 2 dòng cuối (cũ trên / mới dưới)
-  function renderFromModel() {
-    const lines = buildLines(fullText);
+  function renderTwoLines(text, bubbleEl, $l1, $l2) {
+    const lines = buildLines(text, bubbleEl);
     let line1 = '', line2 = '';
 
     if (lines.length === 0) {
@@ -187,25 +198,46 @@
     if (!line1.trim()) $l2.classList.add('compact'); else $l2.classList.remove('compact');
   }
 
-  // ---------- rAF batching patch ----------
-  let qDel = 0, qIns = '';
-  let scheduled = false;
+  // ---------- Model EN ----------
+  let fullTextEN = '';
+  let qDelEN = 0, qInsEN = '';
+  let scheduledEN = false;
 
-  function enqueuePatch(delN, insS) {
-    qDel += (delN|0);
-    if (insS) qIns += String(insS);
-    if (!scheduled) { scheduled = true; requestAnimationFrame(flushPatches); }
+  function enqueuePatchEN(delN, insS) {
+    qDelEN += (delN|0);
+    if (insS) qInsEN += String(insS);
+    if (!scheduledEN) { scheduledEN = true; requestAnimationFrame(flushPatchesEN); }
+  }
+  function flushPatchesEN() {
+    try {
+      if (qDelEN || qInsEN) {
+        if (qDelEN > 0) fullTextEN = qDelEN >= fullTextEN.length ? '' : fullTextEN.slice(0, fullTextEN.length - qDelEN);
+        if (qInsEN) fullTextEN += qInsEN;
+        qDelEN = 0; qInsEN = '';
+        renderTwoLines(fullTextEN, $bubbleEN, $l1EN, $l2EN);
+      }
+    } finally { scheduledEN = false; }
   }
 
-  function flushPatches() {
+  // ---------- Model VI (NEW) ----------
+  let fullTextVI = '';
+  let qDelVI = 0, qInsVI = '';
+  let scheduledVI = false;
+
+  function enqueuePatchVI(delN, insS) {
+    qDelVI += (delN|0);
+    if (insS) qInsVI += String(insS);
+    if (!scheduledVI) { scheduledVI = true; requestAnimationFrame(flushPatchesVI); }
+  }
+  function flushPatchesVI() {
     try {
-      if (qDel || qIns) {
-        if (qDel > 0) fullText = qDel >= fullText.length ? '' : fullText.slice(0, fullText.length - qDel);
-        if (qIns) fullText += qIns;
-        qDel = 0; qIns = '';
-        renderFromModel();
+      if (qDelVI || qInsVI) {
+        if (qDelVI > 0) fullTextVI = qDelVI >= fullTextVI.length ? '' : fullTextVI.slice(0, fullTextVI.length - qDelVI);
+        if (qInsVI) fullTextVI += qInsVI;
+        qDelVI = 0; qInsVI = '';
+        renderTwoLines(fullTextVI, $bubbleVI, $l1VI, $l2VI);
       }
-    } finally { scheduled = false; }
+    } finally { scheduledVI = false; }
   }
 
   // ---------- message handlers ----------
@@ -214,32 +246,59 @@
     const type = msg.__cmd || msg.type;
     if (!type) return;
 
+    // EN: giữ nguyên các kênh cũ
     if (type === '__TRANSCRIPT_PATCH__' || type === 'patch') {
       const delN = Number(msg.payload?.delete ?? msg.delete ?? 0) || 0;
       const insS = String(msg.payload?.insert ?? msg.insert ?? '');
-      enqueuePatch(delN, insS);
+      enqueuePatchEN(delN, insS);
       return;
     }
     if (type === '__TRANSCRIPT_DELTA__' || type === 'delta' || type === 'delta-append') {
       const append = String(msg.payload?.append ?? msg.append ?? '');
-      enqueuePatch(0, append);
+      enqueuePatchEN(0, append);
       return;
     }
     if (type === '__TRANSCRIPT_STABLE__' || type === 'stable') {
       const full = msg.full ?? msg.detail?.full ?? msg.payload?.full;
-      if (typeof full === 'string' && full.length >= fullText.length) {
-        if (scheduled) flushPatches();
-        fullText = full;
-        renderFromModel();
+      if (typeof full === 'string' && full.length >= fullTextEN.length) {
+        if (scheduledEN) flushPatchesEN();
+        fullTextEN = full;
+        renderTwoLines(fullTextEN, $bubbleEN, $l1EN, $l2EN);
       }
       return;
     }
+
+    // VI: NEW
+    if (type === '__TRANS_VI_DELTA__' || type === 'vi-delta') {
+      const append = String(msg.payload?.append ?? msg.append ?? '');
+      enqueuePatchVI(0, append);
+      return;
+    }
+    if (type === '__TRANS_VI_STABLE__' || type === 'vi-stable') {
+      const full = msg.full ?? msg.detail?.full ?? msg.payload?.full;
+      if (typeof full === 'string' && full.length >= fullTextVI.length) {
+        if (scheduledVI) flushPatchesVI();
+        fullTextVI = full;
+        renderTwoLines(fullTextVI, $bubbleVI, $l1VI, $l2VI);
+      }
+      return;
+    }
+
+    if (type === '__OVERLAY_MODE__' || type === 'overlay-mode') {
+      const cfg = msg.payload || msg.detail || {};
+      const enOn = !!(cfg.en ?? cfg.subtitle ?? cfg.showEN);
+      const viOn = !!(cfg.vi ?? cfg.subtitle_vi ?? cfg.showVI);
+      applyOverlayMode(enOn, viOn);
+      return;
+    }
+
+
     if (type === '__OVERLAY_RESET__') {
-      if (scheduled) flushPatches();
-      fullText = '';
-      $l1.textContent = '';
-      $l2.textContent = '';
-      $l2.classList.add('compact');
+      if (scheduledEN) flushPatchesEN();
+      if (scheduledVI) flushPatchesVI();
+      fullTextEN = ''; fullTextVI = '';
+      $l1EN.textContent = ''; $l2EN.textContent = ''; $l2EN.classList.add('compact');
+      $l1VI.textContent = ''; $l2VI.textContent = ''; $l2VI.classList.add('compact');
       return;
     }
     if (type === '__OVERLAY_TEARDOWN__') {
@@ -253,8 +312,12 @@
   try { const port = chrome.runtime.connect({ name: 'stt-overlay' }); port.onMessage.addListener((m) => handleMessage(m)); } catch {}
   window.addEventListener('message', (ev) => { const m = ev?.data; if (m && (m.__cmd || m.type)) handleMessage(m); });
 
-  // re-sync font metrics & re-render khi resize (khung cố định theo min(90vw, 1100px))
-  window.addEventListener('resize', () => { syncMeasureStyle(); renderFromModel(); });
+  // re-sync font metrics & re-render khi resize
+  window.addEventListener('resize', () => {
+    syncMeasureStyle();
+    renderTwoLines(fullTextEN, $bubbleEN, $l1EN, $l2EN);
+    renderTwoLines(fullTextVI, $bubbleVI, $l1VI, $l2VI);
+  });
 
   try { chrome.runtime.sendMessage({ __cmd: '__OVERLAY_PING__' }, () => {}); } catch {}
 })();
