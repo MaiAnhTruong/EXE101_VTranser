@@ -1,0 +1,205 @@
+<!-- D:\ubuntu_truong\EXE\VTranser\vtranser\sidepanel.html -->
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>V-Transer Panel</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <div id="panel">
+    <div class="view-container">
+      <div class="content-flipper">
+
+        <!-- CHAT VIEW -->
+        <div id="chat-content" class="content-view hidden">
+          <div class="main-header">
+            <p>Tôi có thể hỗ trợ gì cho bạn?</p>
+          </div>
+
+          <div class="action-buttons">
+            <button class="action-btn" type="button">
+              <img src="icons/maximize.svg" alt="" class="action-btn-icon" /> Toàn màn hình
+            </button>
+            <button class="action-btn" type="button">
+              <img src="icons/database.svg" alt="" class="action-btn-icon" /> Truy xuất thông tin
+            </button>
+            <button class="action-btn" type="button">
+              <img src="icons/star.svg" alt="" class="action-btn-icon" /> Kho lưu trữ
+            </button>
+            <button class="action-btn" type="button">
+              <img src="icons/file-text.svg" alt="" class="action-btn-icon" /> Vẽ hình tài liệu
+            </button>
+          </div>
+
+          <div class="chat-history-area"></div>
+
+          <div class="chat-input-area">
+            <div class="input-header">
+              <button class="chip-button" type="button">
+                <img src="icons/database.svg" alt="" class="input-btn-icon" />Truy xuất thông tin
+              </button>
+              <button class="chip-button" type="button">
+                <img src="icons/brain.svg" alt="" class="input-btn-icon" />Suy luận (R1)
+              </button>
+            </div>
+
+            <div class="textarea-wrapper">
+              <textarea placeholder="Hãy viết gì đó"></textarea>
+              <button id="icon-btn-send" class="icon-btn-simple" title="send" type="button"></button>
+            </div>
+
+            <div class="input-footer">
+              <button class="login-btn" id="loginLink" type="button">Log in</button>
+              <div class="icon-group">
+                <button id="icon-btn-gift" class="icon-btn-simple" title="gift" type="button"></button>
+                <button id="icon-btn-heart" class="icon-btn-simple" title="heart" type="button"></button>
+                <button id="icon-btn-help" class="icon-btn-simple" title="help" type="button"></button>
+                <button id="icon-btn-mail" class="icon-btn-simple" title="mail" type="button"></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TRANSCRIPT VIEW -->
+        <div id="transcript-content" class="content-view">
+          <div class="transcript-box">
+            <div class="transcript-header">
+              <h3>Transcript</h3>
+              <p class="transcript-url">Website: (chưa bắt đầu)</p>
+            </div>
+
+            <div class="transcript-body">
+              <div class="placeholder-text transcript-placeholder">
+                Nhấn nút Play bên dưới để bắt đầu ghi phụ đề.
+              </div>
+            </div>
+
+            <div class="transcript-live-footer">
+              <span>Live</span>
+            </div>
+          </div>
+
+          <div class="live-timestamp">00:00:00</div>
+
+          <div class="transcript-controls-row">
+            <button class="transcript-btn1 start" type="button" aria-label="Start/Stop"></button>
+          </div>
+
+          <div class="transcript-actions-row">
+            <button id="btn-subtitle" class="transcript-btn" type="button">
+              <img src="icons/phude.svg" alt="" class="action-btn-icon" />Phụ đề
+            </button>
+            <button id="btn-subtitle-trans" class="transcript-btn" type="button">
+              <img src="icons/dichphude.svg" alt="" class="action-btn-icon" />Dịch phụ đề
+            </button>
+            <button id="btn-voice" class="transcript-btn" type="button">
+              <img src="icons/giongnoi.svg" alt="" class="action-btn-icon" />Giọng nói
+            </button>
+          </div>
+
+          <div class="input-footer transcript">
+            <button class="login-btn" id="loginLinkT" type="button">Log in</button>
+            <div class="icon-group">
+              <button id="icon-btn-gift-t" class="icon-btn-simple" title="gift" type="button"></button>
+              <button id="icon-btn-heart-t" class="icon-btn-simple" title="heart" type="button"></button>
+              <button id="icon-btn-help-t" class="icon-btn-simple" title="help" type="button"></button>
+              <button id="icon-btn-mail-t" class="icon-btn-simple" title="mail" type="button"></button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button id="btn-transcript" class="icon-btn active" title="Transcript" type="button"></button>
+      <button id="btn-chat" class="icon-btn" title="Chat" type="button"></button>
+      <button id="btn-setting" class="icon-btn" title="Setting" type="button"></button>
+      <button id="btnAccount" class="icon-btn" title="Account" type="button" data-vt-account></button>
+    </div>
+  </div>
+
+  <!-- AUTH OVERLAY -->
+  <div id="vtAuthOverlay" class="vt-auth-overlay vt-hidden" aria-hidden="true">
+    <div id="vtAuthBackdrop" class="vt-auth-backdrop"></div>
+    <div class="vt-auth-sheet" role="dialog" aria-modal="true" aria-label="Đăng nhập / Đăng ký">
+      <iframe id="vtAuthFrame" class="vt-auth-frame" src="" title="V-Transer Auth" loading="lazy"></iframe>
+    </div>
+  </div>
+
+  <!-- ✅ ACCOUNT MENU (giống ảnh) -->
+  <div id="vtAccountOverlay" class="vt-account-overlay vt-hidden" aria-hidden="true">
+    <div id="vtAccountBackdrop" class="vt-account-backdrop"></div>
+
+    <div class="vt-account-popover" role="dialog" aria-modal="false" aria-label="Account">
+      <div class="vt-acc-top">
+        <div class="vt-acc-avatar">
+          <img id="vtAccAvatar" class="vt-acc-avatar-img hidden" alt="" />
+          <div id="vtAccAvatarFallback" class="vt-acc-avatar-fallback">U</div>
+        </div>
+
+        <div class="vt-acc-title">
+          <div class="vt-acc-name-row">
+            <div id="vtAccName" class="vt-acc-name">User</div>
+            <div id="vtAccPlan" class="vt-acc-pill">Free</div>
+          </div>
+          <div id="vtAccEmail" class="vt-acc-email">email@example.com</div>
+        </div>
+      </div>
+
+      <div class="vt-acc-credits">
+        <div class="vt-acc-credits-icon" aria-hidden="true">✨</div>
+        <div class="vt-acc-credits-text">
+          <div class="vt-acc-credits-title">Complete Tasks to</div>
+          <div class="vt-acc-credits-sub"><b>Earn Credits</b></div>
+        </div>
+      </div>
+
+      <div class="vt-acc-menu">
+        <button class="vt-acc-item" data-vt-acc-action="whats_new" type="button">
+          <span class="vt-acc-ico">🔔</span> <span>What's new</span>
+        </button>
+        <button class="vt-acc-item" data-vt-acc-action="rewards" type="button">
+          <span class="vt-acc-ico">🏆</span> <span>Rewards center</span>
+        </button>
+        <button class="vt-acc-item" data-vt-acc-action="my_account" type="button">
+          <span class="vt-acc-ico">👤</span> <span>My account</span>
+        </button>
+        <button class="vt-acc-item" data-vt-acc-action="my_website" type="button">
+          <span class="vt-acc-ico">🗂️</span> <span>My weibase</span>
+        </button>
+        <button class="vt-acc-item" data-vt-acc-action="help" type="button">
+          <span class="vt-acc-ico">❓</span> <span>Help center</span>
+        </button>
+        <button class="vt-acc-item" data-vt-acc-action="feedback" type="button">
+          <span class="vt-acc-ico">✉️</span> <span>Feedback</span>
+        </button>
+
+        <div class="vt-acc-sep"></div>
+
+        <button id="vtAccLogout" class="vt-acc-item vt-acc-logout" type="button">
+          <span class="vt-acc-ico">↩️</span> <span>Log out</span>
+        </button>
+      </div>
+
+      <div class="vt-acc-social">
+        <button class="vt-social-btn" type="button" aria-label="X">X</button>
+        <button class="vt-social-btn" type="button" aria-label="Discord">💬</button>
+        <button class="vt-social-btn" type="button" aria-label="YouTube">▶️</button>
+        <button class="vt-social-btn" type="button" aria-label="LinkedIn">in</button>
+      </div>
+
+      <div id="vtAccToast" class="vt-acc-toast hidden"></div>
+    </div>
+  </div>
+
+  <!-- ✅ Load config trước để host dùng chung -->
+  <script src="auth/config.js"></script>
+
+  <!-- ✅ Load auth_host trước để icon account click chắc chắn hoạt động -->
+  <script src="auth/auth_host.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

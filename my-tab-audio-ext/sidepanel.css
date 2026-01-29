@@ -1,0 +1,692 @@
+/*D:\ubuntu_truong\EXE\VTranser\vtranser\sidepanel.css */
+
+:root{
+  --accent:#60A5FA;
+  --border:#E5E7EB;
+  --bg:#FFFFFF;
+  --toolbar-bg:#F9FAFB;
+  --text:#111827;
+  --text-muted:#6B7280;
+  --bg-light-gray:#F3F4F6;
+  --bg-hover:#E0F2FF;
+  --bg-guide:#E0F2F1;
+  --text-guide:#00796B;
+
+  /* ✅ đồng bộ khoảng cách đáy giữa view & toolbar */
+  --panel-pad: 24px;
+  --panel-bottom: 14px;  /* chỉnh 12~16 tuỳ bạn để “ngang” với icon account */
+
+  font-family:"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+}
+
+html,body{
+  margin:0;
+  padding:0;
+  width:100%;
+  height:100vh;
+  overflow:hidden;
+  background:transparent;
+  color:var(--text);
+  font-family:inherit;
+  font-size:14px;
+}
+
+/* ✅ IMPORTANT: hidden phải thắng mọi display khác */
+.hidden{ display:none !important; }
+
+/* --- MAIN LAYOUT --- */
+#panel{
+  display:flex;
+  flex-direction:row;
+  height:100vh;
+  width:100%;
+  background:var(--bg);
+  box-shadow:0 2px 10px rgba(0,0,0,.08);
+  overflow:hidden; /* bo góc của host sẽ clip nếu con bị kéo ra ngoài */
+}
+
+/* ✅ Toolbar luôn nổi trên để bấm được icon */
+.toolbar{
+  width:60px;
+  flex-shrink:0;
+  background:var(--toolbar-bg);
+  border-left:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:flex-start;
+  padding-top:12px;
+  padding-bottom: var(--panel-bottom);
+  gap:10px;
+  box-sizing:border-box;
+
+  position:relative;
+  z-index: 20; /* ✅ tránh bị footer view che */
+}
+
+.view-container{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  min-width:290px;
+  min-height:0;
+  overflow:hidden; /* ✅ không scroll toàn view */
+  box-sizing:border-box;
+  background:var(--bg);
+
+  /* ✅ bỏ “padding-bottom 24px” để footer không bị hụt lên,
+     thay bằng panel-bottom đồng bộ toolbar */
+  padding: var(--panel-pad) var(--panel-pad) var(--panel-bottom) var(--panel-pad);
+
+  position:relative;
+  z-index: 1;
+}
+
+/* container chỉ chứa 1 view active, không scroll */
+.content-flipper{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  margin-top:16px;
+  min-height:0;
+  overflow:hidden;
+}
+
+/* Không set display ở đây để khỏi đè .hidden */
+.content-view{
+  width:100%;
+  height:100%;
+  min-height:0;
+}
+
+/* --- 1. HEADER --- */
+.main-header{ flex-shrink:0; }
+.main-header h1{
+  font-size:36px;
+  font-weight:600;
+  margin:0;
+}
+.main-header p{
+  font-size:24px;
+  color:var(--text-muted);
+  margin:4px 0 0 0;
+}
+
+/* --- 2. ACTION BUTTONS --- */
+.action-buttons{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+  margin-top:20px;
+  flex-shrink:0;
+}
+
+.action-btn{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  background:var(--bg-light-gray);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:12px;
+  font-size:14px;
+  font-weight:500;
+  color:var(--text);
+  cursor:pointer;
+  transition:background .2s;
+}
+.action-btn:hover{ background:#E5E7EB; }
+
+.action-btn-icon{
+  width:18px;
+  height:18px;
+  display:inline-block;
+}
+
+/* ===== CHAT VIEW LAYOUT (pin footer) ===== */
+#chat-content{
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
+
+/* History là vùng scroll */
+.chat-history-area{
+  flex:1;
+  min-height:0;
+  margin-top:12px;
+  padding:12px;
+  overflow-y:auto;
+  background:#fff;
+  border-radius: 12px;
+}
+
+/* Input area pinned dưới */
+.chat-input-area{
+  flex-shrink:0;
+  margin-top:12px;
+  border-top:1px solid var(--border);
+  padding-top:16px;
+  padding-bottom:0; /* ✅ view-container đã có panel-bottom rồi */
+  background:var(--bg);
+}
+
+.input-btn-icon{
+  width:16px;
+  height:16px;
+  display:flex;
+  padding-right:5px;
+}
+
+.input-header, .input-footer{
+  width:100%;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+.icon-group{
+  display:flex;
+  gap:4px;
+}
+
+.icon-btn-simple{
+  width:30px;
+  height:30px;
+  border:none;
+  border-radius:8px;
+  cursor:pointer;
+  transition:background .2s;
+  background-color:transparent;
+  background-repeat:no-repeat;
+  background-position:center;
+  background-size:60%;
+}
+.icon-btn-simple:hover{ background: rgba(0,0,0,0.04); }
+
+/* Chip mode */
+.chip-button{
+  background:#FFFFFF;
+  border:1px solid #FFFFFF;
+  color:rgb(129,129,129);
+  font-size:13px;
+  font-weight:500;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  gap:4px;
+  padding:6px 12px;
+  border-radius:999px;
+}
+.chip-button.active{
+  background:#E0F2FF;
+  border-color:#60A5FA;
+  box-shadow:0 0 0 1px rgba(96,165,250,.6);
+  color:#1D4ED8;
+}
+
+.textarea-wrapper{
+  width:100%;
+  margin:0;
+  gap:10px;
+  display:flex;
+  align-items:center;
+}
+
+.textarea-wrapper textarea{
+  flex: 1;
+  border-radius:10px;
+  height:44px;
+  padding:12px 12px;
+  resize:none;
+  font-family:inherit;
+  font-size:14px;
+  border:1px solid var(--border);
+  background-color:#f1f1f1;
+  outline: none;
+}
+.textarea-wrapper textarea:focus{
+  border-color: rgba(96,165,250,.9);
+  box-shadow: 0 0 0 3px rgba(96,165,250,.25);
+}
+.textarea-wrapper textarea::placeholder{ color:var(--text-muted); }
+
+.input-footer{
+  margin-top:12px;
+}
+
+.login-btn{
+  font-size:12px;
+  font-weight:500;
+  color:#2563EB;
+  background:none;
+  border:none;
+  cursor:pointer;
+  padding:0;
+  margin-right:auto;
+}
+
+/* focus-mode */
+#chat-content.focus-mode .main-header,
+#chat-content.focus-mode .action-buttons{
+  display:none;
+}
+
+/* ===== TRANSCRIPT VIEW LAYOUT (pin footer) ===== */
+#transcript-content{
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+  background-color:transparent;
+  border-radius:0;
+}
+
+.transcript-box{
+  display:flex;
+  flex-direction:column;
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:12px;
+  overflow:hidden;
+  box-shadow:0 4px 12px rgba(0,0,0,.05);
+  flex-shrink:0;
+  max-height:40vh; /* giống UI gốc */
+}
+
+.transcript-header{
+  padding:16px;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.transcript-header h3{
+  margin:0 0 4px 0;
+  font-size:16px;
+  font-weight:600;
+}
+.transcript-header p{
+  margin:0;
+  font-size:13px;
+  color:var(--text-muted);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.transcript-body{
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  padding:16px;
+}
+
+.transcript-live-footer{
+  padding:12px 16px;
+  border-top:1px solid var(--border);
+  flex-shrink:0;
+}
+.transcript-live-footer span{
+  font-size:13px;
+  font-weight:500;
+  color:var(--text-muted);
+}
+
+.placeholder-text{
+  color:var(--text-muted);
+  font-style:italic;
+  padding:16px;
+}
+
+.live-timestamp{
+  text-align:center;
+  color:#E53935;
+  font-size:14px;
+  font-weight:500;
+  margin:16px 0 8px;
+  flex-shrink:0;
+}
+
+/* vùng giữa để nút Play nằm trung tâm */
+.transcript-controls-row{
+  display:flex;
+  flex:1;
+  align-items:center;
+  justify-content:center;
+  min-height:0;
+}
+
+.transcript-btn1{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background-size:contain;
+  border:none;
+  width:150px;
+  height:150px;
+  background-repeat:no-repeat;
+  cursor:pointer;
+}
+.transcript-btn1.start{ background-image:url("icons/start.svg"); }
+.transcript-btn1.start.active{ background-image:url("icons/stop.svg"); }
+
+.transcript-actions-row{
+  display:flex;
+  gap:12px;
+  flex-shrink:0;
+  margin:12px 0;
+}
+
+.transcript-btn{
+  flex:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:12px 12px;
+  border-radius:10px;
+  font-size:14px;
+  font-weight:500;
+  cursor:pointer;
+  border:1px solid var(--border);
+  background:var(--bg-light-gray);
+  color:var(--text);
+}
+.transcript-btn:hover{ background:#E5E7EB; }
+
+.transcript-btn.active{
+  background:#E0F2FF;
+  border-color:#60A5FA;
+  color:#1D4ED8;
+  box-shadow:0 0 0 1px rgba(96,165,250,.6);
+}
+
+/* ✅ Transcript footer pinned dưới, KHÔNG margin âm nữa => không bị clip góc */
+.input-footer.transcript{
+  margin-top:auto;
+  flex-shrink:0;
+  background:var(--bg);
+  border-top:1px solid var(--border);
+  padding-top:10px;
+  padding-bottom:0;
+}
+
+/* ===== TOOLBAR ICONS ===== */
+.icon-btn{
+  position:relative;
+  width:36px;
+  height:36px;
+  border:none;
+  border-radius:10px;
+  cursor:pointer;
+  transition:background .2s;
+  background-color:transparent;
+  background-repeat:no-repeat;
+  background-position:center;
+  background-size:60%;
+}
+.icon-btn:hover{ background-color:var(--bg-hover); }
+.icon-btn.active{
+  background-color:var(--accent);
+  box-shadow:0 2px 6px rgba(96,165,250,.45);
+}
+
+#btn-chat{ background-image:url('icons/message.svg'); }
+#btn-transcript{ background-image:url('icons/transcript.svg'); }
+#btn-setting{
+  background-image:url('icons/setting.svg');
+  margin-top:auto;
+}
+#btnAccount{ background-image:url('icons/account.svg'); }
+
+/* Footer icons */
+#icon-btn-gift{ background-image:url('icons/gift.svg'); }
+#icon-btn-heart{ background-image:url('icons/heart.svg'); }
+#icon-btn-help{ background-image:url('icons/help.svg'); }
+#icon-btn-mail{ background-image:url('icons/mail.svg'); }
+
+#icon-btn-gift-t{ background-image:url('icons/gift.svg'); }
+#icon-btn-heart-t{ background-image:url('icons/heart.svg'); }
+#icon-btn-help-t{ background-image:url('icons/help.svg'); }
+#icon-btn-mail-t{ background-image:url('icons/mail.svg'); }
+
+/* Ẩn icon ghim & 3 chấm */
+#icon-btn-paperclip,
+#icon-btn-more{ display:none; }
+
+#icon-btn-send{
+  width:56px;
+  height:56px;
+  border-radius: 14px;
+  background-image:url('icons/send.svg');
+  background-size: 58%;
+}
+
+/* ===== CHAT BUBBLES ===== */
+.msg-row{ display:flex; margin-bottom:10px; }
+.msg-row.user{ justify-content:flex-end; }
+.msg-row.assistant{ justify-content:flex-start; }
+
+.bubble{
+  max-width:80%;
+  border-radius:12px;
+  padding:10px 12px;
+  border:1px solid var(--border);
+  line-height:1.4;
+  white-space:pre-wrap;
+  word-break:break-word;
+  background:#F8F9FB;
+}
+.msg-row.user .bubble{
+  background:#F1F5FF;
+  border-color:#DBE5FF;
+}
+.msg-row.assistant .bubble{ background:#F9FAFB; }
+
+.bubble .meta{
+  display:block;
+  font-size:11px;
+  color:var(--text-muted);
+  margin-top:6px;
+  text-align:right;
+}
+.msg-row.assistant .bubble .meta{ text-align:left; }
+
+/* ===== V-Transer Auth Overlay ===== */
+.vt-hidden{ display:none !important; }
+
+.vt-auth-overlay{
+  position:fixed;
+  inset:0;
+  z-index:9999;
+  display:grid;
+  place-items:center;
+  padding:14px 12px;
+}
+.vt-auth-backdrop{
+  position:absolute;
+  inset:0;
+  background:rgba(0,0,0,.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.vt-auth-sheet{
+  position:relative;
+  width:min(92vw, 460px);
+  height:min(86vh, 760px);
+  border-radius:18px;
+  overflow:hidden;
+  background:#fff;
+  border:1px solid rgba(0,0,0,.08);
+  box-shadow:0 30px 90px rgba(0,0,0,.35);
+}
+.vt-auth-frame{
+  width:100%;
+  height:100%;
+  border:0;
+  background:transparent;
+}
+
+/* Optional: chấm báo đã login */
+#btnAccount.vt-authed::after{
+  content:"";
+  position:absolute;
+  width:10px;
+  height:10px;
+  border-radius:999px;
+  right:6px;
+  bottom:6px;
+  background:linear-gradient(135deg,#3aa7ff,#9b5cff);
+  box-shadow:0 0 0 4px rgba(58,167,255,.12);
+}
+
+/* ===== ACCOUNT MENU (giống ảnh) ===== */
+.vt-account-overlay{
+  position:fixed;
+  inset:0;
+  z-index:9999;
+}
+.vt-account-backdrop{
+  position:absolute;
+  inset:0;
+  background:transparent; /* giống popover ảnh */
+}
+
+.vt-account-popover{
+  position:fixed;
+  right:72px;  /* né toolbar 60px */
+  top:10px;
+  width: 320px;
+  max-width: calc(100vw - 86px);
+  background:#fff;
+  border:1px solid rgba(0,0,0,.08);
+  border-radius:14px;
+  box-shadow:0 18px 60px rgba(0,0,0,.18);
+  padding:12px 12px 10px;
+}
+
+.vt-acc-top{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  padding:4px 2px 10px;
+}
+
+.vt-acc-avatar{
+  width:34px;height:34px;border-radius:999px;
+  overflow:hidden;
+  background:#e5e7eb;
+  display:grid;
+  place-items:center;
+  flex-shrink:0;
+}
+.vt-acc-avatar-img{ width:100%; height:100%; object-fit:cover; display:block; }
+.vt-acc-avatar-fallback{
+  font-weight:700;
+  color:#111827;
+  font-size:14px;
+}
+
+.vt-acc-title{ flex:1; min-width:0; }
+.vt-acc-name-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.vt-acc-name{
+  font-weight:700;
+  color:#111827;
+  font-size:14px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.vt-acc-email{
+  font-size:12px;
+  color:#6b7280;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.vt-acc-pill{
+  font-size:12px;
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid #e5e7eb;
+  color:#111827;
+  background:#f9fafb;
+  flex-shrink:0;
+}
+
+/* Credits card */
+.vt-acc-credits{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  background: #f3f4ff;
+  border-radius:12px;
+  padding:10px;
+  margin: 4px 0 10px;
+}
+.vt-acc-credits-icon{
+  width:34px;height:34px;border-radius:12px;
+  background:#e9d5ff;
+  display:grid;
+  place-items:center;
+}
+.vt-acc-credits-title{ font-size:12px; color:#111827; }
+.vt-acc-credits-sub{ font-size:14px; color:#2563eb; }
+
+.vt-acc-menu{ display:flex; flex-direction:column; gap:2px; }
+.vt-acc-item{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  width:100%;
+  border:0;
+  background:transparent;
+  padding:10px 10px;
+  border-radius:10px;
+  cursor:pointer;
+  font-size:14px;
+  color:#111827;
+  text-align:left;
+}
+.vt-acc-item:hover{ background:#f3f4f6; }
+.vt-acc-ico{ width:18px; text-align:center; }
+.vt-acc-sep{
+  height:1px;
+  background:#e5e7eb;
+  margin: 6px 6px;
+}
+.vt-acc-logout{ color:#111827; }
+
+.vt-acc-social{
+  display:flex;
+  gap:10px;
+  padding:10px 6px 2px;
+  justify-content:center;
+}
+.vt-social-btn{
+  width:28px;height:28px;
+  border-radius:8px;
+  border:1px solid #e5e7eb;
+  background:#fff;
+  cursor:pointer;
+  font-size:12px;
+  color:#111827;
+}
+.vt-social-btn:hover{ background:#f9fafb; }
+
+.vt-acc-toast{
+  position:fixed;
+  right:92px;
+  top: 12px;
+  transform: translateY(0);
+  background:#111827;
+  color:#fff;
+  padding:8px 10px;
+  border-radius:10px;
+  font-size:12px;
+  box-shadow:0 14px 40px rgba(0,0,0,.22);
+}
