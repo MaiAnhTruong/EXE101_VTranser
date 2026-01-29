@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Auth</title>
+  <link rel="stylesheet" href="auth.css" />
+</head>
+<body>
+  <div class="page">
+    <button class="close" id="btnClose" aria-label="Close">×</button>
+
+    <div class="dot" aria-hidden="true"></div>
+
+    <!-- LOGIN -->
+    <main class="card" id="screenLogin">
+      <h1>Log in</h1>
+      <p class="sub">
+        Don't have an account?
+        <a href="#signup" id="toSignup">Sign up</a>
+      </p>
+
+      <button class="oauth-btn" id="btnFbLogin" type="button">
+        <span class="ico fb" aria-hidden="true"></span>
+        Log in with Facebook
+      </button>
+
+      <button class="oauth-btn" id="btnGgLogin" type="button">
+        <span class="ico gg" aria-hidden="true"></span>
+        Log in with Google
+      </button>
+
+      <div class="divider"><span>OR</span></div>
+
+      <label class="lbl">Your email</label>
+      <input class="inp" id="loginEmail" type="email" autocomplete="email" />
+
+      <label class="lbl">Your password</label>
+      <div class="pw">
+        <input class="inp" id="loginPass" type="password" autocomplete="current-password" />
+        <button class="link" id="togglePw" type="button">Hide</button>
+      </div>
+
+      <a class="forgot" href="#" id="forgotPw">Forget your password</a>
+
+      <button class="primary" id="btnEmailLogin" type="button" disabled>
+        Log in
+      </button>
+
+      <p class="hint">
+        (Email/password lưu cục bộ dưới dạng “users.txt” trong chrome.storage.local)
+      </p>
+    </main>
+
+    <!-- SIGNUP -->
+    <main class="card hidden" id="screenSignup">
+      <h1>Create an account</h1>
+      <p class="sub">
+        Already have an account?
+        <a href="#login" id="toLogin">Log in</a>
+      </p>
+
+      <button class="oauth-btn" id="btnFbSignup" type="button">
+        <span class="ico fb" aria-hidden="true"></span>
+        Continue with Facebook
+      </button>
+
+      <button class="oauth-btn" id="btnGgSignup" type="button">
+        <span class="ico gg" aria-hidden="true"></span>
+        Continue with Google
+      </button>
+
+      <div class="divider"><span>OR</span></div>
+
+      <p class="small">
+        Enter your email + password to create an account.
+      </p>
+
+      <label class="lbl">Your email</label>
+      <input class="inp" id="signupEmail" type="email" autocomplete="email" />
+
+      <label class="lbl">Create password</label>
+      <div class="pw">
+        <input class="inp" id="signupPass" type="password" autocomplete="new-password" />
+        <button class="link" id="togglePwS" type="button">Hide</button>
+      </div>
+
+      <label class="lbl">Confirm password</label>
+      <div class="pw">
+        <input class="inp" id="signupPass2" type="password" autocomplete="new-password" />
+        <button class="link" id="togglePwS2" type="button">Hide</button>
+      </div>
+
+      <button class="primary" id="btnEmailSignup" type="button" disabled>
+        Create an account
+      </button>
+
+      <p class="hint">
+        (Demo/local: lưu PBKDF2 hash + salt, không lưu plain password)
+      </p>
+    </main>
+
+    <div class="toast hidden" id="toast"></div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="auth.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-//home/truong/EXE/my-tab-audio-ext/audio-worklet/pcm-processor.js:
+//D:\ubuntu_truong\EXE\VTranser\vtranser\audio-worklet\pcm-processor.js
 class PCMProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
