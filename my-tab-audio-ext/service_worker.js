@@ -10,6 +10,11 @@ let wantTranslateVI = false;
 
 const offscreenUrl = chrome.runtime.getURL('offscreen.html');
 
+const TAG = "[VT][SW]";
+function log(...args) { console.log(TAG, ...args); }
+function warn(...args) { console.warn(TAG, ...args); }
+function err(...args) { console.error(TAG, ...args); }
+
 // -------------------- Side Panel behavior (FIX) --------------------
 function ensureSidePanelBehavior() {
   try {
@@ -32,9 +37,11 @@ async function ensureOffscreen() {
   if (!exists) {
     await chrome.offscreen.createDocument({
       url: 'offscreen.html',
-      reasons: ['USER_MEDIA'],
-      justification: 'Process tab audio, audio worklet, WebSocket STT',
+      // ✅ DISPLAY_MEDIA để offscreen dùng getDisplayMedia (picker tab/window/screen)
+      reasons: ['USER_MEDIA', 'DISPLAY_MEDIA'],
+      justification: 'Capture tab audio via getDisplayMedia picker in offscreen, process audio worklet, WebSocket STT',
     });
+    log("offscreen created OK:", offscreenUrl);
   }
 }
 
@@ -83,6 +90,7 @@ async function removePanel(tabId) {
 // -------------------- Capture --------------------
 async function startCaptureOnTab(tabId, server) {
   if (!server) return;
+
   await ensureOffscreen();
 
   const tab = await chrome.tabs.get(tabId);
@@ -102,18 +110,50 @@ async function startCaptureOnTab(tabId, server) {
     );
   }
 
-  let streamId;
+  // ✅ Primary: dùng getDisplayMedia (picker tab/window/screen) trong OFFSCREEN
+  // User phải chọn "Tab" và bật "Share audio".
+  log("request OFFSCREEN displayMedia picker+start tabId=", tabId, "server=", server);
+
+  let resp = null;
   try {
-    streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+    resp = await chrome.runtime.sendMessage({
+      __cmd: '__OFFSCREEN_START__',
+      payload: {
+        server,
+        captureSource: 'display', // offscreen sẽ gọi getDisplayMedia
+      },
+    });
   } catch (e) {
-    console.error('tabCapture.getMediaStreamId error', e);
-    throw e;
+    resp = { ok: false, error: String(e) };
   }
 
-  await chrome.runtime.sendMessage({
-    __cmd: '__OFFSCREEN_START__',
-    payload: { streamId, server },
-  });
+  if (!resp?.ok) {
+    warn("displayMedia start failed -> fallback tabCapture. err=", resp?.error);
+
+    // ✅ Fallback: tabCapture (active tab) nếu user không share audio / cancel / displayMedia bị chặn
+    // (tabCapture không hiện picker, nhưng để app vẫn chạy được)
+    if (!chrome.tabCapture?.getMediaStreamId) {
+      throw new Error(resp?.error || 'OFFSCREEN_START_FAILED');
+    }
+
+    let streamId = null;
+    try {
+      streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+    } catch (e) {
+      throw new Error(resp?.error || String(e));
+    }
+
+    const resp2 = await chrome.runtime.sendMessage({
+      __cmd: '__OFFSCREEN_START__',
+      payload: {
+        streamId,
+        server,
+        captureSource: 'tab',
+      },
+    });
+
+    if (!resp2?.ok) throw new Error(resp2?.error || 'OFFSCREEN_START_FAILED');
+  }
 
   current = { tabId, server, startedAt: Date.now(), panelOpen: true };
 
@@ -182,7 +222,6 @@ let transUrl = 'ws://127.0.0.1:8787';
 let transBackoffMs = 500;
 let transReconnectTimer = null;
 
-// Khi true => bắt buộc disconnect và hủy timer
 function disconnectTranslator(hard = false) {
   try { if (transReconnectTimer) clearTimeout(transReconnectTimer); } catch {}
   transReconnectTimer = null;
@@ -204,10 +243,6 @@ function disconnectTranslator(hard = false) {
 }
 
 function shouldTranslateNow() {
-  // Chỉ connect translate khi:
-  // - user bật "Dịch phụ đề"
-  // - đang capture/transcript (startedAt != null)
-  // - có tabId để relay
   return !!(wantTranslateVI && current?.tabId && current?.startedAt);
 }
 
@@ -257,7 +292,6 @@ function connectTranslator() {
     };
 
     ws.onclose = () => {
-      // Chỉ reconnect nếu vẫn đang cần translate
       if (shouldTranslateNow()) scheduleTranslatorReconnect();
     };
 
@@ -269,13 +303,11 @@ function connectTranslator() {
   }
 }
 
-// Gọi khi có thay đổi mode/capture
 function maybeUpdateTranslator(forceStop = false) {
   if (forceStop || !shouldTranslateNow()) {
     disconnectTranslator(true);
     return;
   }
-  // shouldTranslateNow() = true
   if (!transWs) connectTranslator();
 }
 
@@ -293,8 +325,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (!msg || !msg.__cmd) return;
 
-    // status từ offscreen -> relay tới tab
+    // status từ offscreen -> relay tới tab + LOG
     if (msg.__cmd === '__OFFSCREEN_STATUS__') {
+      const p = msg.payload || {};
+      const s = p.state || "unknown";
+
+      // ✅ log quan trọng để bạn thấy có audio hay không
+      if (s === "media-ok") {
+        log("OFFSCREEN media-ok audioTracks=", p.audioTracks, "label=", p.audioLabel);
+      } else if (s === "meter") {
+        log("AUDIO meter rms=", p.rms?.toFixed?.(4), "peak=", p.peak?.toFixed?.(4),
+            "wsOpen=", p.wsOpen, "bytesSent=", p.bytesSent, "chunksSent=", p.chunksSent);
+      } else if (s === "ws-open" || s === "ws-error" || s === "ws-close") {
+        log("WS state:", s, p);
+      } else if (s === "error") {
+        err("OFFSCREEN error:", p.stage, p.error);
+      } else {
+        // comment dòng dưới nếu thấy spam
+        log("OFFSCREEN_STATUS:", s, p);
+      }
+
       if (current?.tabId) {
         try { await chrome.tabs.sendMessage(current.tabId, msg); } catch {}
       }
@@ -391,7 +441,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       currentModes = modes;
       wantTranslateVI = !!modes.vi;
 
-      // cập nhật overlay mode
       const tabId = current?.tabId ?? null;
       if (tabId != null) {
         try {
@@ -402,7 +451,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch {}
       }
 
-      // cập nhật translator connect/disconnect (quan trọng)
       maybeUpdateTranslator(false);
 
       sendResponse?.({ ok: true, modes: currentModes });

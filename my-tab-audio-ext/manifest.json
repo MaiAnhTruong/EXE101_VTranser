@@ -12,9 +12,7 @@
     "tabs",
     "sidePanel",
     "identity",
-    "offscreen"
-  ],
-  "optional_permissions": [
+    "offscreen",
     "tabCapture"
   ],
   "host_permissions": [
