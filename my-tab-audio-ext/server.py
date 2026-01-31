@@ -1,32 +1,255 @@
-import os, sys, json, time, math, base64, asyncio, logging, re
+# server.py
+# Realtime STT WebSocket server (Windows / RealtimeSTT / faster-whisper + CTranslate2)
+# Fixes:
+# - Windows DLL bootstrap early (torch\lib + conda Library\bin) to avoid CT2 OSError(127)
+# - Thread-callback -> asyncio loop: run_coroutine_threadsafe (no "no running event loop")
+# - Prevent feeding bursts into RealtimeSTT (pace real-time + drop old buffer instead of speeding up)
+#
+# Input:
+#   - Binary: PCM int16 LE (default SRC_SAMPLE_RATE)
+#   - JSON: {"event":"start|stop"} or {"audio":base64,"sr":48000,"dtype":"i16|f32"}
+#
+# Output:
+#   - {"type":"hello"...}
+#   - {"type":"patch","delete":N,"insert":"..."}  (micro delta)
+#   - {"type":"stable","full":"..."}
+#   - {"type":"status","stage":"FEED","detail":{...}}
+
+import os
+import sys
+import json
+import time
+import math
+import base64
+import asyncio
+import logging
+import re
+import traceback
+import platform
+import ctypes
+import multiprocessing as mp
 from pathlib import Path
 from typing import Optional, Literal, Dict, Any, List, Tuple
 from collections import deque
-import numpy as np
-import websockets
 
-logging.disable(logging.CRITICAL)
-logger = logging.getLogger("stt-server") 
+# ──────────────────────────────────────────────────────────────────────────────
+# Windows DLL bootstrap (MUST be before importing ctranslate2/torch/RealtimeSTT)
+# ──────────────────────────────────────────────────────────────────────────────
+def _is_main_process() -> bool:
+    try:
+        return mp.current_process().name == "MainProcess"
+    except Exception:
+        return True
 
+_MAIN_PROCESS = _is_main_process()
+
+WIN_DLL_BOOTSTRAP = os.getenv("WIN_DLL_BOOTSTRAP", "1").strip().lower() in {"1", "true", "yes"}
+KMP_DUPLICATE_LIB_OK = os.getenv("KMP_DUPLICATE_LIB_OK", "TRUE").strip()
+
+def _prepend_path(p: str) -> None:
+    if not p:
+        return
+    cur = os.environ.get("PATH", "")
+    if cur.lower().startswith(p.lower() + ";"):
+        return
+    os.environ["PATH"] = p + ";" + cur
+
+def _safe_add_dll_dir(p: str, logs: List[str]) -> None:
+    if not p:
+        return
+    try:
+        if os.path.isdir(p) and hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(p)  # py3.8+
+            logs.append(f"[DLL] Added: {p}")
+    except Exception as e:
+        logs.append(f"[DLL] add_dll_directory failed: {p} -> {e!r}")
+
+def _try_preload_dlls(dirs: List[str], names: List[str], logs: List[str]) -> Tuple[int, int]:
+    loaded = 0
+    total = 0
+    for name in names:
+        total += 1
+        found = None
+        for d in dirs:
+            cand = os.path.join(d, name)
+            if os.path.isfile(cand):
+                found = cand
+                break
+        if not found:
+            continue
+        try:
+            ctypes.WinDLL(found)
+            loaded += 1
+        except Exception:
+            pass
+    return loaded, total
+
+def _win_bootstrap_dlls_early() -> None:
+    if sys.platform != "win32" or not WIN_DLL_BOOTSTRAP:
+        return
+
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", KMP_DUPLICATE_LIB_OK or "TRUE")
+
+    logs: List[str] = []
+
+    conda_prefix = os.environ.get("CONDA_PREFIX") or sys.prefix
+    conda_bin = os.path.join(conda_prefix, "Library", "bin")
+    torch_lib = os.path.join(sys.prefix, "Lib", "site-packages", "torch", "lib")
+
+    # PATH priority: conda Library\bin first, then torch\lib
+    if os.path.isdir(conda_bin):
+        _prepend_path(conda_bin)
+    if os.path.isdir(torch_lib):
+        _prepend_path(torch_lib)
+
+    # add DLL dirs
+    _safe_add_dll_dir(torch_lib if os.path.isdir(torch_lib) else "", logs)
+    _safe_add_dll_dir(conda_bin if os.path.isdir(conda_bin) else "", logs)
+
+    # preload common CUDA DLLs (best-effort)
+    preload_names = [
+        "cudart64_12.dll",
+        "nvrtc64_120_0.dll",
+        "nvJitLink_120_0.dll",
+        "cublas64_12.dll",
+        "cublasLt64_12.dll",
+        "cudnn64_9.dll",
+        "cufft64_11.dll",
+        "curand64_10.dll",
+        "cusolver64_11.dll",
+        "cusparse64_12.dll",
+        "libiomp5md.dll",
+    ]
+    scan_dirs = [d for d in [torch_lib, conda_bin] if os.path.isdir(d)]
+    loaded, total = _try_preload_dlls(scan_dirs, preload_names, logs)
+    logs.append(f"[DLL] Preload summary: {loaded}/{total} loaded | added_dirs={len(scan_dirs)} | scanned_dirs={len(scan_dirs)}")
+
+    # Only print bootstrap logs in main process to avoid spam from child processes
+    if _MAIN_PROCESS:
+        for line in logs:
+            print(line, file=sys.stderr)
+
+_win_bootstrap_dlls_early()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LOGGING (FULL)
+# ──────────────────────────────────────────────────────────────────────────────
+LOG_LEVEL = (os.getenv("LOG_LEVEL", "DEBUG") or "DEBUG").upper()
+LOG_TO_FILE = (os.getenv("LOG_TO_FILE", "1").strip().lower() in {"1", "true", "yes"})
+LOG_FILE = os.getenv("LOG_FILE", "stt_server_debug.log")
+LOG_STDERR = (os.getenv("LOG_STDERR", "1").strip().lower() in {"1", "true", "yes"})
+LOG_WS_EVERY_N = int(os.getenv("LOG_WS_EVERY_N", "25"))          # log mỗi N msg recv
+LOG_AUDIO_EVERY_N = int(os.getenv("LOG_AUDIO_EVERY_N", "50"))     # log mỗi N audio item enq
+LOG_STATUS_EVERY = float(os.getenv("LOG_STATUS_EVERY", "2.0"))    # log tổng quan mỗi X giây
+
+def _setup_logging():
+    level = getattr(logging, LOG_LEVEL, logging.DEBUG)
+    logger = logging.getLogger("stt-server")
+    logger.setLevel(level)
+    logger.propagate = False
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s.%(msecs)03d | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    if not logger.handlers:
+        if LOG_STDERR:
+            sh = logging.StreamHandler(sys.stderr)
+            sh.setLevel(level)
+            sh.setFormatter(fmt)
+            logger.addHandler(sh)
+        if LOG_TO_FILE:
+            try:
+                fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+                fh.setLevel(level)
+                fh.setFormatter(fmt)
+                logger.addHandler(fh)
+            except Exception:
+                pass
+
+    # Silence noisy loggers
+    noisy = [
+        "websockets", "websockets.server", "websockets.client", "websockets.protocol",
+        "asyncio", "urllib3", "httpcore", "httpx", "numba"
+    ]
+    for name in noisy:
+        try:
+            logging.getLogger(name).setLevel(max(level, logging.WARNING))
+        except Exception:
+            pass
+
+    return logger
+
+logger = _setup_logging()
+
+def _pkg_version(dist_name: str) -> Optional[str]:
+    try:
+        from importlib.metadata import version  # py311+
+        return version(dist_name)
+    except Exception:
+        return None
+
+def _log_system_banner():
+    if not _MAIN_PROCESS:
+        return
+    try:
+        logger.info("===== STT SERVER START =====")
+        logger.info("Python: %s", sys.version.replace("\n", " "))
+        logger.info("Executable: %s", sys.executable)
+        logger.info("OS: %s | platform=%s", platform.platform(), sys.platform)
+        logger.info("CWD: %s", os.getcwd())
+        logger.info("PID: %s", os.getpid())
+        logger.info("LOG_LEVEL=%s LOG_TO_FILE=%s LOG_FILE=%s LOG_STDERR=%s", LOG_LEVEL, LOG_TO_FILE, LOG_FILE, LOG_STDERR)
+        logger.info("ENV: CONDA_PREFIX=%s", os.getenv("CONDA_PREFIX"))
+        logger.info("ENV: CUDA_PATH=%s", os.getenv("CUDA_PATH"))
+        logger.info("ENV: CUDA_HOME=%s", os.getenv("CUDA_HOME"))
+        ph = os.getenv("PATH", "")
+        logger.info("ENV: PATH(head)=%s", (ph[:220] + "...") if len(ph) > 220 else ph)
+        logger.info("pkg: websockets=%s numpy=%s", _pkg_version("websockets") or "?", _pkg_version("numpy") or "?")
+        logger.info("pkg: scipy=%s librosa=%s", _pkg_version("scipy") or "-", _pkg_version("librosa") or "-")
+        logger.info("pkg: RealtimeSTT=%s faster-whisper=%s ctranslate2=%s torch=%s",
+                    _pkg_version("RealtimeSTT") or "-",
+                    _pkg_version("faster-whisper") or "-",
+                    _pkg_version("ctranslate2") or "-",
+                    _pkg_version("torch") or "-")
+    except Exception:
+        pass
+
+_log_system_banner()
+
+# uvloop doesn't work on Windows typically; keep optional but harmless
 try:
-    if os.getenv("USE_UVLOOP", "1").lower() in {"1","true","yes"}:
-        import uvloop  
+    if os.getenv("USE_UVLOOP", "0").lower() in {"1","true","yes"}:
+        import uvloop  # type: ignore
         uvloop.install()
-except Exception:
-    pass
+        logger.info("uvloop installed")
+except Exception as e:
+    logger.debug("uvloop not installed/usable: %r", e)
 
+# ──────────────────────────────────────────────────────────────────────────────
+# RESAMPLER AVAILABILITY
+# ──────────────────────────────────────────────────────────────────────────────
 _RESAMPLE_USES_SCIPY = True
 try:
-    from scipy.signal import resample_poly
-except Exception:
+    from scipy.signal import resample_poly  # type: ignore
+    logger.info("resample: scipy.signal.resample_poly OK")
+except Exception as e:
     _RESAMPLE_USES_SCIPY = False
+    logger.warning("resample_poly unavailable: %r", e)
     try:
-        import librosa  
-    except Exception:
-        librosa = None  
+        import librosa  # type: ignore
+        logger.info("resample: librosa OK")
+    except Exception as e2:
+        librosa = None
+        logger.warning("librosa unavailable: %r", e2)
 
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
+# HF/cache behavior
+os.environ.setdefault("HF_HUB_OFFLINE", os.getenv("HF_HUB_OFFLINE", "0"))
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+import numpy as np
+import websockets
 
 WS_HOST = os.getenv("WS_HOST", "0.0.0.0")
 WS_PORT = int(os.getenv("WS_PORT", "8765"))
@@ -34,11 +257,16 @@ WS_PORT = int(os.getenv("WS_PORT", "8765"))
 DEFAULT_SRC_SR = int(os.getenv("SRC_SAMPLE_RATE", "48000"))
 TGT_SR = int(os.getenv("TARGET_SAMPLE_RATE", "16000"))
 
-STT_MODEL = os.getenv("STT_MODEL", "/home/truong/models/fw-small")
-STT_DEVICE = os.getenv("STT_DEVICE", "cuda").strip().lower()
+# ──────────────────────────────────────────────────────────────────────────────
+# MODEL (Distill-Whisper default)
+# ──────────────────────────────────────────────────────────────────────────────
+STT_MODEL = os.getenv("STT_MODEL", "Systran/faster-distil-whisper-small.en")
+STT_DEVICE = os.getenv("STT_DEVICE", "cuda").strip().lower()  # "cuda"|"cpu"|"auto"
 STT_COMPUTE_TYPE = os.getenv("STT_COMPUTE_TYPE", "float16").strip().lower()
 STT_COMPUTE_FALLBACK = os.getenv("STT_COMPUTE_FALLBACK", "float32").strip().lower()
 STT_LANGUAGE = (os.getenv("STT_LANGUAGE", "en") or "").strip() or None
+
+REQUIRE_GPU = os.getenv("REQUIRE_GPU", "1").strip().lower() in {"1","true","yes"}
 
 WEBRTC_SENSITIVITY = int(os.getenv("WEBRTC_SENSITIVITY", "3"))
 SILERO_SENSITIVITY = float(os.getenv("SILERO_SENSITIVITY", "0.6"))
@@ -49,141 +277,66 @@ FRAME_MS = float(os.getenv("FRAME_MS", "20"))
 TAIL_SILENCE_SEC = float(os.getenv("TAIL_SILENCE_SEC", "1.0"))
 FRAME_SAMPLES_BASE = int(TGT_SR * (FRAME_MS / 1000.0))
 
-PACE_MODE = os.getenv("PACE_MODE", "auto").strip().lower()
-if PACE_MODE not in {"auto","on","off"}:
-    PACE_MODE = "auto"
-PACE_REALTIME_LEGACY = os.getenv("PACE_REALTIME", "").strip().lower() in {"1","true","yes"}
-
-PACE_DISABLE_Q = int(os.getenv("PACE_DISABLE_Q", os.getenv("BACKLOG_DISABLE_PACING", "4")))
-PACE_RESUME_Q  = int(os.getenv("PACE_RESUME_Q",  os.getenv("BACKLOG_RESUME_PACING", "3")))
-PACE_MIN_DWELL_MS = int(os.getenv("PACE_MIN_DWELL_MS", "800"))
-GRACE_SEC = float(os.getenv("GRACE_SEC", "1.5"))
-EMA_TAU_SEC = float(os.getenv("EMA_TAU_SEC", "0.6"))
-PACE_MIN_HOLD_DASHES = int(os.getenv("PACE_MIN_HOLD_DASHES", "1"))
-PACE_CRIT_STAGE_MS = float(os.getenv("PACE_CRIT_STAGE_MS", "120"))
-
-EARLYCUT_P90_MARGIN_MS = float(os.getenv("EARLYCUT_P90_MARGIN_MS", "20"))
-STAGE_EWMA_TAU_SEC = float(os.getenv("STAGE_EWMA_TAU_SEC", "0.8"))
-
-PREBUF_LO_MS_BASE = float(os.getenv("PREBUF_LO_MS", "20"))
-PREBUF_HI_MS_BASE = float(os.getenv("PREBUF_HI_MS", "60"))
-ADAPT_PREBUF = os.getenv("ADAPT_PREBUF", "1").strip().lower() in {"1","true","yes"}
-
-PREBUF_UP_UI_P90_MS = float(os.getenv("PREBUF_UP_UI_P90_MS", "85"))
-PREBUF_UP_AVG_Q = float(os.getenv("PREBUF_UP_AVG_Q", "1.8"))
-PREBUF_UP_CONSEC_WINDOWS = int(os.getenv("PREBUF_UP_CONSEC_WINDOWS", "2"))
-
-PREBUF_DOWN_UI_P90_MS = float(os.getenv("PREBUF_DOWN_UI_P90_MS", "60"))
-PREBUF_DOWN_AVG_Q = float(os.getenv("PREBUF_DOWN_AVG_Q", "1.0"))
-PREBUF_DOWN_CONSEC_WINDOWS = int(os.getenv("PREBUF_DOWN_CONSEC_WINDOWS", "2"))
-
-PREBUF_BUMP_MAX = float(os.getenv("PREBUF_BUMP_MAX", "10"))
-DERAMP_LOG = os.getenv("DERAMP_LOG", "1").strip().lower() in {"1","true","yes"}
-SPEAKING_PREBUF_HI_DELTA_MS = float(os.getenv("SPEAKING_PREBUF_HI_DELTA_MS", "8"))
-
-ADAPT_PACE = os.getenv("ADAPT_PACE", "1").strip().lower() in {"1","true","yes"}
-TOGGLE_HIGH = int(os.getenv("TOGGLE_HIGH", "6"))
-DWELL_BUMP_MS = int(os.getenv("DWELL_BUMP_MS", "200"))
-
-COALESCE_ENABLE = os.getenv("COALESCE_ENABLE", "1").strip().lower() in {"1","true","yes"}
-COALESCE_MAX = max(1, int(os.getenv("COALESCE_MAX", "3")))
-E2E_COALESCE_TRIG_MS = float(os.getenv("E2E_COALESCE_TRIG_MS", "28"))
-Q_COALESCE_TRIG = float(os.getenv("Q_COALESCE_TRIG", "2.0"))
-COALESCE_HYST_DOWN_WINDOWS = int(os.getenv("COALESCE_HYST_DOWN_WINDOWS", "3"))
-FAST_STRIDE_DROP_P90_MS = float(os.getenv("FAST_STRIDE_DROP_P90_MS", "50"))
-SPEECH_STRIDE_CAP = int(os.getenv("SPEECH_STRIDE_CAP", "2"))
-
-COALESCE_OVERLOAD_Q_CAP = float(os.getenv("COALESCE_OVERLOAD_Q_CAP", "6.0"))
-COALESCE_OVERLOAD_P90_CAP_MS = float(os.getenv("COALESCE_OVERLOAD_P90_CAP_MS", "180"))
-PREBUF_COMPUTE_WARN_Q = float(os.getenv("PREBUF_COMPUTE_WARN_Q", "3.0"))
-PREBUF_COMPUTE_WARN_P90_MS = float(os.getenv("PREBUF_COMPUTE_WARN_P90_MS", "150"))
-
-SEVERE_OVERLOAD_Q = float(os.getenv("SEVERE_OVERLOAD_Q", "10.0"))
-SEVERE_OVERLOAD_P90_MS = float(os.getenv("SEVERE_OVERLOAD_P90_MS", "300"))
-SEVERE_OVERLOAD_STRIDE1_HOLD_DASHES = int(os.getenv("SEVERE_OVERLOAD_STRIDE1_HOLD_DASHES", "2"))
-
-RMS_SPEECH_THRESH = float(os.getenv("RMS_SPEECH_THRESH", "0.015"))
-SPEECH_RATIO_UP = float(os.getenv("SPEECH_RATIO_UP", "0.5"))
-SPEECH_RATIO_DOWN = float(os.getenv("SPEECH_RATIO_DOWN", "0.2"))
-
+# Queue / guards
 QUEUE_MAX = int(os.getenv("QUEUE_MAX", "16"))
 DROP_OLDEST_ON_FULL = os.getenv("DROP_OLDEST_ON_FULL", "1").strip().lower() in {"1","true","yes"}
-QGUARD_HARD_DROP = os.getenv("QGUARD_HARD_DROP", "0").strip().lower() in {"1","true","yes"}
 DROP_GUARD_Q = int(os.getenv("DROP_GUARD_Q", str(max(1, QUEUE_MAX - 1))))
-QGUARD_SOFT_TRIM_MS = int(os.getenv("QGUARD_SOFT_TRIM_MS", "12"))
-QGUARD_SOFT_TRIM_RMS = float(os.getenv("QGUARD_SOFT_TRIM_RMS", "0.010"))
-TRIMS_WINDOW_HIGH = int(os.getenv("TRIMS_WINDOW_HIGH", "30"))
 
 QBYTES_HARD_CAP = int(os.getenv("QBYTES_HARD_CAP", str(48 * 1024)))
-NEAR_DROP_RATIO = float(os.getenv("NEAR_DROP_RATIO", "0.7"))
-QBYTES_TALKING_MULT = float(os.getenv("QBYTES_TALKING_MULT", "2.1"))
-TALK_SPEAK_RATIO_THRESH = float(os.getenv("TALK_SPEAK_RATIO_THRESH", "0.5"))
-
 ENABLE_AGC = os.getenv("ENABLE_AGC", "1").strip().lower() in {"1","true","yes"}
 AGC_TARGET_PEAK = float(os.getenv("AGC_TARGET_PEAK", "0.95"))
 AGC_MAX_GAIN = float(os.getenv("AGC_MAX_GAIN", "6.0"))
 
 AUTO_START = os.getenv("AUTO_START", "1").strip().lower() in {"1","true","yes"}
+WARMUP_SILENCE_SEC = float(os.getenv("WARMUP_SILENCE_SEC", "0.2"))
 
-OVERLOAD_Q = float(os.getenv("OVERLOAD_Q", "4.0"))
-OVERLOAD_P90_MS = float(os.getenv("OVERLOAD_P90_MS", "120"))
-DOWNSHIFT_MIN_HOLD_DASHES = int(os.getenv("DOWNSHIFT_MIN_HOLD_DASHES", "12"))
-OVERLOAD_CONSEC_WINDOWS = int(os.getenv("OVERLOAD_CONSEC_WINDOWS", "1"))
+# NEW: realtime pacer + buffer drop (fix RealtimeSTT internal queue warning)
+FORCE_REALTIME_PACE = os.getenv("FORCE_REALTIME_PACE", "1").strip().lower() in {"1","true","yes"}
+MAX_BUF_MS = float(os.getenv("MAX_BUF_MS", "900"))          # if internal float buffer > this -> drop oldest
+DROP_BUF_TO_MS = float(os.getenv("DROP_BUF_TO_MS", "450"))  # drop until buffer ~ this
 
+# micro delta
 UI_MICRO_DELTA_ENABLE = os.getenv("UI_MICRO_DELTA_ENABLE", "1").strip().lower() in {"1","true","yes"}
 UI_MICRO_DELTA_MAX_CHARS = int(os.getenv("UI_MICRO_DELTA_MAX_CHARS", "48"))
 UI_MICRO_DELTA_MIN_SLICE_CHARS = int(os.getenv("UI_MICRO_DELTA_MIN_SLICE_CHARS", "12"))
 
-WARMUP_SILENCE_SEC = float(os.getenv("WARMUP_SILENCE_SEC", "0.2"))
-
+# ──────────────────────────────────────────────────────────────────────────────
+# psutil / nvml (optional)
+# ──────────────────────────────────────────────────────────────────────────────
 try:
-    import psutil
+    import psutil  # type: ignore
     _PROC = psutil.Process()
-except Exception:
+    logger.info("psutil OK")
+except Exception as e:
     psutil = None
     _PROC = None
+    logger.warning("psutil unavailable: %r", e)
 
 _nvml_ok = False
+_nvml_handle = None
 try:
-    import pynvml  
+    import pynvml  # type: ignore
     pynvml.nvmlInit()
     _nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(int(os.getenv("GPU_ID", "0")))
     _nvml_ok = True
-except Exception:
+    try:
+        name = pynvml.nvmlDeviceGetName(_nvml_handle)
+        drv = pynvml.nvmlSystemGetDriverVersion()
+        logger.info("pynvml OK | name=%s | driver=%s", name, drv)
+    except Exception:
+        logger.info("pynvml OK")
+except Exception as e:
     _nvml_ok = False
+    logger.warning("pynvml unavailable: %r", e)
 
 def _nvml_mem_mb():
-    if not _nvml_ok:
+    if not _nvml_ok or _nvml_handle is None:
         return None
     try:
         info = pynvml.nvmlDeviceGetMemoryInfo(_nvml_handle)
         return float(info.used / (1024.0*1024.0)), float(info.total / (1024.0*1024.0))
     except Exception:
         return None
-
-def _nvml_stats_all():
-    if not _nvml_ok:
-        return None
-    out: Dict[str, Any] = {}
-    try:
-        util = pynvml.nvmlDeviceGetUtilizationRates(_nvml_handle)
-        out["util"] = {"gpu": float(util.gpu), "mem": float(util.memory)}
-    except Exception:
-        pass
-    try:
-        temp = pynvml.nvmlDeviceGetTemperature(_nvml_handle, pynvml.NVML_TEMPERATURE_GPU)
-        out["tempC"] = float(temp)
-    except Exception:
-        pass
-    try:
-        out["clocks"] = {
-            "graphics": float(pynvml.nvmlDeviceGetClockInfo(_nvml_handle, pynvml.NVML_CLOCK_GRAPHICS)),
-            "sm": float(pynvml.nvmlDeviceGetClockInfo(_nvml_handle, pynvml.NVML_CLOCK_SM)),
-            "mem": float(pynvml.nvmlDeviceGetClockInfo(_nvml_handle, pynvml.NVML_CLOCK_MEM)),
-        }
-    except Exception:
-        pass
-    return out or None
 
 def _human_bytes(n: int) -> str:
     try:
@@ -198,53 +351,117 @@ def _human_bytes(n: int) -> str:
         s += 1
     return f"{f:.2f} {units[s]}"
 
-GPU_NAME = "cpu"
+# ──────────────────────────────────────────────────────────────────────────────
+# CTranslate2 GPU PROBE (IMPORTANT) - faster-whisper uses ctranslate2 for CUDA
+# ──────────────────────────────────────────────────────────────────────────────
+_CT2_OK = False
+_CT2_VER = None
+_CT2_CUDA_COUNT = 0
+_CT2_CUDA_COMPUTE_TYPES = None
+_CT2_ERR = None
+
 try:
-    import torch as _torch
-    import torch.nn.functional as _F
+    import ctranslate2  # type: ignore
+    _CT2_OK = True
+    _CT2_VER = getattr(ctranslate2, "__version__", None)
+    try:
+        _CT2_CUDA_COUNT = int(ctranslate2.get_cuda_device_count())
+    except Exception:
+        _CT2_CUDA_COUNT = 0
+    try:
+        fn = getattr(ctranslate2, "get_supported_compute_types", None)
+        if callable(fn):
+            _CT2_CUDA_COMPUTE_TYPES = list(fn("cuda"))
+    except Exception:
+        _CT2_CUDA_COMPUTE_TYPES = None
+
+    logger.info("ctranslate2 OK | version=%s | cuda_device_count=%d | cuda_compute_types=%s",
+                _CT2_VER, _CT2_CUDA_COUNT, _CT2_CUDA_COMPUTE_TYPES if _CT2_CUDA_COMPUTE_TYPES is not None else "-")
+except Exception as e:
+    _CT2_OK = False
+    _CT2_ERR = repr(e)
+    logger.error("ctranslate2 import failed: %s", _CT2_ERR)
+    if _MAIN_PROCESS:
+        logger.error("If ct2 import fails on Windows, ensure torch\\lib + conda Library\\bin are in PATH or set WIN_DLL_BOOTSTRAP=1.")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# torch (OPTIONAL): only for optional GPU audio pipeline/stats; not for STT GPU decision
+# ──────────────────────────────────────────────────────────────────────────────
+GPU_NAME = "cpu"
+_torch_available = False
+_torch_err = None
+try:
+    import torch as _torch  # type: ignore
+    import torch.nn.functional as _F  # type: ignore
     _torch_available = True
-except Exception:
+    logger.info("torch OK | version=%s | cuda_is_available=%s",
+                getattr(_torch, "__version__", "?"),
+                bool(getattr(_torch.cuda, "is_available", lambda: False)()))
+except Exception as e:
     _torch_available = False
+    _torch_err = repr(e)
+    logger.warning("torch unavailable (OK): %s", _torch_err)
 
 def _init_gpu_or_fail():
+    """
+    GPU requirement chuẩn:
+    - Nếu REQUIRE_GPU=1 thì bắt buộc ctranslate2 cuda_device_count > 0 và STT_DEVICE phải là cuda/auto.
+    - Không dùng torch để quyết định STT GPU.
+    """
     global STT_DEVICE, GPU_NAME
+
+    want = (STT_DEVICE or "cuda").strip().lower()
+    if want not in {"cuda","cpu","auto"}:
+        logger.warning("Invalid STT_DEVICE=%s -> force 'cuda'", want)
+        want = "cuda"
+
+    logger.info("Model config: STT_MODEL=%s | DEVICE=%s | REQUIRE_GPU=%s | CT=%s | CT_FALLBACK=%s | LANG=%s",
+                STT_MODEL, want, REQUIRE_GPU, STT_COMPUTE_TYPE, STT_COMPUTE_FALLBACK, STT_LANGUAGE)
+    logger.info("HF_HUB_OFFLINE=%s", os.getenv("HF_HUB_OFFLINE"))
+    logger.info("FORCE_REALTIME_PACE=%s MAX_BUF_MS=%s DROP_BUF_TO_MS=%s", FORCE_REALTIME_PACE, MAX_BUF_MS, DROP_BUF_TO_MS)
+
+    if not _CT2_OK:
+        logger.error("ctranslate2 is required for faster-whisper. Import failed: %s", _CT2_ERR)
+        logger.error("Fix: ensure WIN_DLL_BOOTSTRAP=1 (default) or PATH includes torch\\lib + conda Library\\bin.")
+        sys.exit(1)
+
+    if want == "auto":
+        want = "cuda" if _CT2_CUDA_COUNT > 0 else "cpu"
+
+    if REQUIRE_GPU:
+        if want != "cuda":
+            logger.error("REQUIRE_GPU=1 but STT_DEVICE resolved to %s (not cuda) -> exit", want)
+            sys.exit(1)
+        if _CT2_CUDA_COUNT <= 0:
+            logger.error("REQUIRE_GPU=1 but ctranslate2 reports cuda_device_count=0 -> cannot run STT on GPU.")
+            sys.exit(1)
+
+    STT_DEVICE = want
     if STT_DEVICE == "cuda":
-        if not _torch_available or not hasattr(_torch, "cuda") or not _torch.cuda.is_available():
-            if os.getenv("REQUIRE_GPU", "1").lower() in {"1","true","yes"}:
-                sys.exit(1)
-            else:
-                STT_DEVICE = "cpu"
-                return
-        try: _torch.cuda.set_device(int(os.getenv("GPU_ID","0")))
-        except Exception: pass
-        try:
-            if os.getenv("ENABLE_TF32","1").lower() in {"1","true","yes"} and hasattr(_torch.backends,"cuda") and hasattr(_torch.backends.cuda,"matmul"):
-                _torch.backends.cuda.matmul.allow_tf32 = True
-            if hasattr(_torch, "set_float32_matmul_precision"):
-                _torch.set_float32_matmul_precision("high")
-        except Exception: pass
-        try:
-            a = _torch.ones((256,256), device="cuda"); b = _torch.ones((256,256), device="cuda")
-            _ = a @ b; _torch.cuda.synchronize()
-            del a,b,_
-        except Exception: pass
-        try:
-            GPU_NAME = _torch.cuda.get_device_name()
-        except Exception:
-            GPU_NAME = "cuda"
+        GPU_NAME = "cuda"
+        if _nvml_ok and _nvml_handle is not None:
+            try:
+                GPU_NAME = str(pynvml.nvmlDeviceGetName(_nvml_handle))
+            except Exception:
+                GPU_NAME = "cuda"
+        logger.info("STT will run on GPU via ctranslate2 | cuda_device_count=%d | gpu_name=%s",
+                    _CT2_CUDA_COUNT, GPU_NAME)
     else:
-        if os.getenv("REQUIRE_GPU","1").lower() in {"1","true","yes"}:
+        GPU_NAME = "cpu"
+        if REQUIRE_GPU:
+            logger.error("REQUIRE_GPU=1 but resolved STT_DEVICE=cpu -> exit")
             sys.exit(1)
 
 _init_gpu_or_fail()
 
-_client_lock: Optional[asyncio.Lock] = None
-_active_client = None
+# Import RealtimeSTT after bootstrap
+from RealtimeSTT import AudioToTextRecorder  # type: ignore
 
-from RealtimeSTT import AudioToTextRecorder
-
+# ──────────────────────────────────────────────────────────────────────────────
+# Tokenizer for micro-delta patching
+# ──────────────────────────────────────────────────────────────────────────────
 try:
-    import regex as _re_u
+    import regex as _re_u  # type: ignore
     _TK = _re_u.compile(r"([\p{L}\p{M}\p{N}’'_]+|[.,!?…;:]+|[\"“”()–—-])(\s*)", _re_u.UNICODE)
     def _token_units(s: str):
         out = []
@@ -284,7 +501,8 @@ def _units_with_norms(s: str):
 def _overlap_suffix_prefix(a_norms: List[str], b_norms: List[str]) -> int:
     maxl = min(len(a_norms), len(b_norms))
     for l in range(maxl, -1, -1):
-        if l == 0: return 0
+        if l == 0:
+            return 0
         if a_norms[-l:] == b_norms[:l]:
             return l
     return 0
@@ -293,127 +511,78 @@ async def _ws_send(ws, obj: dict):
     try:
         await ws.send(json.dumps(obj, ensure_ascii=False))
     except websockets.exceptions.ConnectionClosed:
-        pass
+        logger.debug("ws_send: connection closed")
+    except Exception as e:
+        logger.debug("ws_send error: %r", e)
 
 def _apply_agc_peak_cpu(x: np.ndarray) -> np.ndarray:
-    if x.size == 0: return x
+    if x.size == 0:
+        return x
     peak = float(np.max(np.abs(x)))
-    if peak <= 1e-6 or peak >= AGC_TARGET_PEAK: return x
+    if peak <= 1e-6 or peak >= AGC_TARGET_PEAK:
+        return x
     gain = min(AGC_MAX_GAIN, AGC_TARGET_PEAK / max(peak, 1e-6))
     return np.clip(x * gain, -1.0, 1.0)
 
 def _resample_cpu_to_16k(f32: np.ndarray, src_sr: int) -> np.ndarray:
-    if f32.size == 0: return f32
-    if src_sr == TGT_SR: return f32.astype(np.float32, copy=False)
+    if f32.size == 0:
+        return f32
+    if src_sr == TGT_SR:
+        return f32.astype(np.float32, copy=False)
+
     if _RESAMPLE_USES_SCIPY and src_sr == 48000 and TGT_SR == 16000:
         y = resample_poly(f32, up=1, down=3).astype(np.float32, copy=False)
     elif _RESAMPLE_USES_SCIPY and src_sr % TGT_SR == 0:
         y = resample_poly(f32, up=1, down=src_sr // TGT_SR).astype(np.float32, copy=False)
     else:
-        if librosa is None:
+        if 'librosa' not in globals() or globals().get("librosa") is None:
             r = TGT_SR / float(src_sr)
             tgt_len = max(1, int(round(len(f32) * r)))
             xp = np.linspace(0, 1, len(f32), endpoint=False)
             xq = np.linspace(0, 1, tgt_len, endpoint=False)
             y = np.interp(xq, xp, f32).astype(np.float32, copy=False)
         else:
-            y = librosa.resample(f32, orig_sr=src_sr, target_sr=TGT_SR).astype(np.float32, copy=False)
+            y = globals()["librosa"].resample(f32, orig_sr=src_sr, target_sr=TGT_SR).astype(np.float32, copy=False)
+
     return np.nan_to_num(y, nan=0.0, posinf=1.0, neginf=-1.0)
 
-def _resample_agc_gpu(f32: np.ndarray, src_sr: int) -> np.ndarray:
-    if not _torch_available or STT_DEVICE != "cuda" or f32.size == 0:
-        return f32
-    try:
-        t = _torch.from_numpy(f32.astype(np.float32, copy=False)).to("cuda", non_blocking=True)
-        t = t.unsqueeze(0).unsqueeze(0)  # [1,1,L]
-        L_in = t.shape[-1]
-        L_out = L_in if src_sr == TGT_SR else max(1, int(round(L_in * (TGT_SR / float(src_sr)))))
-        if L_out != L_in:
-            t = _F.interpolate(t, size=L_out, mode="linear", align_corners=False)
-        t = t.squeeze(0).squeeze(0)
-        if ENABLE_AGC:
-            peak = _torch.max(_torch.abs(t))
-            if float(peak) > 1e-6 and float(peak) < AGC_TARGET_PEAK:
-                gain = min(AGC_MAX_GAIN, AGC_TARGET_PEAK / float(peak))
-                t = _torch.clamp(t * gain, -1.0, 1.0)
-        y = t.detach().to("cpu", non_blocking=True).numpy().astype(np.float32, copy=False)
-        return np.nan_to_num(y, nan=0.0, posinf=1.0, neginf=-1.0)
-    except Exception:
-        if ENABLE_AGC:
-            return _apply_agc_peak_cpu(_resample_cpu_to_16k(f32, src_sr))
-        return _resample_cpu_to_16k(f32, src_sr)
-
 def _resample_to_16k(f32: np.ndarray, src_sr: int) -> np.ndarray:
-    if f32.size == 0: return f32
-    if _torch_available and STT_DEVICE == "cuda" and os.getenv("GPU_AUDIO_PIPELINE","1").lower() in {"1","true","yes"}:
-        return _resample_agc_gpu(f32, src_sr)
+    if f32.size == 0:
+        return f32
     y = _resample_cpu_to_16k(f32, src_sr)
     if ENABLE_AGC and y.size:
         y = _apply_agc_peak_cpu(y)
     return y
 
-def _bytes_to_f32_auto(b: bytes, force_dtype: Optional[Literal["i16","f32"]]=None) -> np.ndarray:
-    if not b: return np.empty(0, dtype=np.float32)
+def _bytes_to_f32_auto(b: bytes, force_dtype: Optional[Literal["i16","f32"]] = None) -> np.ndarray:
+    if not b:
+        return np.empty(0, dtype=np.float32)
+
     if force_dtype == "i16":
         f = np.frombuffer(b, dtype=np.int16).astype(np.float32) / 32768.0
         return np.nan_to_num(f, nan=0.0, posinf=1.0, neginf=-1.0)
     if force_dtype == "f32":
         f = np.frombuffer(b, dtype=np.float32)
         return np.nan_to_num(f, nan=0.0, posinf=1.0, neginf=-1.0)
+
+    # heuristic
     if len(b) % 4 == 0:
         f32 = np.frombuffer(b, dtype=np.float32)
         if f32.size and float(np.mean(np.abs(f32) <= 1.5)) > 0.9:
             return np.nan_to_num(f32, nan=0.0, posinf=1.0, neginf=-1.0)
+
     i16 = np.frombuffer(b, dtype=np.int16)
     f = i16.astype(np.float32) / 32768.0
     return np.nan_to_num(f, nan=0.0, posinf=1.0, neginf=-1.0)
 
-def _encode_f32_to_dtype(x: np.ndarray, dtype: Optional[Literal["i16","f32"]]) -> bytes:
-    if x.size == 0: return b""
-    x = np.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
-    if dtype == "f32":
-        return x.astype(np.float32, copy=False).tobytes()
-    return (np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16, copy=False).tobytes()
-
-def _guess_dtype_from_bytes(b: bytes) -> Literal["i16","f32"]:
-    if len(b) % 4 == 0:
-        f32 = np.frombuffer(b, dtype=np.float32)
-        if f32.size and float(np.mean(np.abs(f32) <= 1.5)) > 0.9:
-            return "f32"
-    return "i16"
-
-def _edge_trim_low_rms(raw: bytes, sr: int, dtype_hint: Optional[Literal["i16","f32"]], max_trim_ms: int, rms_thresh: float) -> Tuple[bytes, int]:
-    if not raw or max_trim_ms <= 0:
-        return raw, 0
-    dt = dtype_hint or _guess_dtype_from_bytes(raw)
-    x = _bytes_to_f32_auto(raw, force_dtype=dt)
-    n = x.size
-    seg = max(1, int(sr * max_trim_ms / 1000.0))
-    if n < seg * 2:
-        return raw, 0
-    head = x[:seg]; tail = x[-seg:]
-    def _rms(a: np.ndarray) -> float:
-        if a.size == 0: return 0.0
-        r = float(np.sqrt(np.mean(a*a)))
-        return 0.0 if (math.isnan(r) or math.isinf(r)) else r
-    rms_h = _rms(head); rms_t = _rms(tail)
-    if rms_h < rms_t and rms_h <= rms_thresh:
-        y = x[seg:]
-        trimmed = _encode_f32_to_dtype(y, dt)
-        return trimmed, len(raw) - len(trimmed)
-    if rms_t <= rms_thresh:
-        y = x[:-seg]
-        trimmed = _encode_f32_to_dtype(y, dt)
-        return trimmed, len(raw) - len(trimmed)
-    return raw, 0
-
 def _f32_to_bytes_i16(x: np.ndarray) -> bytes:
-    if x.size == 0: return b""
+    if x.size == 0:
+        return b""
     x = np.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
     return (np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16, copy=False).tobytes()
 
+# history sentences
 SENT_RE = re.compile(r'[^.!?…]*[.!?…]+(?:["”’\']+)?(?:\s+|$)')
-
 def split_sentences_and_tail(text: str):
     sents = []
     last_end = 0
@@ -423,15 +592,46 @@ def split_sentences_and_tail(text: str):
     tail = text[last_end:]
     return sents, tail
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Single-client lock
+# ──────────────────────────────────────────────────────────────────────────────
+_client_lock: Optional[asyncio.Lock] = None
+_active_client = None
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Real-time pacer (prevents burst feeding)
+# ──────────────────────────────────────────────────────────────────────────────
+class _RealTimePacer:
+    def __init__(self, sr: int):
+        self.sr = sr
+        self.t0 = time.perf_counter()
+        self.playhead = self.t0
+
+    async def sleep_for_samples(self, nsamp: int):
+        if not FORCE_REALTIME_PACE:
+            return
+        dur = float(nsamp) / float(self.sr)
+        self.playhead += dur
+        now = time.perf_counter()
+        delay = self.playhead - now
+        if delay > 0:
+            await asyncio.sleep(delay)
+        else:
+            self.playhead = now
+
 async def handler(websocket):
     global _active_client, _client_lock
 
     client = websocket.remote_address
+    sess_id = f"{client[0]}:{client[1]}" if isinstance(client, (tuple, list)) and len(client) >= 2 else str(client)
+    logger.info("[%s] connect", sess_id)
+
     if _client_lock is None:
         _client_lock = asyncio.Lock()
 
     async with _client_lock:
         if _active_client is not None:
+            logger.warning("[%s] reject: busy (active=%s)", sess_id, _active_client)
             await _ws_send(websocket, {"type": "error", "error": "Server bận"})
             await websocket.close(code=1013, reason="busy")
             return
@@ -440,9 +640,16 @@ async def handler(websocket):
     loop = asyncio.get_running_loop()
     conn_t0 = time.monotonic()
 
+    # --- helper to schedule async safely from callback threads
+    def _submit(coro):
+        try:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception:
+            logger.debug("[%s] schedule failed:\n%s", sess_id, traceback.format_exc())
+
     last_emitted: str = ""
     emitted_units: List[tuple] = []
-    stable_snapshot = ""        
+    stable_snapshot = ""
 
     ui_e2e_samples: List[float] = []
     ui_e2e_last_ms: float = 0.0
@@ -451,30 +658,31 @@ async def handler(websocket):
 
     warming_until_ts = time.monotonic() + max(0.0, WARMUP_SILENCE_SEC)
 
+    # History
     CHAT_HISTORY_PATH = Path(os.getenv("CHAT_HISTORY_PATH", "conversation_history.txt")).expanduser()
     CHAT_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     truncate = os.getenv("HISTORY_TRUNCATE_ON_START", "1").lower() in {"1","true","yes"}
     if truncate:
         try:
             CHAT_HISTORY_PATH.write_text("", encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[%s] history truncate failed: %r", sess_id, e)
     else:
-        CHAT_HISTORY_PATH.touch(exist_ok=True)
+        try:
+            CHAT_HISTORY_PATH.touch(exist_ok=True)
+        except Exception as e:
+            logger.debug("[%s] history touch failed: %r", sess_id, e)
 
     history_q: asyncio.Queue = asyncio.Queue()
-    written_sent_count = 0  
+    written_sent_count = 0
 
     async def _history_writer():
         nonlocal written_sent_count
         if not truncate:
             try:
                 existing = CHAT_HISTORY_PATH.read_text("utf-8")
-                if "\n" in existing:
-                    written_sent_count = sum(1 for ln in existing.splitlines() if ln.strip())
-                else:
-                    sents, _ = split_sentences_and_tail(existing)
-                    written_sent_count = len(sents)
+                sents, _ = split_sentences_and_tail(existing)
+                written_sent_count = len([s for s in sents if s.strip()])
             except Exception:
                 written_sent_count = 0
 
@@ -487,7 +695,7 @@ async def handler(websocket):
                     continue
 
                 sents, _tail = split_sentences_and_tail(full_stable)
-                target = max(0, len(sents) - 1) 
+                target = max(0, len(sents) - 1)  # keep last tail uncommitted
 
                 if target > written_sent_count:
                     new_sents = sents[written_sent_count:target]
@@ -500,15 +708,19 @@ async def handler(websocket):
                             f.flush()
                             os.fsync(f.fileno())
                         written_sent_count = target
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as e:
+                        logger.debug("[%s] history write failed: %r", sess_id, e)
+        except Exception as e:
+            logger.debug("[%s] history writer crashed: %r", sess_id, e)
 
     history_task = asyncio.create_task(_history_writer())
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Patch emitter
+    # ──────────────────────────────────────────────────────────────────────────
     async def _emit_patch_chunked(delete_chars: int, units: List[tuple]):
         nonlocal last_emitted, emitted_units
+
         if not units:
             if delete_chars:
                 await _ws_send(websocket, {"type": "patch", "delete": int(delete_chars), "insert": ""})
@@ -539,9 +751,11 @@ async def handler(websocket):
                     delete_chars = 0
                 last_emitted += insert_text
                 emitted_units.extend(buf)
-                buf = [u]; cur_len = l
+                buf = [u]
+                cur_len = l
             else:
-                buf.append(u); cur_len += l
+                buf.append(u)
+                cur_len += l
 
         if buf:
             insert_text = "".join(x[0] for x in buf)
@@ -553,23 +767,24 @@ async def handler(websocket):
 
     def _patch_from_model_text(t: str, window: int = int(os.getenv("MUTABLE_WINDOW_TOKENS", "7"))):
         nonlocal last_emitted, emitted_units, ui_e2e_last_ms, last_audio_enq_ts, ui_e2e_samples, warming_until_ts, fed_enq_watermark_ts
-        SPACE_GUARD = os.getenv("SPACE_GUARD", "1").strip().lower() in {"1","true","yes"}
 
         if time.monotonic() < warming_until_ts:
             return
 
         t = (t or "").strip()
-        if not t: return
+        if not t:
+            return
+
         _ref_ts = fed_enq_watermark_ts if fed_enq_watermark_ts is not None else last_audio_enq_ts
         if _ref_ts is not None:
             ui_e2e_last_ms = (time.monotonic() - _ref_ts) * 1000.0
-            if 0.0 < ui_e2e_last_ms < 2000.0:
+            if 0.0 < ui_e2e_last_ms < 3000.0:
                 ui_e2e_samples.append(ui_e2e_last_ms)
 
         new_units = _units_with_norms(t)
 
         if not emitted_units:
-            loop.call_soon_threadsafe(asyncio.create_task, _emit_patch_chunked(0, list(new_units)))
+            _submit(_emit_patch_chunked(0, list(new_units)))
             return
 
         window = max(1, int(window))
@@ -579,6 +794,8 @@ async def handler(websocket):
         old_tail_norms = [u[2] for u in old_tail_units]
         new_tail_norms = [u[2] for u in new_tail_units]
         l = _overlap_suffix_prefix(old_tail_norms, new_tail_norms)
+
+        SPACE_GUARD = os.getenv("SPACE_GUARD", "1").strip().lower() in {"1","true","yes"}
 
         if l > 0:
             to_delete_units = old_tail_units[l:]
@@ -595,7 +812,7 @@ async def handler(websocket):
             prefix_keep = emitted_units[:len(emitted_units) - len(old_tail_units)]
             keep_suffix = old_tail_units[:l]
             emitted_units[:] = prefix_keep + keep_suffix
-            loop.call_soon_threadsafe(asyncio.create_task, _emit_patch_chunked(chars_to_delete, to_insert_units))
+            _submit(_emit_patch_chunked(chars_to_delete, to_insert_units))
         else:
             to_insert_units = list(new_units)
             if SPACE_GUARD and to_insert_units:
@@ -604,8 +821,9 @@ async def handler(websocket):
                     if first_emit and first_emit[0].isalnum():
                         fe = to_insert_units[0]
                         to_insert_units[0] = (" " + fe[0], fe[1], fe[2])
-            loop.call_soon_threadsafe(asyncio.create_task, _emit_patch_chunked(0, to_insert_units))
+            _submit(_emit_patch_chunked(0, to_insert_units))
 
+    # Callbacks (called from RealtimeSTT threads!)
     def _on_update_cb(text: str):
         _patch_from_model_text(text)
 
@@ -614,12 +832,12 @@ async def handler(websocket):
         if time.monotonic() < warming_until_ts:
             return
         t = (text or "").strip()
-        if not t: return
+        if not t:
+            return
         if len(t) >= len(stable_snapshot):
             stable_snapshot = t
-        loop.call_soon_threadsafe(asyncio.create_task,
-            _ws_send(websocket, {"type": "stable", "full": stable_snapshot})
-        )
+
+        _submit(_ws_send(websocket, {"type": "stable", "full": stable_snapshot}))
         try:
             history_q.put_nowait(stable_snapshot)
         except Exception:
@@ -627,6 +845,8 @@ async def handler(websocket):
         _patch_from_model_text(t)
 
     def _make_recorder(ct: str) -> AudioToTextRecorder:
+        logger.info("[%s] init recorder: model=%s device=%s compute_type=%s lang=%s",
+                    sess_id, STT_MODEL, STT_DEVICE, ct, STT_LANGUAGE)
         return AudioToTextRecorder(
             use_microphone=False,
             device=STT_DEVICE,
@@ -644,28 +864,37 @@ async def handler(websocket):
             on_realtime_transcription_stabilized=_on_stable_cb,
         )
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Init recorder
+    # ──────────────────────────────────────────────────────────────────────────
     try:
         try:
             recorder = _make_recorder(STT_COMPUTE_TYPE)
-        except ValueError:
+        except ValueError as e:
+            logger.warning("[%s] compute_type=%s failed (%r) -> fallback=%s",
+                           sess_id, STT_COMPUTE_TYPE, e, STT_COMPUTE_FALLBACK)
             recorder = _make_recorder(STT_COMPUTE_FALLBACK)
+
         if hasattr(recorder, "start"):
             recorder.start()
+            logger.info("[%s] recorder.start OK", sess_id)
+
         if WARMUP_SILENCE_SEC > 0:
+            logger.info("[%s] warmup silence %.3fs", sess_id, WARMUP_SILENCE_SEC)
             silence = np.zeros(int(WARMUP_SILENCE_SEC * TGT_SR), dtype=np.float32)
             t = 0
             while t + FRAME_SAMPLES_BASE <= silence.size:
                 frame = silence[t:t+FRAME_SAMPLES_BASE]
                 recorder.feed_audio(_f32_to_bytes_i16(frame))
                 t += FRAME_SAMPLES_BASE
+
     except Exception as e:
+        logger.error("[%s] INIT FAILED: %r\n%s", sess_id, e, traceback.format_exc())
         await _ws_send(websocket, {"type": "error", "error": f"Init lỗi: {e}"})
         await websocket.close(code=1011, reason="init failed")
-        if _client_lock is None:
-            pass
-        else:
-            async with _client_lock:
-                if _active_client == client: _active_client = None
+        async with _client_lock:
+            if _active_client == client:
+                _active_client = None
         try:
             await history_q.put(None)
             await asyncio.wait_for(history_task, timeout=3.0)
@@ -673,96 +902,33 @@ async def handler(websocket):
             pass
         return
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Session vars
+    # ──────────────────────────────────────────────────────────────────────────
     session_src_sr = DEFAULT_SRC_SR
     session_force_dtype: Optional[Literal["i16","f32"]] = None
     session_started = False
-    queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAX)
 
+    queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAX)
     queue_bytes_total = 0
     qbytes_max = 0
 
-    items_processed = 0
     items_enqueued = 0
+    items_processed = 0
     frames_fed_total = 0
-    pace_toggles = 0
-    last_pace_state_change = time.monotonic()
-    pace_hold_dashes = 0
 
-    qsize_ema = 0.0
-    last_ema_t = time.monotonic()
-
-    stage_ms_ema = 0.0
-    last_stage_ema_t = time.monotonic()
-
-    cur_disable_q = PACE_DISABLE_Q
-    cur_resume_q  = PACE_RESUME_Q
-    cur_dwell_ms  = PACE_MIN_DWELL_MS
-
-    cur_prebuf_lo = PREBUF_LO_MS_BASE
-    cur_prebuf_hi = PREBUF_HI_MS_BASE
-    _EPS = 1e-6
-
-    feed_stride = 1
-    coalesce_easy_ok_windows = 0
-
-    cur_qbytes_cap = QBYTES_HARD_CAP
-
-    near_drop_count_total = 0
-    near_drop_count_prev = 0
-    near_drop_max_pct_window = 0.0
-
-    net_bytes_enq_total = 0
-    near_drop_last_ts = 0.0
-    near_drop_last_bytes = 0
-    NEAR_DROP_COOLDOWN = 1.0
-
-    dash_id = 0
-    dash_start_t = time.monotonic()
-    dash_frames0 = 0
-    dash_bytes_enq0 = 0
-    dash_bytes_deq0 = 0
-    bytes_enq_cum = 0
-    bytes_deq_cum = 0
-    qsize_min = 10**9
-    qsize_max = 0
-    qsize_sum = 0
-    qsize_samples = 0
-    e2e_lat_sum = 0.0
-    e2e_lat_max = 0.0
-    e2e_samples: List[float] = []
-
-    rms_total_frames = 0
-    rms_speech_frames = 0
-
-    drops_qguard = 0
-    drops_qbytes = 0
-    trims_qguard = 0
-    drops_qguard_prev = 0
-    drops_qbytes_prev = 0
-    trims_qguard_prev = 0
-
-    low_latency_mode = False
-    low_latency_hold = 0
-    overload_hit_windows = 0
-
-    prebuf_up_windows = 0
-    prebuf_down_windows = 0
-
-    severe_stride1_hold = 0
-    recent_p90_stage_ms = 0.0
-
-    STATUS_INTERVAL_SEC = float(os.getenv("STATUS_INTERVAL_SEC", "0.5"))
-    DASH_INTERVAL_SEC = float(os.getenv("DASH_INTERVAL_SEC", "5"))
-    LOG_ITEM_EVERY_N = int(os.getenv("LOG_ITEM_EVERY_N", "10")) 
-
+    # Float buffer + segment timestamps for e2e watermark
     bufq: deque = deque()
     buf_samples: int = 0
+    pending_segments = deque()  # each: [nsamp, enq_ts]
 
-    def _bufq_append(arr: np.ndarray):
+    def _bufq_append(arr: np.ndarray, enq_ts: float):
         nonlocal buf_samples
-        if arr.size == 0: return
+        if arr.size == 0:
+            return
         bufq.append(arr)
         buf_samples += int(arr.size)
+        pending_segments.append([int(arr.size), float(enq_ts)])
 
     def _bufq_available() -> int:
         return buf_samples
@@ -786,180 +952,92 @@ async def handler(websocket):
             buf_samples -= take
         return out
 
+    def _consume_segments(samples_to_consume: int):
+        nonlocal fed_enq_watermark_ts
+        remain = int(max(0, samples_to_consume))
+        last_ts = None
+        while remain > 0 and pending_segments:
+            seg_len, seg_ts = pending_segments[0]
+            if seg_len <= remain:
+                remain -= seg_len
+                last_ts = seg_ts
+                pending_segments.popleft()
+            else:
+                pending_segments[0][0] = seg_len - remain
+                last_ts = seg_ts
+                remain = 0
+        if last_ts is not None:
+            fed_enq_watermark_ts = last_ts
+
     def _buf_ms_now() -> float:
         return (_bufq_available() / float(TGT_SR)) * 1000.0
 
-    def _buf_clear():
-        nonlocal bufq, buf_samples
-        bufq.clear()
-        buf_samples = 0
+    def _buf_drop_oldest_to_ms(target_ms: float):
+        """
+        Drop (discard) oldest audio so buffer ~= target_ms.
+        Important: this keeps RealtimeSTT truly realtime instead of feeding bursts.
+        """
+        nonlocal buf_samples
+        target_ms = max(0.0, float(target_ms))
+        target_samples = int((target_ms / 1000.0) * TGT_SR)
+        cur = _bufq_available()
+        if cur <= target_samples:
+            return
+        drop = cur - target_samples
+        # discard samples
+        while drop > 0 and bufq:
+            head = bufq[0]
+            take = min(drop, head.size)
+            if take == head.size:
+                bufq.popleft()
+            else:
+                bufq[0] = head[take:]
+            drop -= take
+            buf_samples -= take
+            _consume_segments(take)  # advance watermark even when dropping
 
-    def _percentiles(vals: List[float], ps: List[float]) -> List[float]:
-        if not vals: return [0.0 for _ in ps]
-        v = np.array(vals, dtype=np.float64)
-        return [float(np.percentile(v, p)) for p in ps]
-
-    def _try_set_low_latency(rec, enable: bool):
-        nonlocal low_latency_mode
-        if enable and not low_latency_mode:
-            ok = False
-            try:
-                if hasattr(rec, "set_realtime_options"):
-                    rec.set_realtime_options(beam_size=1); ok = True
-                elif hasattr(rec, "set_decode_options"):
-                    rec.set_decode_options(beam_size=1); ok = True
-                elif hasattr(rec, "beam_size"):
-                    setattr(rec, "beam_size", 1); ok = True
-            except Exception:
-                ok = False
-            low_latency_mode = ok or low_latency_mode
-        elif (not enable) and low_latency_mode:
-            ok = False
-            try:
-                if hasattr(rec, "set_realtime_options"):
-                    rec.set_realtime_options(beam_size=2); ok = True
-                elif hasattr(rec, "set_decode_options"):
-                    rec.set_decode_options(beam_size=2); ok = True
-                elif hasattr(rec, "beam_size"):
-                    setattr(rec, "beam_size", 2); ok = True
-            except Exception:
-                ok = False
-            if ok:
-                low_latency_mode = False
-
+    # Feed worker (real-time pacing)
     async def feed_worker():
-        nonlocal queue_bytes_total, qbytes_max, cur_qbytes_cap
-        nonlocal items_processed, frames_fed_total, pace_toggles
-        nonlocal dash_id, dash_start_t, dash_frames0, dash_bytes_enq0, dash_bytes_deq0
-        nonlocal bytes_enq_cum, bytes_deq_cum
-        nonlocal qsize_min, qsize_max, qsize_sum, qsize_samples, e2e_lat_sum, e2e_lat_max, e2e_samples
-        nonlocal last_pace_state_change, qsize_ema, last_ema_t, pace_hold_dashes
-        nonlocal cur_disable_q, cur_resume_q, cur_dwell_ms
-        nonlocal cur_prebuf_lo, cur_prebuf_hi, _EPS
-        nonlocal feed_stride, coalesce_easy_ok_windows
-        nonlocal rms_total_frames, rms_speech_frames
-        nonlocal low_latency_mode, low_latency_hold, overload_hit_windows
-        nonlocal ui_e2e_last_ms, ui_e2e_samples
-        nonlocal drops_qguard_prev, drops_qbytes_prev, trims_qguard_prev
-        nonlocal near_drop_count_total, near_drop_count_prev, near_drop_max_pct_window
-        nonlocal severe_stride1_hold
-        nonlocal fed_enq_watermark_ts
-        nonlocal prebuf_up_windows, prebuf_down_windows
-        nonlocal recent_p90_stage_ms
-        nonlocal stage_ms_ema, last_stage_ema_t
+        nonlocal queue_bytes_total, qbytes_max, items_processed, frames_fed_total
 
-        fed_frames = 0
-        pending_segments = deque() 
-
-        def _consume_segments(samples_to_consume: int):
-            nonlocal fed_enq_watermark_ts
-            remain = int(max(0, samples_to_consume))
-            last_ts = None
-            while remain > 0 and pending_segments:
-                seg_len, seg_ts = pending_segments[0]
-                if seg_len <= remain:
-                    remain -= seg_len
-                    last_ts = seg_ts
-                    pending_segments.popleft()
-                else:
-                    pending_segments[0][0] = seg_len - remain
-                    last_ts = seg_ts
-                    remain = 0
-            if last_ts is not None:
-                fed_enq_watermark_ts = last_ts
-
+        pacer = _RealTimePacer(TGT_SR)
+        last_log_t = time.monotonic()
         last_status_t = time.monotonic()
-        last_dash_t = last_status_t
-
-        if PACE_MODE == "on":
-            pace_realtime = True
-        elif PACE_MODE == "off":
-            pace_realtime = False
-        else:
-            pace_realtime = True if not PACE_REALTIME_LEGACY else True
-
-        qsize_ema = float(queue.qsize())
-        last_ema_t = time.monotonic()
 
         try:
             while True:
-                now_m = time.monotonic()
-
-                q_inst = queue.qsize()
-                dt_ema = max(1e-6, now_m - last_ema_t)
-                if EMA_TAU_SEC <= 1e-6:
-                    qsize_ema = float(q_inst)
-                else:
-                    alpha = math.exp(-dt_ema / EMA_TAU_SEC)
-                    qsize_ema = alpha * qsize_ema + (1.0 - alpha) * float(q_inst)
-                last_ema_t = now_m
-
-                in_grace = (now_m - conn_t0) < GRACE_SEC
-                if PACE_MODE == "auto":
-                    hold_base = 2 if qsize_ema < 0.5 else 1
-                    dwell_ok = (now_m - last_pace_state_change) * 1000.0 >= cur_dwell_ms
-                    can_toggle = (pace_hold_dashes == 0)
-                    if in_grace:
-                        if pace_realtime and can_toggle:
-                            pace_realtime = False
-                            pace_toggles += 1
-                            last_pace_state_change = now_m
-                            pace_hold_dashes = hold_base
-                    else:
-                        if pace_realtime and dwell_ok and can_toggle and qsize_ema >= cur_disable_q:
-                            pace_realtime = False
-                            pace_toggles += 1
-                            last_pace_state_change = now_m
-                            pace_hold_dashes = hold_base
-                        elif (not pace_realtime) and dwell_ok and can_toggle and qsize_ema <= cur_resume_q:
-                            pace_realtime = True
-                            pace_toggles += 1
-                            last_pace_state_change = now_m
-                            pace_hold_dashes = hold_base
-
                 item = await queue.get()
                 if item is None:
-                    hop = FRAME_SAMPLES_BASE * max(1, feed_stride)
+                    # drain remaining buffer at realtime pace, then tail silence
+                    hop = FRAME_SAMPLES_BASE
                     while _bufq_available() >= hop:
                         frame = _bufq_consume_samples(hop)
                         recorder.feed_audio(_f32_to_bytes_i16(frame))
                         _consume_segments(hop)
-                        step_frames = max(1, hop // FRAME_SAMPLES_BASE)
-                        fed_frames += step_frames; frames_fed_total += step_frames
-                    _buf_clear()
+                        frames_fed_total += 1
+                        await pacer.sleep_for_samples(hop)
 
                     tail = np.zeros(int(TAIL_SILENCE_SEC * TGT_SR), dtype=np.float32)
                     t = 0
-                    while t + FRAME_SAMPLES_BASE <= tail.size:
-                        frame = tail[t:t+FRAME_SAMPLES_BASE]
+                    while t + hop <= tail.size:
+                        frame = tail[t:t+hop]
                         recorder.feed_audio(_f32_to_bytes_i16(frame))
-                        fed_frames += 1; frames_fed_total += 1
-                        t += FRAME_SAMPLES_BASE
+                        frames_fed_total += 1
+                        await pacer.sleep_for_samples(hop)
+                        t += hop
+
+                    logger.info("[%s] feed_worker EOS", sess_id)
                     break
 
                 nbytes_item = int(item.get("nbytes", 0))
                 enq_ts = float(item.get("enq_ts", time.monotonic()))
                 if nbytes_item > 0:
                     queue_bytes_total = max(0, queue_bytes_total - nbytes_item)
-                    bytes_deq_cum += nbytes_item
                 qbytes_max = max(qbytes_max, queue_bytes_total)
 
-                stage_ms = max(0.0, (time.monotonic() - enq_ts) * 1000.0)
-                e2e_lat_sum += stage_ms
-                e2e_lat_max = max(e2e_lat_max, stage_ms)
-                e2e_samples.append(stage_ms)
-
-                dt_stage = max(1e-6, now_m - last_stage_ema_t)
-                if STAGE_EWMA_TAU_SEC <= 1e-6:
-                    stage_ms_ema = stage_ms
-                else:
-                    alpha_s = math.exp(-dt_stage / STAGE_EWMA_TAU_SEC)
-                    stage_ms_ema = alpha_s * stage_ms_ema + (1.0 - alpha_s) * stage_ms
-                last_stage_ema_t = now_m
-
                 buf = item.get("buf", b"")
-                sr  = int(item.get("sr", DEFAULT_SRC_SR))
-                dt  = item.get("dtype", None)
+                sr = int(item.get("sr", DEFAULT_SRC_SR))
+                dt = item.get("dtype", None)
 
                 if isinstance(buf, bytes):
                     f32_src = _bytes_to_f32_auto(buf, force_dtype=dt)
@@ -969,260 +1047,70 @@ async def handler(websocket):
                     f32_src = np.empty(0, dtype=np.float32)
 
                 f32_16k = _resample_to_16k(f32_src, sr) if f32_src.size else f32_src
-
                 if f32_16k.size:
-                    rms = float(np.sqrt(np.mean(f32_16k * f32_16k)))
-                    rms = 0.0 if (math.isnan(rms) or math.isinf(rms)) else rms
-                    rms_total_frames += 1
-                    if rms >= RMS_SPEECH_THRESH:
-                        rms_speech_frames += 1
+                    _bufq_append(f32_16k, enq_ts)
 
-                if f32_16k.size:
-                    _bufq_append(f32_16k)
-                    pending_segments.append([int(f32_16k.size), enq_ts])
+                # If buffer is too large, DROP old audio (keep realtime)
+                if MAX_BUF_MS > 0 and _buf_ms_now() > MAX_BUF_MS:
+                    _buf_drop_oldest_to_ms(DROP_BUF_TO_MS)
 
-                leave_samples = int(max(0.0, cur_prebuf_lo) / 1000.0 * TGT_SR) if ('pace_realtime' in locals() and pace_realtime) else 0
-                hop = FRAME_SAMPLES_BASE * max(1, feed_stride)
-
-                while (_bufq_available() - leave_samples) >= hop:
+                # Feed at most what we can in realtime
+                hop = FRAME_SAMPLES_BASE
+                while _bufq_available() >= hop:
                     frame = _bufq_consume_samples(hop)
                     recorder.feed_audio(_f32_to_bytes_i16(frame))
                     _consume_segments(hop)
-                    step_frames = max(1, hop // FRAME_SAMPLES_BASE)
-                    fed_frames += step_frames; frames_fed_total += step_frames
+                    frames_fed_total += 1
 
-                    if PACE_MODE != "off" and ('pace_realtime' in locals() and pace_realtime):
-                        remaining = _bufq_available()
-                        buf_ms_after = (remaining / float(TGT_SR)) * 1000.0
-                        if buf_ms_after <= cur_prebuf_hi:
-                            await asyncio.sleep(FRAME_MS * max(1, feed_stride) / 1000.0)
-                    elif (fed_frames % 16) == 0:
+                    # Always pace real-time (avoid burst -> RealtimeSTT queue warnings)
+                    await pacer.sleep_for_samples(hop)
+
+                    # allow other tasks
+                    if (frames_fed_total % 8) == 0:
                         await asyncio.sleep(0)
 
                 items_processed += 1
 
-                if PACE_MODE == "auto" and ('pace_realtime' in locals() and pace_realtime):
-                    dynamic_base = max(recent_p90_stage_ms, stage_ms_ema)
-                    dynamic_thresh = max(PACE_CRIT_STAGE_MS, dynamic_base + EARLYCUT_P90_MARGIN_MS)
-                    if stage_ms >= dynamic_thresh and qsize_ema >= (cur_disable_q - 0.5):
-                        if pace_hold_dashes > 0:
-                            pace_hold_dashes = 0
-                        pace_realtime = False
-                        pace_toggles += 1
-                        last_pace_state_change = now_m
-                        hold_base = 2 if qsize_ema < 0.5 else 1
-                        pace_hold_dashes = hold_base
+                now_m = time.monotonic()
+                if now_m - last_log_t >= LOG_STATUS_EVERY:
+                    logger.info("[%s] feed: q=%d bytes=%s buf_ms=%.1f frames=%d ui_e2e=%.1f",
+                                sess_id, queue.qsize(), _human_bytes(queue_bytes_total),
+                                _buf_ms_now(), frames_fed_total, ui_e2e_last_ms)
+                    last_log_t = now_m
 
-                qsize_now = queue.qsize()
-                qsize_min = min(qsize_min, qsize_now)
-                qsize_max = max(qsize_max, qsize_now)
-                qsize_sum += qsize_now; qsize_samples += 1
-
-                buf_ms_now = _buf_ms_now()
-                rss_mb = (_PROC.memory_info().rss / (1024.0*1024.0)) if _PROC else None
-
-                if now_m - last_status_t >= STATUS_INTERVAL_SEC:
-                    gpu_alloc = gpu_resv = None
-                    try:
-                        if STT_DEVICE == "cuda" and _torch_available and _torch.cuda.is_available():
-                            gpu_alloc = float(_torch.cuda.memory_allocated() / (1024.0*1024.0))
-                            gpu_resv  = float(_torch.cuda.memory_reserved() / (1024.0*1024.0))
-                    except Exception:
-                        pass
-
+                if now_m - last_status_t >= float(os.getenv("STATUS_INTERVAL_SEC", "0.5")):
+                    rss_mb = (_PROC.memory_info().rss / (1024.0*1024.0)) if _PROC else None
                     nvml_pair = _nvml_mem_mb()
-                    nvml_extra = _nvml_stats_all()
 
                     detail = {
                         "device": STT_DEVICE,
                         "gpu_name": GPU_NAME,
+                        "ct2_cuda_device_count": int(_CT2_CUDA_COUNT),
                         "frames_total": int(frames_fed_total),
-                        "queue": qsize_now,
-                        "queue_ema": float(qsize_ema),
+                        "queue": int(queue.qsize()),
                         "bytes_in_queue": int(queue_bytes_total),
-                        "qbytes_cap": int(cur_qbytes_cap),
+                        "qbytes_cap": int(QBYTES_HARD_CAP),
                         "qbytes_max": int(qbytes_max),
-                        "buf_ms": float(buf_ms_now),
-                        "pace": "on" if ('pace_realtime' in locals() and pace_realtime) else "off",
-                        "toggles": int(pace_toggles),
-                        "pace_hold": int(pace_hold_dashes),
-                        "toggled_ago_ms": int((now_m - last_pace_state_change) * 1000.0),
-                        "stage_ms_last": float(round(stage_ms, 3)),
-                        "stage_ms_ema": float(round(stage_ms_ema, 3)),
+                        "buf_ms": float(round(_buf_ms_now(), 2)),
                         "ui_e2e_ms_last": float(round(ui_e2e_last_ms, 3)),
-                        "in_grace": bool((time.monotonic() - conn_t0) < GRACE_SEC),
-                        "prebuf_ms": [float(cur_prebuf_lo), float(cur_prebuf_hi)],
-                        "stride": int(feed_stride),
-                        "drops": {"qguard": int(drops_qguard), "qbytes": int(drops_qbytes),
-                                  "trims_qguard": int(trims_qguard),
-                                  "total": int(drops_qguard + drops_qbytes)},
+                        "force_realtime_pace": bool(FORCE_REALTIME_PACE),
+                        "max_buf_ms": float(MAX_BUF_MS),
+                        "drop_buf_to_ms": float(DROP_BUF_TO_MS),
                     }
-                    if rss_mb is not None: detail["rss_mb"] = float(rss_mb)
-                    if gpu_alloc is not None: detail["gpu_mb"] = {"alloc": gpu_alloc, "reserv": gpu_resv}
-                    if nvml_pair is not None: detail["gpu_nvml_mb"] = {"used": nvml_pair[0], "total": nvml_pair[1]}
-                    if nvml_extra is not None: detail["gpu_nvml_extra"] = nvml_extra
+                    if rss_mb is not None:
+                        detail["rss_mb"] = float(rss_mb)
+                    if nvml_pair is not None:
+                        detail["gpu_nvml_mb"] = {"used": nvml_pair[0], "total": nvml_pair[1]}
+
                     await _ws_send(websocket, {"type": "status", "stage": "FEED", "detail": detail})
                     last_status_t = now_m
 
-                if now_m - last_dash_t >= DASH_INTERVAL_SEC:
-                    dash_id += 1
-                    dt = now_m - dash_start_t
-                    frames_in = frames_fed_total - dash_frames0
-                    bytes_in = bytes_enq_cum - dash_bytes_enq0
-                    bytes_out = bytes_deq_cum - dash_bytes_deq0
-                    avg_q = (qsize_sum / max(1, qsize_samples))
-                    e2e_avg = (e2e_lat_sum / max(1, qsize_samples))
-                    p50, p90, p99 = _percentiles(e2e_samples, [50, 90, 99])
-                    recent_p90_stage_ms = p90
-
-                    ui_e2e_dash_samples = ui_e2e_samples[:]
-                    ui_p50, ui_p90, ui_p99 = _percentiles(ui_e2e_dash_samples, [50,90,99])
-
-                    speak_ratio = (rms_speech_frames / max(1, rms_total_frames)) if rms_total_frames else 0.0
-
-                    drops_window_q = max(0, drops_qguard - drops_qguard_prev)
-                    drops_window_qb = max(0, drops_qbytes - drops_qbytes_prev)
-                    trims_window_q = max(0, trims_qguard - trims_qguard_prev)
-                    drops_qguard_prev = drops_qguard
-                    drops_qbytes_prev = drops_qbytes
-                    trims_qguard_prev = trims_qguard
-
-                    if ADAPT_PACE:
-                        if pace_toggles >= TOGGLE_HIGH:
-                            cur_dwell_ms = min(cur_dwell_ms + DWELL_BUMP_MS, 2500)
-                            cur_disable_q = min(cur_disable_q + 1, max(2, QUEUE_MAX - 1))
-                            cur_resume_q  = max(1, cur_resume_q - 1)
-                        else:
-                            if avg_q < 0.5 and cur_dwell_ms < 1200:
-                                cur_dwell_ms = 1200
-                            elif cur_dwell_ms > PACE_MIN_DWELL_MS:
-                                cur_dwell_ms = max(PACE_MIN_HOLD_DASHES * 200, PACE_MIN_DWELL_MS)
-                            if cur_disable_q > PACE_DISABLE_Q:
-                                cur_disable_q -= 1
-                            if cur_resume_q < PACE_RESUME_Q:
-                                cur_resume_q += 1
-                    if avg_q < 0.5:
-                        pace_hold_dashes = max(pace_hold_dashes, 2)
-                    elif pace_hold_dashes > 0:
-                        pace_hold_dashes -= 1
-
-                    if ADAPT_PREBUF:
-                        compute_warn = (avg_q >= PREBUF_COMPUTE_WARN_Q) or (p90 >= PREBUF_COMPUTE_WARN_P90_MS)
-                        if (ui_p90 >= PREBUF_UP_UI_P90_MS and avg_q >= PREBUF_UP_AVG_Q and not compute_warn):
-                            prebuf_up_windows += 1
-                        else:
-                            prebuf_up_windows = 0
-                        if (ui_p90 <= PREBUF_DOWN_UI_P90_MS and avg_q <= PREBUF_DOWN_AVG_Q):
-                            prebuf_down_windows += 1
-                        else:
-                            prebuf_down_windows = 0
-                        if prebuf_up_windows >= PREBUF_UP_CONSEC_WINDOWS:
-                            new_lo = min(PREBUF_LO_MS_BASE + PREBUF_BUMP_MAX, cur_prebuf_lo + 2.0)
-                            gap = max(5.0, PREBUF_HI_MS_BASE - PREBUF_LO_MS_BASE)
-                            new_hi = min(PREBUF_HI_MS_BASE + PREBUF_BUMP_MAX, max(cur_prebuf_hi, new_lo + gap))
-                            cur_prebuf_lo, cur_prebuf_hi = new_lo, new_hi
-                            prebuf_up_windows = 0
-                        if prebuf_down_windows >= PREBUF_DOWN_CONSEC_WINDOWS:
-                            deramp_step = 3.0 if (avg_q < 0.5 and ui_p90 < 40.0) else 1.0
-                            if cur_prebuf_lo > PREBUF_LO_MS_BASE: cur_prebuf_lo = max(PREBUF_LO_MS_BASE, cur_prebuf_lo - deramp_step)
-                            if cur_prebuf_hi > PREBUF_HI_MS_BASE: cur_prebuf_hi = max(PREBUF_HI_MS_BASE, cur_prebuf_hi - deramp_step)
-                            prebuf_down_windows = 0
-                        if (rms_total_frames > 0) and (rms_speech_frames / max(1, rms_total_frames)) >= SPEECH_RATIO_UP:
-                            if cur_prebuf_hi > PREBUF_HI_MS_BASE:
-                                cur_prebuf_hi = max(PREBUF_HI_MS_BASE, cur_prebuf_hi - SPEAKING_PREBUF_HI_DELTA_MS)
-
-                    speak_ratio_now = (rms_speech_frames / max(1, rms_total_frames)) if rms_total_frames else 0.0
-                    if COALESCE_ENABLE:
-                        if (avg_q >= SEVERE_OVERLOAD_Q and p90 >= SEVERE_OVERLOAD_P90_MS):
-                            feed_stride = 1
-                            severe_stride1_hold = max(severe_stride1_hold, SEVERE_OVERLOAD_STRIDE1_HOLD_DASHES)
-                        elif severe_stride1_hold > 0:
-                            feed_stride = 1
-                            severe_stride1_hold -= 1
-                        else:
-                            compute_warn = (avg_q >= PREBUF_COMPUTE_WARN_Q) or (p90 >= PREBUF_COMPUTE_WARN_P90_MS)
-                            inc_gate_ok = (p90 < 60.0) and (avg_q < 1.5) and (speak_ratio_now < 0.35) and (not compute_warn)
-                            inc_trigger_raw = (e2e_avg > E2E_COALESCE_TRIG_MS and avg_q >= Q_COALESCE_TRIG) or \
-                                              (p90 > E2E_COALESCE_TRIG_MS) or \
-                                              (rms_total_frames and speak_ratio_now < SPEECH_RATIO_DOWN and avg_q >= 1.0)
-                            inc_trigger = inc_trigger_raw and inc_gate_ok
-                            if inc_trigger:
-                                target = min(feed_stride + 1, COALESCE_MAX)
-                                if SPEECH_STRIDE_CAP > 0 and speak_ratio_now >= SPEECH_RATIO_UP:
-                                    target = min(target, SPEECH_STRIDE_CAP)
-                                if target > feed_stride:
-                                    feed_stride = target
-                                    coalesce_easy_ok_windows = 0
-                            else:
-                                cond_easy = (e2e_avg < E2E_COALESCE_TRIG_MS * 0.9 and avg_q < Q_COALESCE_TRIG * 0.9)
-                                cond_speech = (speak_ratio_now >= SPEECH_RATIO_UP and p90 < (E2E_COALESCE_TRIG_MS*1.2))
-                                if feed_stride > 1 and (cond_easy or cond_speech):
-                                    if cond_easy:
-                                        coalesce_easy_ok_windows += 1
-                                    else:
-                                        coalesce_easy_ok_windows = COALESCE_HYST_DOWN_WINDOWS
-                                    if coalesce_easy_ok_windows >= COALESCE_HYST_DOWN_WINDOWS:
-                                        feed_stride = max(1, feed_stride - 1)
-                                        coalesce_easy_ok_windows = 0
-                                else:
-                                    coalesce_easy_ok_windows = 0
-                                if speak_ratio_now >= SPEECH_RATIO_UP and p90 >= FAST_STRIDE_DROP_P90_MS and feed_stride > 1:
-                                    new_stride = max(1, feed_stride - 1)
-                                    if SPEECH_STRIDE_CAP > 0:
-                                        new_stride = min(new_stride, SPEECH_STRIDE_CAP)
-                                    if new_stride < feed_stride:
-                                        feed_stride = new_stride
-                                        coalesce_easy_ok_windows = 0
-                                if speak_ratio_now >= SPEECH_RATIO_UP and p90 >= 220.0 and feed_stride > 1:
-                                    feed_stride = 1
-                                    coalesce_easy_ok_windows = 0
-                                if SPEECH_STRIDE_CAP > 0 and speak_ratio_now >= SPEECH_RATIO_UP and feed_stride > SPEECH_STRIDE_CAP:
-                                    feed_stride = SPEECH_STRIDE_CAP
-                            compute_bound_q = (avg_q >= COALESCE_OVERLOAD_Q_CAP) or (p90 >= COALESCE_OVERLOAD_P90_CAP_MS)
-                            if compute_bound_q and feed_stride > 2:
-                                feed_stride = 2
-                                coalesce_easy_ok_windows = 0
-
-                    if (avg_q >= OVERLOAD_Q and p90 >= OVERLOAD_P90_MS):
-                        overload_hit_windows += 1
-                    else:
-                        overload_hit_windows = 0
-                    if overload_hit_windows >= OVERLOAD_CONSEC_WINDOWS:
-                        _try_set_low_latency(recorder, True)
-                        low_latency_hold = max(low_latency_hold, DOWNSHIFT_MIN_HOLD_DASHES)
-                    else:
-                        if low_latency_hold > 0:
-                            low_latency_hold -= 1
-                        elif low_latency_mode:
-                            _try_set_low_latency(recorder, False)
-
-                    if QBYTES_HARD_CAP > 0:
-                        if ((rms_speech_frames / max(1, rms_total_frames)) if rms_total_frames else 0.0) >= TALK_SPEAK_RATIO_THRESH:
-                            cur_qbytes_cap = int(QBYTES_HARD_CAP * QBYTES_TALKING_MULT)
-                        else:
-                            cur_qbytes_cap = QBYTES_HARD_CAP
-
-                    if trims_window_q > TRIMS_WINDOW_HIGH and ADAPT_PREBUF:
-                        cur_prebuf_lo = min(PREBUF_LO_MS_BASE + PREBUF_BUMP_MAX, cur_prebuf_lo + 2.0)
-
-                    near_drop_count_prev = near_drop_count_total
-                    near_drop_max_pct_window = 0.0
-                    dash_start_t = now_m
-                    dash_frames0 = frames_fed_total
-                    dash_bytes_enq0 = bytes_enq_cum
-                    dash_bytes_deq0 = bytes_deq_cum
-                    qsize_min = 10**9; qsize_max = 0; qsize_sum = 0; qsize_samples = 0
-                    e2e_lat_sum = 0.0; e2e_lat_max = 0.0; e2e_samples = []
-                    ui_e2e_samples = []
-                    rms_total_frames = 0; rms_speech_frames = 0
-                    pace_toggles = 0
-                    last_dash_t = now_m
-
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("[%s] feed_worker crashed: %r\n%s", sess_id, e, traceback.format_exc())
 
     worker_task = asyncio.create_task(feed_worker())
 
+    # hello
     await _ws_send(websocket, {
         "type": "hello",
         "detail": {
@@ -1235,31 +1123,50 @@ async def handler(websocket):
             "mutable_window_tokens": int(os.getenv("MUTABLE_WINDOW_TOKENS", "7")),
             "device": STT_DEVICE,
             "gpu_name": GPU_NAME,
+            "ct2_cuda_device_count": int(_CT2_CUDA_COUNT),
             "compute_type": STT_COMPUTE_TYPE,
+            "model": STT_MODEL,
+            "hf_offline": os.getenv("HF_HUB_OFFLINE"),
             "qbytes_cap": int(QBYTES_HARD_CAP),
-            "hint_client_frame_48k": 960
+            "hint_client_frame_48k": 960,
+            "force_realtime_pace": bool(FORCE_REALTIME_PACE),
+            "max_buf_ms": float(MAX_BUF_MS),
+            "drop_buf_to_ms": float(DROP_BUF_TO_MS),
         }
     })
 
+    logger.info("[%s] hello sent", sess_id)
+
     def _drop_oldest_until_under(cap: int):
-        nonlocal queue_bytes_total, drops_qbytes
-        if cap <= 0: return
+        nonlocal queue_bytes_total
+        if cap <= 0:
+            return
         try:
             while queue_bytes_total >= cap and not queue.empty():
                 old = queue.get_nowait()
                 if isinstance(old, dict):
                     queue_bytes_total = max(0, queue_bytes_total - int(old.get("nbytes", 0)))
-                    drops_qbytes += 1
         except Exception:
             pass
+
+    ws_recv_count = 0
 
     try:
         while True:
             try:
                 msg = await websocket.recv()
-            except websockets.exceptions.ConnectionClosed:
+                ws_recv_count += 1
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.info("[%s] disconnected: %r", sess_id, e)
+                break
+            except Exception as e:
+                logger.error("[%s] websocket.recv error: %r\n%s", sess_id, e, traceback.format_exc())
                 break
 
+            if ws_recv_count % max(1, LOG_WS_EVERY_N) == 0:
+                logger.debug("[%s] recv #%d type=%s", sess_id, ws_recv_count, type(msg).__name__)
+
+            # Binary audio
             if isinstance(msg, (bytes, bytearray)):
                 if not session_started:
                     if AUTO_START:
@@ -1269,24 +1176,24 @@ async def handler(websocket):
                             "dtype": session_force_dtype or "auto",
                             "auto_started": True
                         }})
+                        logger.info("[%s] auto-start (binary)", sess_id)
                     else:
                         continue
 
                 raw = bytes(msg)
+
+                if raw and (items_enqueued % max(1, LOG_AUDIO_EVERY_N) == 0):
+                    logger.debug("[%s] binary audio len=%d q=%d bytes_in_q=%s",
+                                 sess_id, len(raw), queue.qsize(), _human_bytes(queue_bytes_total))
+
+                # Queue full guard: drop oldest item (server-side)
                 if DROP_OLDEST_ON_FULL and queue.qsize() >= DROP_GUARD_Q:
-                    if not QGUARD_HARD_DROP:
-                        trimmed, cut = _edge_trim_low_rms(raw, session_src_sr, session_force_dtype, QGUARD_SOFT_TRIM_MS, QGUARD_SOFT_TRIM_RMS)
-                        if cut > 0:
-                            raw = trimmed
-                            trims_qguard += 1
-                    else:
-                        try:
-                            old = queue.get_nowait()
-                            if isinstance(old, dict):
-                                queue_bytes_total = max(0, queue_bytes_total - int(old.get("nbytes", 0)))
-                                drops_qguard += 1
-                        except Exception:
-                            pass
+                    try:
+                        old = queue.get_nowait()
+                        if isinstance(old, dict):
+                            queue_bytes_total = max(0, queue_bytes_total - int(old.get("nbytes", 0)))
+                    except Exception:
+                        pass
 
                 nbytes = len(raw)
                 await queue.put({
@@ -1295,41 +1202,22 @@ async def handler(websocket):
                 })
                 last_audio_enq_ts = time.monotonic()
                 queue_bytes_total += nbytes
-                bytes_enq_cum += nbytes
-                net_bytes_enq_total += nbytes
 
-                cap_use = cur_qbytes_cap if QBYTES_HARD_CAP > 0 else 0
-                if cap_use > 0:
-                    now = time.monotonic()
-                    if queue_bytes_total >= cap_use * NEAR_DROP_RATIO and (now - near_drop_last_ts) >= NEAR_DROP_COOLDOWN:
-                        dt = now - near_drop_last_ts if near_drop_last_ts > 0 else NEAR_DROP_COOLDOWN
-                        dbytes = net_bytes_enq_total - near_drop_last_bytes
-                        rate_kbps = (dbytes / max(dt, 1e-6)) / 1024.0
-                        pct = (100.0 * queue_bytes_total / float(cap_use))
-                        await _ws_send(websocket, {
-                            "type":"near_drop",
-                            "cap":int(cap_use),
-                            "bytes":int(queue_bytes_total),
-                            "pct":round(pct,2),
-                            "enq_rate_kbps":round(rate_kbps,2),
-                            "cap_source":"speaking" if cap_use != QBYTES_HARD_CAP else "base"
-                        })
-                        near_drop_last_ts = now
-                        near_drop_last_bytes = net_bytes_enq_total
-                        near_drop_count_total += 1
-                        near_drop_max_pct_window = max(near_drop_max_pct_window, float(round(pct,2)))
-                    if queue_bytes_total >= cap_use:
-                        _drop_oldest_until_under(cap_use)
+                if QBYTES_HARD_CAP > 0 and queue_bytes_total >= QBYTES_HARD_CAP:
+                    _drop_oldest_until_under(QBYTES_HARD_CAP)
 
                 qbytes_max = max(qbytes_max, queue_bytes_total)
                 items_enqueued += 1
                 continue
 
+            # JSON messages
             if isinstance(msg, str):
                 try:
                     obj = json.loads(msg)
                 except Exception:
+                    logger.debug("[%s] recv non-json str: %s", sess_id, (msg[:120] + "..." if len(msg) > 120 else msg))
                     continue
+
                 event = (obj.get("event") or "").lower().strip()
 
                 if event == "start":
@@ -1344,15 +1232,11 @@ async def handler(websocket):
                         "dtype": session_force_dtype or "auto",
                         "auto_started": False
                     }})
-                    continue
-
-                if event == "ui_resume_hint":
-                    pace_hold_dashes = 0
-                    cur_resume_q = max(1, cur_resume_q - 1)
-                    await _ws_send(websocket, {"type":"ack","detail":{"ui_resume_hint":"ok"}})
+                    logger.info("[%s] start event | sr=%d dtype=%s", sess_id, session_src_sr, session_force_dtype or "auto")
                     continue
 
                 if event in {"stop","eos","end"}:
+                    logger.info("[%s] stop event=%s", sess_id, event)
                     break
 
                 if "audio" in obj:
@@ -1364,6 +1248,7 @@ async def handler(websocket):
                                 "dtype": session_force_dtype or "auto",
                                 "auto_started": True
                             }})
+                            logger.info("[%s] auto-start (json audio)", sess_id)
                         else:
                             continue
 
@@ -1373,68 +1258,58 @@ async def handler(websocket):
                         dt = obj.get("dtype", session_force_dtype)
                         dt = (dt.lower() if isinstance(dt, str) else None)
 
+                        if items_enqueued % max(1, LOG_AUDIO_EVERY_N) == 0:
+                            logger.debug("[%s] json audio len=%d sr=%d dtype=%s q=%d bytes_in_q=%s",
+                                         sess_id, len(raw), sr, dt or "auto", queue.qsize(), _human_bytes(queue_bytes_total))
+
                         if DROP_OLDEST_ON_FULL and queue.qsize() >= DROP_GUARD_Q:
-                            if not QGUARD_HARD_DROP:
-                                trimmed, cut = _edge_trim_low_rms(raw, sr, dt, QGUARD_SOFT_TRIM_MS, QGUARD_SOFT_TRIM_RMS)
-                                if cut > 0:
-                                    raw = trimmed
-                                    trims_qguard += 1
-                            else:
-                                try:
-                                    old = queue.get_nowait()
-                                    if isinstance(old, dict):
-                                        queue_bytes_total = max(0, queue_bytes_total - int(old.get("nbytes", 0)))
-                                        drops_qguard += 1
-                                except Exception:
-                                    pass
+                            try:
+                                old = queue.get_nowait()
+                                if isinstance(old, dict):
+                                    queue_bytes_total = max(0, queue_bytes_total - int(old.get("nbytes", 0)))
+                            except Exception:
+                                pass
 
                         nbytes = len(raw)
                         await queue.put({
-                            "kind":"audio","buf":raw,"sr":sr,"dtype": (dt if dt in {"i16","f32"} else None),
+                            "kind":"audio","buf":raw,"sr":sr,
+                            "dtype": (dt if dt in {"i16","f32"} else None),
                             "nbytes": nbytes, "enq_ts": time.monotonic()
                         })
                         last_audio_enq_ts = time.monotonic()
                         queue_bytes_total += nbytes
-                        bytes_enq_cum += nbytes
-                        net_bytes_enq_total += nbytes
 
-                        cap_use = cur_qbytes_cap if QBYTES_HARD_CAP > 0 else 0
-                        if cap_use > 0:
-                            now = time.monotonic()
-                            if queue_bytes_total >= cap_use * NEAR_DROP_RATIO and (now - near_drop_last_ts) >= NEAR_DROP_COOLDOWN:
-                                dtc = now - near_drop_last_ts if near_drop_last_ts > 0 else NEAR_DROP_COOLDOWN
-                                dbytes = net_bytes_enq_total - near_drop_last_bytes
-                                rate_kbps = (dbytes / max(dtc, 1e-6)) / 1024.0
-                                pct = (100.0 * queue_bytes_total / float(cap_use))
-                                await _ws_send(websocket, {
-                                    "type":"near_drop",
-                                    "cap":int(cap_use),
-                                    "bytes":int(queue_bytes_total),
-                                    "pct":round(pct,2),
-                                    "enq_rate_kbps":round(rate_kbps,2),
-                                    "cap_source":"speaking" if cap_use != QBYTES_HARD_CAP else "base"
-                                })
-                                near_drop_last_ts = now
-                                near_drop_last_bytes = net_bytes_enq_total
-                                near_drop_count_total += 1
-                                near_drop_max_pct_window = max(near_drop_max_pct_window, float(round(pct,2)))
-                            if queue_bytes_total >= cap_use:
-                                _drop_oldest_until_under(cap_use)
+                        if QBYTES_HARD_CAP > 0 and queue_bytes_total >= QBYTES_HARD_CAP:
+                            _drop_oldest_until_under(QBYTES_HARD_CAP)
 
                         qbytes_max = max(qbytes_max, queue_bytes_total)
                         items_enqueued += 1
-                    except Exception:
-                        pass
+
+                    except Exception as e:
+                        logger.error("[%s] json audio handling error: %r\n%s", sess_id, e, traceback.format_exc())
                     continue
+
     finally:
-        try: await queue.put(None)
-        except Exception: pass
-        try: await asyncio.wait_for(worker_task, timeout=12.0)
-        except asyncio.TimeoutError: pass
+        logger.info("[%s] closing session...", sess_id)
         try:
-            if 'recorder' in locals() and hasattr(recorder, "stop"): recorder.stop()
-            if 'recorder' in locals() and hasattr(recorder, "shutdown"): recorder.shutdown()
-        except Exception: pass
+            await queue.put(None)
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(worker_task, timeout=12.0)
+        except asyncio.TimeoutError:
+            logger.warning("[%s] worker_task timeout", sess_id)
+        except Exception as e:
+            logger.debug("[%s] worker_task join error: %r", sess_id, e)
+
+        try:
+            if 'recorder' in locals() and hasattr(recorder, "stop"):
+                recorder.stop()
+            if 'recorder' in locals() and hasattr(recorder, "shutdown"):
+                recorder.shutdown()
+            logger.info("[%s] recorder stopped", sess_id)
+        except Exception as e:
+            logger.warning("[%s] recorder stop/shutdown error: %r", sess_id, e)
 
         try:
             await history_q.put(None)
@@ -1442,17 +1317,27 @@ async def handler(websocket):
         except Exception:
             pass
 
-        if _client_lock is None: _client_lock = asyncio.Lock()
+        if _client_lock is None:
+            _client_lock = asyncio.Lock()
         async with _client_lock:
-            if _active_client == client: _active_client = None
+            if _active_client == client:
+                _active_client = None
+
+        logger.info("[%s] disconnected/cleanup done", sess_id)
 
 async def main():
     host = WS_HOST
     port = WS_PORT
+    logger.info("Serving WS on %s:%d", host, port)
+
+    # websockets 15: handler signature ok; avoid compression if CPU tight (env override)
+    compression = os.getenv("WS_COMPRESSION", "deflate").strip().lower()
+    compression = None if compression in {"0","none","off","false"} else "deflate"
+
     async with websockets.serve(
         handler, host, port,
         max_size=None, ping_interval=20, ping_timeout=20,
-        compression="deflate"
+        compression=compression
     ):
         await asyncio.Future()
 
@@ -1460,4 +1345,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        logger.info("KeyboardInterrupt -> exit")
+    except Exception as e:
+        logger.error("FATAL: %r\n%s", e, traceback.format_exc())
+        raise
