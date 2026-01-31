@@ -3,101 +3,104 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Auth</title>
+  <title>Xác thực</title>
   <link rel="stylesheet" href="auth.css" />
 </head>
 <body>
   <div class="page">
-    <button class="close" id="btnClose" aria-label="Close">×</button>
+    <button class="close" id="btnClose" aria-label="Đóng">×</button>
 
     <div class="dot" aria-hidden="true"></div>
 
-    <!-- LOGIN -->
+    <!-- ĐĂNG NHẬP -->
     <main class="card" id="screenLogin">
-      <h1>Log in</h1>
+      <h1>Đăng nhập</h1>
       <p class="sub">
-        Don't have an account?
-        <a href="#signup" id="toSignup">Sign up</a>
+        Chưa có tài khoản?
+        <a href="#signup" id="toSignup">Đăng ký</a>
       </p>
 
       <button class="oauth-btn" id="btnFbLogin" type="button">
         <span class="ico fb" aria-hidden="true"></span>
-        Log in with Facebook
+        Tiếp tục với Facebook
       </button>
 
       <button class="oauth-btn" id="btnGgLogin" type="button">
         <span class="ico gg" aria-hidden="true"></span>
-        Log in with Google
+        Tiếp tục với Google
       </button>
 
-      <div class="divider"><span>OR</span></div>
+      <div class="divider"><span>HOẶC</span></div>
 
-      <label class="lbl">Your email</label>
-      <input class="inp" id="loginEmail" type="email" autocomplete="email" />
+      <label class="lbl" for="loginEmail">Email</label>
+      <input class="inp" id="loginEmail" type="email" autocomplete="email" placeholder="name@example.com" />
 
-      <label class="lbl">Your password</label>
+      <label class="lbl" for="loginPass">Mật khẩu</label>
       <div class="pw">
-        <input class="inp" id="loginPass" type="password" autocomplete="current-password" />
-        <button class="link" id="togglePw" type="button">Hide</button>
+        <input class="inp" id="loginPass" type="password" autocomplete="current-password" placeholder="Nhập mật khẩu" />
+        <button class="link" id="togglePw" type="button">Hiện</button>
       </div>
 
-      <a class="forgot" href="#" id="forgotPw">Forget your password</a>
+      <a class="forgot" href="#" id="forgotPw">Quên mật khẩu?</a>
 
       <button class="primary" id="btnEmailLogin" type="button" disabled>
-        Log in
+        Đăng nhập
       </button>
-
-      <p class="hint">
-        (Email/password lưu cục bộ dưới dạng “users.txt” trong chrome.storage.local)
-      </p>
     </main>
 
-    <!-- SIGNUP -->
+    <!-- ĐĂNG KÝ -->
     <main class="card hidden" id="screenSignup">
-      <h1>Create an account</h1>
+      <h1>Tạo tài khoản</h1>
       <p class="sub">
-        Already have an account?
-        <a href="#login" id="toLogin">Log in</a>
+        Đã có tài khoản?
+        <a href="#login" id="toLogin">Đăng nhập</a>
       </p>
 
       <button class="oauth-btn" id="btnFbSignup" type="button">
         <span class="ico fb" aria-hidden="true"></span>
-        Continue with Facebook
+        Tiếp tục với Facebook
       </button>
 
       <button class="oauth-btn" id="btnGgSignup" type="button">
         <span class="ico gg" aria-hidden="true"></span>
-        Continue with Google
+        Tiếp tục với Google
       </button>
 
-      <div class="divider"><span>OR</span></div>
+      <div class="divider"><span>HOẶC</span></div>
 
       <p class="small">
-        Enter your email + password to create an account.
+        Nhập email và mật khẩu để tạo tài khoản.
       </p>
 
-      <label class="lbl">Your email</label>
-      <input class="inp" id="signupEmail" type="email" autocomplete="email" />
+      <label class="lbl" for="signupEmail">Email</label>
+      <input class="inp" id="signupEmail" type="email" autocomplete="email" placeholder="name@example.com" />
 
-      <label class="lbl">Create password</label>
+      <label class="lbl" for="signupPass">Tạo mật khẩu</label>
       <div class="pw">
-        <input class="inp" id="signupPass" type="password" autocomplete="new-password" />
-        <button class="link" id="togglePwS" type="button">Hide</button>
+        <input class="inp" id="signupPass" type="password" autocomplete="new-password" placeholder="Nhập mật khẩu" />
+        <button class="link" id="togglePwS" type="button">Hiện</button>
       </div>
 
-      <label class="lbl">Confirm password</label>
+      <!-- ✅ rules mật khẩu -->
+      <ul class="rules" id="pwRules">
+        <li id="ruleLen">Tối thiểu 8 ký tự</li>
+        <li id="ruleLower">Có chữ thường (a-z)</li>
+        <li id="ruleUpper">Có chữ hoa (A-Z)</li>
+        <li id="ruleNum">Có số (0-9)</li>
+        <li id="ruleSpecial">Có ký tự đặc biệt (ví dụ: !@#$...)</li>
+      </ul>
+
+      <label class="lbl" for="signupPass2">Nhập lại mật khẩu</label>
       <div class="pw">
-        <input class="inp" id="signupPass2" type="password" autocomplete="new-password" />
-        <button class="link" id="togglePwS2" type="button">Hide</button>
+        <input class="inp" id="signupPass2" type="password" autocomplete="new-password" placeholder="Nhập lại mật khẩu" />
+        <button class="link" id="togglePwS2" type="button">Hiện</button>
       </div>
+
+      <p class="hint error hidden" id="confirmErr">Mật khẩu nhập lại chưa khớp.</p>
 
       <button class="primary" id="btnEmailSignup" type="button" disabled>
-        Create an account
+        Tạo tài khoản
       </button>
-
-      <p class="hint">
-        (Demo/local: lưu PBKDF2 hash + salt, không lưu plain password)
-      </p>
     </main>
 
     <div class="toast hidden" id="toast"></div>
