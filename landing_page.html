@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>V-Transer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #080808;
+            --text-main: #f7f8f8;
+            --text-muted: #8a8f98;
+            --accent-purple: #5e6ad2;
+            --accent-blue: #40c4ff;
+            --border-color: rgba(255, 255, 255, 0.08);
+            --card-bg: rgba(255, 255, 255, 0.02);
+            --hover-bg: rgba(255, 255, 255, 0.05);
+            --font-stack: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: var(--font-stack);
+            -webkit-font-smoothing: antialiased;
+            line-height: 1.5;
+            overflow-x: hidden;
+        }
+
+        a {
+            text-decoration: none;
+            color: inherit;
+            transition: color 0.2s ease;
+        }
+
+        ul {
+            list-style: none;
+        }
+
+        /* --- Navbar --- */
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 18px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 1000;
+            background: rgba(8, 8, 8, 0.6);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logo {
+            font-weight: 600;
+            font-size: 1.1rem;
+            letter-spacing: -0.02em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo-icon {
+            width: 20px;
+            height: 20px;
+            background: var(--text-main);
+            border-radius: 50%; /* Simplified logo */
+            position: relative;
+        }
+        
+        .logo-icon::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 10px;
+            height: 10px;
+            background: var(--bg-color);
+            border-radius: 50% 0 50% 50%; 
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 32px;
+        }
+
+        .nav-links a {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .nav-links a:hover {
+            color: var(--text-main);
+        }
+
+        .nav-actions {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .btn {
+            font-size: 0.9rem;
+            font-weight: 500;
+            padding: 8px 16px;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .btn-text {
+            color: var(--text-muted);
+        }
+        .btn-text:hover { color: var(--text-main); }
+
+        .btn-primary {
+            background: rgba(255,255,255,0.1);
+            color: var(--text-main);
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        
+        .btn-primary:hover {
+            background: rgba(255,255,255,0.15);
+        }
+
+        /* --- Hero Section --- */
+        .hero {
+            padding: 160px 20px 100px;
+            text-align: center;
+            max-width: 1200px;
+            margin: 0 auto;
+            position: relative;
+        }
+
+        .hero h1 {
+            font-size: 4.5rem;
+            font-weight: 700;
+            line-height: 1.05;
+            letter-spacing: -0.03em;
+            background: linear-gradient(to bottom right, #fff 30%, #a5a5a5 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 24px;
+        }
+
+        .hero p {
+            font-size: 1.35rem;
+            color: var(--text-muted);
+            max-width: 600px;
+            margin: 0 auto 40px;
+        }
+
+        .hero-btn {
+            background: linear-gradient(90deg, #5e6ad2 0%, #a272eb 100%);
+            color: white;
+            padding: 14px 32px;
+            border-radius: 50px;
+            font-weight: 600;
+            font-size: 1.05rem;
+            border: none;
+            box-shadow: 0 0 20px rgba(94, 106, 210, 0.4);
+            transition: transform 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .hero-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 30px rgba(94, 106, 210, 0.6);
+        }
+
+        /* --- Hero Visual --- */
+        .hero-visual {
+            margin-top: 80px;
+            position: relative;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            background: #111;
+            box-shadow: 0 -40px 100px -20px rgba(94, 106, 210, 0.15);
+            overflow: hidden;
+            width: 100%;
+            height: 600px; /* Placeholder for screenshot */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .hero-visual img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.8;
+        }
+        
+        .mock-ui {
+            text-align: center;
+            color: var(--text-muted);
+        }
+
+        /* --- Clients/Logos --- */
+        .clients {
+            padding: 60px 0;
+            text-align: center;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .clients p {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 30px;
+        }
+
+        .logo-wall {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            opacity: 0.5;
+            flex-wrap: wrap;
+        }
+        
+        .logo-item { font-weight: 700; font-size: 1.2rem; letter-spacing: -0.05em; }
+
+        /* --- Bento Grid Features --- */
+        .features {
+            padding: 120px 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .section-header {
+            margin-bottom: 60px;
+        }
+
+        .section-header h2 {
+            font-size: 2.5rem;
+            letter-spacing: -0.03em;
+            margin-bottom: 16px;
+        }
+        
+        .section-header p {
+            font-size: 1.2rem;
+            color: var(--text-muted);
+            max-width: 500px;
+        }
+
+        .bento-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(2, 350px);
+            gap: 20px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 32px;
+            position: relative;
+            overflow: hidden;
+            transition: background 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .card:hover {
+            background: var(--hover-bg);
+            border-color: rgba(255,255,255,0.15);
+        }
+
+        .card.wide {
+            grid-column: span 2;
+        }
+
+        .card h3 {
+            font-size: 1.3rem;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .card p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+
+        .card-visual {
+            margin-top: 20px;
+            flex-grow: 1;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            position: relative;
+        }
+        
+        /* Decorative glow for cards */
+        .glow-spot {
+            position: absolute;
+            width: 200px;
+            height: 200px;
+            background: radial-gradient(circle, rgba(94, 106, 210, 0.15) 0%, rgba(0,0,0,0) 70%);
+            top: -50px;
+            right: -50px;
+            pointer-events: none;
+        }
+
+        /* --- Footer --- */
+        footer {
+            border-top: 1px solid var(--border-color);
+            padding: 80px 20px;
+            background: #050505;
+        }
+
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
+            gap: 40px;
+        }
+
+        .footer-logo {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .footer-col h4 {
+            font-size: 0.9rem;
+            color: var(--text-main);
+            margin-bottom: 20px;
+        }
+
+        .footer-col ul li {
+            margin-bottom: 12px;
+        }
+
+        .footer-col ul li a {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .footer-col ul li a:hover {
+            color: var(--accent-blue);
+        }
+
+        /* Mobile Responsive */
+        @media (max-width: 768px) {
+            .navbar { padding: 15px 20px; }
+            .nav-links { display: none; }
+            .hero h1 { font-size: 3rem; }
+            .bento-grid { grid-template-columns: 1fr; grid-template-rows: auto; }
+            .card.wide { grid-column: span 1; }
+            .footer-content { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+    <nav class="navbar">
+        <div class="logo">
+            <div class="logo-icon"></div>
+            V-Transer
+        </div>
+        <div class="nav-links">
+            <a href="#">Features</a>
+            <a href="#">Method</a>
+            <a href="#">Customers</a>
+            <a href="#">Changelog</a>
+            <a href="#">Pricing</a>
+        </div>
+        <div class="nav-actions">
+            <a href="#" class="btn btn-text">Log in</a>
+            <a href="#" class="btn btn-primary">Sign up</a>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <h1>V-Transer is a purpose-built tool for transcript</h1>
+        <p>Placeholder 1<br>Placeholder 2</p>
+        <button class="hero-btn">Start building</button>
+
+        <div class="hero-visual">
+            <div class="mock-ui">
+                <div style="font-size: 1.5rem; margin-bottom: 10px; font-weight: 600;">Issue Tracking Reimagined</div>
+                <div style="font-size: 0.9rem; color: #555;">(Interactive App Screenshot Placeholder)</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="clients">
+        <p>POWERING THE WORLD'S BEST PRODUCT TEAMS</p>
+        <div class="logo-wall">
+            <span class="logo-item">RAMP</span>
+            <span class="logo-item">VERCEL</span>
+            <span class="logo-item">SCALE</span>
+            <span class="logo-item">MONZO</span>
+            <span class="logo-item">ARC</span>
+        </div>
+    </section>
+
+    <section class="features">
+        <div class="section-header">
+            <h2>Made for modern product teams</h2>
+            <p>V-Transer is peak fr fr</p>
+        </div>
+
+        <div class="bento-grid">
+            <div class="card wide">
+                <div class="glow-spot"></div>
+                <div>
+                    <h3>Placeholder 3</h3>
+                    <p>Work in real-time. Keyboard shortcuts for everything. Pages load instantly. We didn't just build a tool; we built an engine.</p>
+                </div>
+                <div class="card-visual"></div>
+            </div>
+
+            <div class="card">
+                <div>
+                    <h3>Placeholder 4</h3>
+                    <p>Keep your team focused on what work should happen next with automated sprint cycles.</p>
+                </div>
+                <div class="card-visual"></div>
+            </div>
+
+            <div class="card">
+                <div>
+                    <h3>Placeholder 5</h3>
+                    <p>Plan the big picture. Set milestones and track progress across teams and projects.</p>
+                </div>
+                <div class="card-visual"></div>
+            </div>
+
+            <div class="card wide">
+                <div class="glow-spot" style="left: -50px; right: auto; background: radial-gradient(circle, rgba(64, 196, 255, 0.15) 0%, rgba(0,0,0,0) 70%);"></div>
+                <div>
+                    <h3>Placeholder 6</h3>
+                    <p>Sigma Sigma boy</p>
+                </div>
+                <div class="card-visual"></div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="footer-content">
+            <div class="footer-col footer-logo">
+                <div class="logo" style="margin-bottom: 15px;">
+                    <div class="logo-icon" style="background: #333;"></div>
+                    V-Transer
+                </div>
+                <p>&copy; V-Transer, Inc.</p>
+            </div>
+            <div class="footer-col">
+                <h4>Product</h4>
+                <ul>
+                    <li><a href="#">Features</a></li>
+                    <li><a href="#">Integrations</a></li>
+                    <li><a href="#">Pricing</a></li>
+                    <li><a href="#">Changelog</a></li>
+                </ul>
+            </div>
+            <div class="footer-col">
+                <h4>Company</h4>
+                <ul>
+                    <li><a href="#">About</a></li>
+                    <li><a href="#">Careers</a></li>
+                    <li><a href="#">Blog</a></li>
+                    <li><a href="#">Contact</a></li>
+                </ul>
+            </div>
+            <div class="footer-col">
+                <h4>Resources</h4>
+                <ul>
+                    <li><a href="#">Community</a></li>
+                    <li><a href="#">Help Center</a></li>
+                    <li><a href="#">API Docs</a></li>
+                    <li><a href="#">Status</a></li>
+                </ul>
+            </div>
+            <div class="footer-col">
+                <h4>Legal</h4>
+                <ul>
+                    <li><a href="#">Privacy</a></li>
+                    <li><a href="#">Terms</a></li>
+                    <li><a href="#">Security</a></li>
+                </ul>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
