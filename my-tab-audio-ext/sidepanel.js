@@ -66,6 +66,30 @@ document.addEventListener('DOMContentLoaded', () => {
     try { localStorage.setItem(key, val ? '1' : '0'); } catch {}
   }
 
+  // ===== chrome.storage helpers =====
+  function storeGet(keys) {
+    return new Promise((resolve) => {
+      try { chrome.storage.local.get(keys, resolve); } catch { resolve({}); }
+    });
+  }
+  function storeRemove(keys) {
+    return new Promise((resolve) => {
+      try { chrome.storage.local.remove(keys, resolve); } catch { resolve(); }
+    });
+  }
+
+  // ===== Auth checks =====
+  async function getVtAuthProfile() {
+    const st = await storeGet(['vtAuth']);
+    const raw = st?.vtAuth || null;
+    const profile = raw?.profile || raw?.currentSession?.profile || null;
+    return profile;
+  }
+  async function isAuthed() {
+    const p = await getVtAuthProfile();
+    return !!(p && (p.email || p.id || p.name));
+  }
+
   // ===== DOM Refs =====
   const chatButton = document.getElementById('btn-chat');
   const transcriptButton = document.getElementById('btn-transcript');
@@ -78,7 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const chatHeader = document.querySelector('.main-header');
   const chatActionButtons = document.querySelector('.action-buttons');
-  const chatInputArea = document.querySelector('.textarea-wrapper');
+  const chatInputArea = document.querySelector('.chat-input-area');
   const chatTextArea = document.querySelector('#chat-content .textarea-wrapper textarea');
   const chatHistory = document.querySelector('.chat-history-area');
 
@@ -123,6 +147,19 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
   }
+
+  // ✅ Nếu SW set vtNeedAuth trước đó (ví dụ user bấm Start ở in-page panel),
+  // sidepanel mở lên sẽ tự bật login.
+  (async () => {
+    try {
+      const st = await storeGet(['vtNeedAuth']);
+      const need = st?.vtNeedAuth;
+      if (need && need.at && (Date.now() - Number(need.at) < 5 * 60 * 1000)) {
+        openAuthOverlayFromPanel();
+      }
+      if (need) await storeRemove(['vtNeedAuth']);
+    } catch {}
+  })();
 
   // ===== Setting: config API + WS =====
   if (settingButton) {
@@ -290,7 +327,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ===== START/STOP capture =====
   if (transcriptStart) {
-    transcriptStart.addEventListener('click', () => {
+    transcriptStart.addEventListener('click', async () => {
+      const currentlyActive = transcriptStart.classList.contains('active');
+
+      // Nếu đang tắt -> chuẩn bị bật start => check auth trước
+      if (!currentlyActive) {
+        const ok = await isAuthed();
+        if (!ok) {
+          // bắt buộc login
+          openAuthOverlayFromPanel();
+          if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
+          return;
+        }
+      }
+
+      // toggle UI sau khi pass auth
       const isActive = transcriptStart.classList.toggle('active');
 
       if (hasChromeRuntime) {
@@ -301,6 +352,13 @@ document.addEventListener('DOMContentLoaded', () => {
               if (!res?.ok) {
                 transcriptStart.classList.remove('active');
                 if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
+
+                // ✅ nếu SW trả AUTH_REQUIRED -> mở login luôn
+                if (res?.code === 'AUTH_REQUIRED') {
+                  openAuthOverlayFromPanel();
+                  return;
+                }
+
                 if (res?.error) alert('Không capture được tab hiện tại:\n' + res.error);
               }
             }
@@ -329,10 +387,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // ===== Receive transcript =====
+  // ===== Receive transcript + AUTH_REQUIRED broadcast =====
   if (hasChromeRuntime) {
     chrome.runtime.onMessage.addListener((msg) => {
       if (!msg || !msg.__cmd) return;
+
+      // ✅ SW broadcast: yêu cầu đăng nhập
+      if (msg.__cmd === '__AUTH_REQUIRED__') {
+        openAuthOverlayFromPanel();
+        return;
+      }
 
       if (msg.__cmd === '__PANEL_OPENED__') {
         const server = (msg.payload?.server || '').trim();
@@ -440,6 +504,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function sendChat(question) {
     if (!question || !question.trim()) return;
+
+    // ✅ AUTH gate (bắt buộc login mới được chat)
+    const ok = await isAuthed();
+    if (!ok) {
+      openAuthOverlayFromPanel();
+      appendBubble('assistant', '🔒 Bạn cần đăng nhập để dùng Chat.', nowTime());
+      return;
+    }
+
     const q = question.trim();
     const sid = getSessionId();
 
@@ -523,5 +596,3 @@ document.addEventListener('DOMContentLoaded', () => {
   // ✅ gửi mode ngay khi mở sidepanel để SW biết đúng vi=false nếu chưa bật dịch
   sendTranscriptModes();
 });
-
-

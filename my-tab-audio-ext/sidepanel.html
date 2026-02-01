@@ -168,7 +168,7 @@
           <span class="vt-acc-ico">👤</span> <span>My account</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="my_website" type="button">
-          <span class="vt-acc-ico">🗂️</span> <span>My weibase</span>
+          <span class="vt-acc-ico">🗂️</span> <span>My website</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="help" type="button">
           <span class="vt-acc-ico">❓</span> <span>Help center</span>
@@ -192,6 +192,54 @@
       </div>
 
       <div id="vtAccToast" class="vt-acc-toast hidden"></div>
+    </div>
+  </div>
+
+  <!-- ✅ MY ACCOUNT (EDIT PROFILE) OVERLAY -->
+  <div id="vtProfileOverlay" class="vt-profile-overlay vt-hidden" aria-hidden="true">
+    <div id="vtProfileBackdrop" class="vt-profile-backdrop"></div>
+
+    <div class="vt-profile-sheet" role="dialog" aria-modal="true" aria-label="Tài khoản của tôi">
+      <div class="vt-profile-header">
+        <div class="vt-profile-title">Tài khoản của tôi</div>
+        <button id="vtProfileClose" class="vt-profile-close" type="button" aria-label="Đóng">×</button>
+      </div>
+
+      <div class="vt-profile-body">
+        <div class="vt-profile-avatar-row">
+          <div class="vt-profile-avatar">
+            <img id="vtProfileAvatar" class="vt-profile-avatar-img hidden" alt="" />
+            <div id="vtProfileAvatarFallback" class="vt-profile-avatar-fallback">U</div>
+          </div>
+
+          <div class="vt-profile-avatar-actions">
+            <label class="vt-profile-file-btn">
+              Chọn ảnh
+              <input id="vtProfileFile" type="file" accept="image/*" class="hidden" />
+            </label>
+
+            <button id="vtProfileRemoveAvatar" class="vt-profile-ghost-btn" type="button">
+              Xóa ảnh
+            </button>
+          </div>
+        </div>
+
+        <label class="vt-profile-lbl">Ảnh đại diện (URL)</label>
+        <input id="vtProfileAvatarUrl" class="vt-profile-inp" type="text" placeholder="https://... hoặc data:image/..." />
+
+        <label class="vt-profile-lbl">Email</label>
+        <input id="vtProfileEmail" class="vt-profile-inp" type="text" disabled />
+
+        <label class="vt-profile-lbl">Họ và tên</label>
+        <input id="vtProfileFullName" class="vt-profile-inp" type="text" placeholder="Nhập tên hiển thị" />
+
+        <div class="vt-profile-actions">
+          <button id="vtProfileCancel" class="vt-profile-ghost-btn" type="button">Hủy</button>
+          <button id="vtProfileSave" class="vt-profile-primary-btn" type="button" disabled>Lưu</button>
+        </div>
+
+        <div id="vtProfileToast" class="vt-profile-toast hidden"></div>
+      </div>
     </div>
   </div>
 

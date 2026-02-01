@@ -6,7 +6,6 @@
   const DEBUG = (localStorage.getItem('sttOverlayDebug') === '1');
   const dlog  = (...a) => { if (DEBUG) console.log('[stt-overlay]', ...a); };
 
-  // mỗi dòng tối đa bao nhiêu "câu"
   const MAX_SENTENCES_PER_LINE = Number(localStorage.getItem('sttMaxSentPerLine') || 2);
 
   // ---------- mount UI ----------
@@ -25,7 +24,9 @@
         <div class="line line2" id="stt-line2-vi"></div>
       </div>
     </div>`;
-  document.documentElement.appendChild(root);
+
+  // append vào body nếu có để chắc render
+  (document.body || document.documentElement).appendChild(root);
 
   const $frame  = root.querySelector('.frame');
   const $bubbleEN = root.querySelector('#bubble-en');
@@ -39,28 +40,41 @@
   $l2EN.classList.add('compact');
   $l2VI.classList.add('compact');
 
-  // NEW: điều khiển hiển thị overlay theo mode từ sidepanel
+  // mode control
   let showEN = false;
   let showVI = false;
+  let gotMode = false;      // NEW
+  let seenAnyText = false;  // NEW: nếu đã có transcript mà chưa có mode -> fallback
 
   function applyOverlayMode(enOn, viOn) {
+    gotMode = true;
     showEN = !!enOn;
     showVI = !!viOn;
     const any = showEN || showVI;
     root.style.display = any ? '' : 'none';
     if ($bubbleEN) $bubbleEN.style.display = showEN ? '' : 'none';
     if ($bubbleVI) $bubbleVI.style.display = showVI ? '' : 'none';
+    dlog('applyOverlayMode', { showEN, showVI });
   }
 
-  // Ban đầu ẩn overlay, đợi sidepanel gửi mode
+  // Ban đầu ẩn overlay, đợi mode
   applyOverlayMode(false, false);
 
+  // NEW fallback: nếu 1.2s chưa nhận mode, vẫn chưa show,
+  // nhưng có transcript đến => bật EN để user thấy ngay.
+  const modeFallbackTimer = setTimeout(() => {
+    if (!gotMode && seenAnyText) {
+      applyOverlayMode(true, false);
+      dlog('fallback show EN (no mode received)');
+    }
+  }, 1200);
 
-  // ---------- measurer để đo bề rộng text ----------
+  // ---------- measurer ----------
   const measurer = document.createElement('div');
-  document.documentElement.appendChild(measurer);
+  measurer.setAttribute('aria-hidden', 'true');
+  (document.body || document.documentElement).appendChild(measurer);
+
   const syncMeasureStyle = () => {
-    // dùng font của EN (hai khung dùng một kiểu)
     const cs = getComputedStyle($l2EN);
     measurer.style.cssText = `
       position: fixed; left: -99999px; top: -99999px;
@@ -72,9 +86,9 @@
     `;
   };
   syncMeasureStyle();
+
   const textWidth = (s) => { measurer.textContent = s; return measurer.scrollWidth; };
 
-  // bề rộng tối đa dùng cho text bên trong (khung - padding bong bóng)
   const innerMaxPx = (bubbleEl) => {
     const frameW = $frame.clientWidth;
     const cs = getComputedStyle(bubbleEl);
@@ -198,7 +212,7 @@
     if (!line1.trim()) $l2.classList.add('compact'); else $l2.classList.remove('compact');
   }
 
-  // ---------- Model EN ----------
+  // ---------- EN ----------
   let fullTextEN = '';
   let qDelEN = 0, qInsEN = '';
   let scheduledEN = false;
@@ -219,7 +233,7 @@
     } finally { scheduledEN = false; }
   }
 
-  // ---------- Model VI (NEW) ----------
+  // ---------- VI ----------
   let fullTextVI = '';
   let qDelVI = 0, qInsVI = '';
   let scheduledVI = false;
@@ -241,24 +255,37 @@
   }
 
   // ---------- message handlers ----------
+  function ensureVisibleIfNeeded() {
+    // nếu đã nhận text mà chưa nhận mode => fallback bật EN
+    if (!gotMode && seenAnyText) {
+      applyOverlayMode(true, false);
+    }
+  }
+
   function handleMessage(msg) {
     if (!msg) return;
     const type = msg.__cmd || msg.type;
     if (!type) return;
 
-    // EN: giữ nguyên các kênh cũ
+    // EN
     if (type === '__TRANSCRIPT_PATCH__' || type === 'patch') {
+      seenAnyText = true;
+      ensureVisibleIfNeeded();
       const delN = Number(msg.payload?.delete ?? msg.delete ?? 0) || 0;
       const insS = String(msg.payload?.insert ?? msg.insert ?? '');
       enqueuePatchEN(delN, insS);
       return;
     }
     if (type === '__TRANSCRIPT_DELTA__' || type === 'delta' || type === 'delta-append') {
+      seenAnyText = true;
+      ensureVisibleIfNeeded();
       const append = String(msg.payload?.append ?? msg.append ?? '');
       enqueuePatchEN(0, append);
       return;
     }
     if (type === '__TRANSCRIPT_STABLE__' || type === 'stable') {
+      seenAnyText = true;
+      ensureVisibleIfNeeded();
       const full = msg.full ?? msg.detail?.full ?? msg.payload?.full;
       if (typeof full === 'string' && full.length >= fullTextEN.length) {
         if (scheduledEN) flushPatchesEN();
@@ -268,13 +295,17 @@
       return;
     }
 
-    // VI: NEW
+    // VI
     if (type === '__TRANS_VI_DELTA__' || type === 'vi-delta') {
+      seenAnyText = true;
+      ensureVisibleIfNeeded();
       const append = String(msg.payload?.append ?? msg.append ?? '');
       enqueuePatchVI(0, append);
       return;
     }
     if (type === '__TRANS_VI_STABLE__' || type === 'vi-stable') {
+      seenAnyText = true;
+      ensureVisibleIfNeeded();
       const full = msg.full ?? msg.detail?.full ?? msg.payload?.full;
       if (typeof full === 'string' && full.length >= fullTextVI.length) {
         if (scheduledVI) flushPatchesVI();
@@ -292,7 +323,6 @@
       return;
     }
 
-
     if (type === '__OVERLAY_RESET__') {
       if (scheduledEN) flushPatchesEN();
       if (scheduledVI) flushPatchesVI();
@@ -301,7 +331,10 @@
       $l1VI.textContent = ''; $l2VI.textContent = ''; $l2VI.classList.add('compact');
       return;
     }
+
     if (type === '__OVERLAY_TEARDOWN__') {
+      try { clearTimeout(modeFallbackTimer); } catch {}
+      try { measurer.remove(); } catch {}
       try { root.remove(); } catch {}
       return;
     }
@@ -309,15 +342,26 @@
 
   // ---------- wiring ----------
   try { chrome.runtime.onMessage.addListener((m) => handleMessage(m)); } catch {}
-  try { const port = chrome.runtime.connect({ name: 'stt-overlay' }); port.onMessage.addListener((m) => handleMessage(m)); } catch {}
-  window.addEventListener('message', (ev) => { const m = ev?.data; if (m && (m.__cmd || m.type)) handleMessage(m); });
+  try {
+    const port = chrome.runtime.connect({ name: 'stt-overlay' });
+    port.onMessage.addListener((m) => handleMessage(m));
+  } catch {}
+  window.addEventListener('message', (ev) => {
+    const m = ev?.data;
+    if (m && (m.__cmd || m.type)) handleMessage(m);
+  });
 
-  // re-sync font metrics & re-render khi resize
   window.addEventListener('resize', () => {
     syncMeasureStyle();
     renderTwoLines(fullTextEN, $bubbleEN, $l1EN, $l2EN);
     renderTwoLines(fullTextVI, $bubbleVI, $l1VI, $l2VI);
   });
 
+  // ✅ NEW: notify SW that overlay is ready (anti-race)
+  try { chrome.runtime.sendMessage({ __cmd: '__OVERLAY_READY__' }, () => {}); } catch {}
+
+  // ping mode
   try { chrome.runtime.sendMessage({ __cmd: '__OVERLAY_PING__' }, () => {}); } catch {}
+
+  dlog("overlay mounted:", ROOT_ID);
 })();
