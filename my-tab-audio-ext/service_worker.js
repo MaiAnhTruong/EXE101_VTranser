@@ -1,15 +1,12 @@
 // service_worker.js
-// MV3 Service Worker (type: module OK)
 // Điều phối Offscreen/Overlay/Panel + proxy REST cho chatbot (__CHAT_REST__)
 // + Translator WS (VI) chỉ connect khi bật "Dịch phụ đề" và đang chạy capture.
-//
-// FIX/IMPROVE:
-// - ✅ tabCapture FIRST, fallback getDisplayMedia (tránh mismatch tab => overlay không hiện / audio khác tab).
-// - ✅ Overlay handshake: overlay.js gửi __OVERLAY_READY__ -> SW gửi mode/reset (anti-race).
-// - ✅ injectOverlay() verify DOM tồn tại, retry 1 lần, log rõ nguyên nhân.
-// - ✅ __OVERLAY_PING__ không spam warning nếu chưa có receiver.
-// - ✅ Default bật EN mode khi start nếu chưa có mode.
-// - ✅ AUTH REQUIRED: bắt buộc đăng nhập mới được dùng (START/CHAT/TOGGLE/PICK MODES).
+// FIX:
+// - Ưu tiên tabCapture trước, fallback getDisplayMedia sau (tránh mismatch tab => overlay không hiện).
+// - Không nuốt lỗi inject overlay (log rõ nguyên nhân).
+// - __OVERLAY_PING__ không spam warning nếu chưa có receiver.
+// - Default bật EN mode khi start mà chưa có mode (overlay dễ thấy hơn).
+// ✅ AUTH REQUIRED: bắt buộc đăng nhập mới được dùng (START/CHAT...)
 
 "use strict";
 
@@ -17,9 +14,6 @@
 let current = null; // { tabId, server, startedAt, panelOpen, starting }
 let currentModes = { en: false, vi: false, voice: false };
 let wantTranslateVI = false;
-
-// NEW: overlay readiness per tab (anti-race)
-const overlayReadyByTab = new Map(); // tabId -> true
 
 const offscreenUrl = chrome.runtime.getURL("offscreen.html");
 
@@ -29,17 +23,15 @@ function warn(...args) { console.warn(TAG, ...args); }
 function err(...args) { console.error(TAG, ...args); }
 
 // -------------------- Product defaults --------------------
-const DEFAULT_SERVER = "ws://localhost:8765"; // dev default (đổi prod wss://... khi build)
-const DEFAULT_TICKET_PATH = "/stt/ws-ticket"; // TODO đổi path thật nếu khác
-const DEFAULT_REFRESH_PATH = "/auth/refresh"; // TODO đổi path thật nếu khác
+const DEFAULT_SERVER = "wss://api.example.com/stt"; // TODO đổi domain thật
+const DEFAULT_TICKET_PATH = "/stt/ws-ticket";       // TODO đổi path thật nếu khác
+const DEFAULT_REFRESH_PATH = "/auth/refresh";       // TODO đổi path thật nếu khác
 
 const STORAGE_KEYS = {
   SERVER: "sttServerWs",
   API_TOKEN: "sttApiToken", // advanced/manual override (token riêng cho backend nếu có)
   VT_AUTH: "vtAuth",        // overlay session (profile/tokens)
   API_BASE: "sttApiBase",   // optional: https://api.example.com
-
-  // when action denied -> sidepanel auto-open login
   VT_NEED_AUTH: "vtNeedAuth",
 };
 
@@ -95,7 +87,6 @@ async function getVtAuthSession() {
   const st = await storeGet([STORAGE_KEYS.VT_AUTH]);
   const raw = st?.[STORAGE_KEYS.VT_AUTH] || null;
 
-  // hỗ trợ cả 2 dạng: {profile,tokens} hoặc {currentSession:{profile,tokens}}
   const profile = raw?.profile || raw?.currentSession?.profile || null;
   const tokens  = raw?.tokens  || raw?.currentSession?.tokens  || null;
 
@@ -118,16 +109,8 @@ async function markNeedAuth(action = "unknown") {
 
 function broadcastAuthRequired(action = "unknown") {
   try {
-    chrome.runtime.sendMessage({
-      __cmd: "__AUTH_REQUIRED__",
-      payload: { action }
-    });
+    chrome.runtime.sendMessage({ __cmd: "__AUTH_REQUIRED__", payload: { action } });
   } catch {}
-}
-
-async function notifyPanel(tabId, payload) {
-  if (!tabId) return;
-  try { await chrome.tabs.sendMessage(tabId, { __cmd: "__PANEL_NOTIFY__", payload }); } catch {}
 }
 
 async function notifyAuthRequired({ action, tabId, sendResponse }) {
@@ -214,9 +197,7 @@ async function requestWsTicket({ apiBase, accessToken, server }) {
   });
 
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    throw new Error(j?.error || j?.message || `TICKET_FAILED_${r.status}`);
-  }
+  if (!r.ok) throw new Error(j?.error || j?.message || `TICKET_FAILED_${r.status}`);
 
   const wsUrl = j.ws_url || j.wsUrl || j.wss_url || j.wssUrl || "";
   const ticket = j.ticket || j.ws_ticket || "";
@@ -227,7 +208,6 @@ async function requestWsTicket({ apiBase, accessToken, server }) {
     u.searchParams.set("ticket", ticket);
     return { wsUrl: u.toString() };
   }
-
   throw new Error("TICKET_RESPONSE_INVALID");
 }
 
@@ -269,102 +249,33 @@ async function trySendOverlayMode(tabId) {
   }
 }
 
-// -------------------- Overlay inject/remove --------------------
+// -------------------- Overlay --------------------
 async function injectOverlay(tabId) {
-  if (!tabId) return;
-
-  overlayReadyByTab.delete(tabId);
-
-  // 1) CSS
   try {
     await chrome.scripting.insertCSS({ target: { tabId }, files: ["overlay.css"] });
   } catch (e) {
     console.warn("[VT][SW] insertCSS overlay failed:", e);
   }
 
-  // 2) JS (MAIN world + injectImmediately)
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["overlay.js"],
-      world: "MAIN",
-      injectImmediately: true,
-    });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["overlay.js"] });
   } catch (e) {
     console.warn("[VT][SW] executeScript overlay failed:", e);
   }
 
-  // 3) VERIFY overlay exists
-  let ok = false;
-  try {
-    const res = await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      injectImmediately: true,
-      func: () => {
-        const el = document.getElementById("stt-yt-overlay");
-        return {
-          found: !!el,
-          display: el ? getComputedStyle(el).display : null,
-          readyState: document.readyState,
-          url: location.href,
-        };
-      },
-    });
-    const info = res?.[0]?.result;
-    ok = !!info?.found;
-    console.log("[VT][SW] overlay verify:", info);
-    if (ok) overlayReadyByTab.set(tabId, true); // best-effort
-  } catch (e) {
-    console.warn("[VT][SW] overlay verify failed:", e);
-  }
-
-  // 4) Retry once if not found
-  if (!ok) {
-    await new Promise((r) => setTimeout(r, 120));
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["overlay.js"],
-        world: "MAIN",
-        injectImmediately: true,
-      });
-    } catch (e) {
-      console.warn("[VT][SW] overlay retry executeScript failed:", e);
-    }
-
-    try {
-      const res2 = await chrome.scripting.executeScript({
-        target: { tabId },
-        world: "MAIN",
-        injectImmediately: true,
-        func: () => !!document.getElementById("stt-yt-overlay"),
-      });
-      const ok2 = !!res2?.[0]?.result;
-      console.log("[VT][SW] overlay retry verify:", ok2);
-      if (ok2) overlayReadyByTab.set(tabId, true);
-    } catch (e) {
-      console.warn("[VT][SW] overlay retry verify failed:", e);
-    }
-  }
-
-  // reset overlay (nếu có)
   try { await chrome.tabs.sendMessage(tabId, { __cmd: "__OVERLAY_RESET__" }); } catch {}
-
-  // gửi mode (nếu overlay chưa ready thì overlay sẽ ping/ready lại)
   await trySendOverlayMode(tabId);
 }
 
 async function removeOverlay(tabId) {
   try { await chrome.tabs.sendMessage(tabId, { __cmd: "__OVERLAY_TEARDOWN__" }); } catch {}
   try { await chrome.scripting.removeCSS({ target: { tabId }, files: ["overlay.css"] }); } catch {}
-  overlayReadyByTab.delete(tabId);
 }
 
 // -------------------- In-page Panel --------------------
 async function injectPanel(tabId) {
   try { await chrome.scripting.insertCSS({ target: { tabId }, files: ["panel.css"] }); } catch {}
-  try { await chrome.scripting.executeScript({ target: { tabId }, files: ["panel.js"], world: "MAIN", injectImmediately: true }); } catch {}
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["panel.js"] });
   try { await chrome.tabs.sendMessage(tabId, { __cmd: "__PANEL_MOUNT__" }); } catch {}
 }
 async function removePanel(tabId) {
@@ -380,18 +291,25 @@ function setCurrentStarting(tabId, serverUrl) {
   current.starting = true;
   current.startedAt = null;
 }
+
 function setCurrentRunning() {
   if (!current) return;
   current.starting = false;
   if (!current.startedAt) current.startedAt = Date.now();
 }
+
 function setCurrentStopped() {
   if (!current) return;
   current.starting = false;
   current.startedAt = null;
 }
 
-// ✅ tabCapture FIRST => overlay & audio cùng tab
+async function notifyPanel(tabId, payload) {
+  if (!tabId) return;
+  try { await chrome.tabs.sendMessage(tabId, { __cmd: "__PANEL_NOTIFY__", payload }); } catch {}
+}
+
+// ✅ tabCapture FIRST
 async function startCaptureOnTab(tabId, serverUrl, auth = null, strictWs = true) {
   if (!serverUrl) throw new Error("Missing server");
 
@@ -409,7 +327,7 @@ async function startCaptureOnTab(tabId, serverUrl, auth = null, strictWs = true)
   setCurrentStarting(tabId, serverUrl);
   log("startCaptureOnTab tabId=", tabId, "serverUrl=", serverUrl, "strictWs=", strictWs);
 
-  // 1) TRY tabCapture FIRST
+  // 1) tabCapture first
   let streamId = null;
   try {
     if (chrome.tabCapture?.getMediaStreamId) {
@@ -430,10 +348,10 @@ async function startCaptureOnTab(tabId, serverUrl, auth = null, strictWs = true)
     return;
   }
 
-  // 2) FALLBACK displayMedia picker
+  // 2) displayMedia fallback
   await notifyPanel(tabId, {
     level: "info",
-    text: "Đang dùng chế độ chọn tab (Share audio). Hãy chọn đúng TAB bạn đang muốn hiện overlay.",
+    text: "Đang dùng chế độ chọn tab (Share audio). Hãy chọn đúng TAB đang mở overlay.",
   });
 
   let resp2 = null;
@@ -592,7 +510,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   const oldHas = !!(oldVal?.profile || oldVal?.currentSession?.profile);
   const newHas = !!(newVal?.profile || newVal?.currentSession?.profile);
 
-  // logout detected
   if (oldHas && !newHas) {
     (async () => {
       if (current?.startedAt || current?.starting) {
@@ -611,19 +528,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (!msg || !msg.__cmd) return;
 
-    // ✅ Overlay ready handshake
-    if (msg.__cmd === "__OVERLAY_READY__") {
-      const tabId = sender?.tab?.id || null;
-      if (tabId != null) {
-        overlayReadyByTab.set(tabId, true);
-        await trySendOverlayMode(tabId);
-        try { await chrome.tabs.sendMessage(tabId, { __cmd: "__OVERLAY_RESET__" }); } catch {}
-      }
-      sendResponse?.({ ok: true });
-      return;
-    }
-
-    // -------------------- OFFSCREEN STATUS relay + update state --------------------
+    // OFFSCREEN STATUS relay + update state
     if (msg.__cmd === "__OFFSCREEN_STATUS__") {
       const p = msg.payload || {};
       const s = p.state || "unknown";
@@ -635,15 +540,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (current?.tabId) {
           await notifyPanel(current.tabId, {
             level: "error",
-            text: s === "server-busy"
-              ? "Hệ thống bận. Vui lòng thử lại sau."
-              : `Lỗi server: ${p?.error || "unknown"}`,
+            text: s === "server-busy" ? "Hệ thống bận. Vui lòng thử lại sau." : `Lỗi server: ${p?.error || "unknown"}`,
             detail: p,
           });
         }
       }
 
-      // LOG
       if (s === "media-ok") {
         log("OFFSCREEN media-ok audioTracks=", p.audioTracks, "label=", p.audioLabel);
       } else if (s === "meter") {
@@ -660,14 +562,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         log("OFFSCREEN_STATUS:", s, p);
       }
 
-      // relay to current tab
       if (current?.tabId) {
         try { await chrome.tabs.sendMessage(current.tabId, msg); } catch {}
       }
       return;
     }
 
-    // -------------------- transcript relay --------------------
+    // transcript relay
     if (msg.__cmd === "__TRANSCRIPT_DELTA__" || msg.__cmd === "__TRANSCRIPT_STABLE__" || msg.__cmd === "__TRANSCRIPT_PATCH__") {
       if (current?.tabId) {
         try { await chrome.tabs.sendMessage(current.tabId, msg); } catch {}
@@ -675,14 +576,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    // -------------------- Toggle in-page panel (AUTH REQUIRED) --------------------
+    // Toggle in-page panel (inject)
     if (msg.__cmd === "__PANEL_TOGGLE__") {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id) { sendResponse?.({ ok: false, error: "No active tab" }); return; }
-
-      // ✅ AUTH gate
-      const authSess = await requireAuthOrFail({ action: "toggle_panel", tabId: tab.id, sendResponse });
-      if (!authSess) return;
+      if (!tab?.id) { sendResponse?.({ ok: false }); return; }
 
       if (!current || current.tabId !== tab.id || !current.panelOpen) await openPanel(tab.id);
       else await closePanel(tab.id);
@@ -691,12 +588,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    // -------------------- ✅ Panel Start (AUTH REQUIRED) --------------------
+    // ✅ Panel Start (AUTH REQUIRED)
     if (msg.__cmd === "__PANEL_START__") {
       const serverInput = (msg.payload?.server || "").trim();
       const overrideToken = (msg.payload?.token || "").trim();
 
-      // resolve server
       const st0 = await storeGet([STORAGE_KEYS.SERVER]);
       const server = (serverInput || st0[STORAGE_KEYS.SERVER] || DEFAULT_SERVER).trim();
       if (!server) { sendResponse?.({ ok: false, error: "Missing server" }); return; }
@@ -709,24 +605,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) { sendResponse?.({ ok: false, error: "No active tab" }); return; }
 
-      // ✅ AUTH gate
       const authSess = await requireAuthOrFail({ action: "start", tabId: tab.id, sendResponse });
       if (!authSess) return;
 
-      // ✅ Default mode: bật EN nếu chưa có mode nào
+      // default mode
       if (!currentModes.en && !currentModes.vi && !currentModes.voice) {
-        currentModes = { en: true, vi: false, voice: false };
+        currentModes.en = true;
+        currentModes.vi = false;
+        currentModes.voice = false;
         wantTranslateVI = false;
       }
 
-      // stop previous session if running on another tab
       if (current?.startedAt && current.tabId !== tab.id) {
         warn("Already running on another tab -> stopping previous session");
         await stopCapture();
       }
 
       try {
-        // inject overlay first so receiver exists ASAP
+        // inject overlay first (receiver)
         await injectOverlay(tab.id);
 
         const u = parseUrlOrNull(server);
@@ -737,7 +633,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const okProto = isWss || (isLocalDev && u.protocol === "ws:");
         if (!okProto) throw new Error("Server phải là wss:// (hoặc ws://localhost cho dev)");
 
-        // token
         const tok = await getAccessToken({ overrideToken });
         let accessToken = tok.accessToken || "";
         const refreshToken = tok.refreshToken || "";
@@ -746,7 +641,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           throw new Error("Thiếu API token. Hãy nhập token (Advanced) hoặc cấu hình token trong vtAuth.");
         }
 
-        // apiBase: storage or derived
         const st = await storeGet([STORAGE_KEYS.API_BASE]);
         const apiBase = (st[STORAGE_KEYS.API_BASE] || deriveApiBaseFromServer(server)).trim();
 
@@ -762,7 +656,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           try {
             const t = await requestWsTicket({ apiBase, accessToken, server });
             finalWsUrl = t.wsUrl;
-            auth = null; // ticket mode
+            auth = null;
             log("ticket OK, ws=", finalWsUrl);
           } catch (e) {
             warn("ticket failed, fallback auth message:", String(e));
@@ -786,25 +680,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    // -------------------- Panel Stop (AUTH REQUIRED) --------------------
+    // Panel Stop
     if (msg.__cmd === "__PANEL_STOP__") {
-      const tabIdForNotify = current?.tabId || sender?.tab?.id || null;
-
-      // ✅ AUTH gate (giữ chặt: chưa login thì cũng không cho điều khiển)
-      const authSess = await requireAuthOrFail({ action: "stop", tabId: tabIdForNotify, sendResponse });
-      if (!authSess) return;
-
       await stopCapture();
       sendResponse?.({ ok: true });
       return;
     }
 
-    // -------------------- overlay ping --------------------
+    // overlay ping
     if (msg.__cmd === "__OVERLAY_PING__") {
-      const tabId = sender?.tab?.id || current?.tabId || null;
-      if (tabId != null) {
-        await trySendOverlayMode(tabId);
-      }
+      const tabId = (sender && sender.tab && sender.tab.id) || current?.tabId || null;
+      if (tabId != null) await trySendOverlayMode(tabId);
+
       sendResponse?.({
         ok: true,
         active: !!current?.startedAt,
@@ -815,13 +702,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    // -------------------- modes from sidepanel (AUTH REQUIRED) --------------------
+    // modes from sidepanel
     if (msg.__cmd === "__TRANSCRIPT_MODES__") {
-      const tabIdForNotify = current?.tabId || sender?.tab?.id || null;
-
-      const authSess = await requireAuthOrFail({ action: "modes", tabId: tabIdForNotify, sendResponse });
-      if (!authSess) return;
-
       const modes = normalizeModes(msg.payload);
       currentModes = modes;
       wantTranslateVI = !!modes.vi;
@@ -832,12 +714,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       maybeUpdateTranslator(false);
-
       sendResponse?.({ ok: true, modes: currentModes });
       return;
     }
 
-    // -------------------- ✅ Proxy REST for chatbot (AUTH REQUIRED) --------------------
+    // ✅ Proxy REST for chatbot (AUTH REQUIRED)
     if (msg.__cmd === "__CHAT_REST__") {
       const tabIdForNotify = current?.tabId || null;
 
@@ -862,33 +743,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           },
           body: JSON.stringify(body || {}),
         });
-
-        const j = await r.json().catch(() => ({}));
-        sendResponse?.({
+        const j = await r.json();
+        sendResponse({
           ok: r.ok,
           text: j?.text || j?.answer || j?.output || JSON.stringify(j),
           raw: j,
           status: r.status,
         });
       } catch (e) {
-        sendResponse?.({ ok: false, error: String(e) });
+        sendResponse({ ok: false, error: String(e) });
       }
       return;
     }
-
-    // -------------------- optional: allow other commands --------------------
   })();
 
-  return true; // keep channel for async sendResponse
+  return true;
 });
 
 // đảm bảo mọi tab đều dùng sidepanel.html
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.status === "complete") {
-    try {
-      chrome.sidePanel?.setOptions?.({ tabId, path: "sidepanel.html", enabled: true });
-    } catch {}
+    try { chrome.sidePanel?.setOptions?.({ tabId, path: "sidepanel.html", enabled: true }); } catch {}
   }
 });
-
-log("service_worker loaded");
