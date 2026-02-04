@@ -6,9 +6,24 @@
   const DEBUG = localStorage.getItem("sttOverlayDebug") === "1";
   const dlog = (...a) => { if (DEBUG) console.log("[stt-overlay]", ...a); };
 
+  // ---------- debug counters ----------
+  const DBG = {
+    recv: 0,
+    enPatch: 0,
+    enStable: 0,
+    enDelta: 0,
+    flush: 0,
+    lastRecvAt: 0,
+    lastFlushAt: 0,
+    opsInFrameEN: 0,
+    opsInFrameVI: 0,
+  };
+  function nowMs() { return Math.round(performance.now()); }
+  window.__sttOverlayDbg = DBG;
+
   const MAX_SENTENCES_PER_LINE = Number(localStorage.getItem("sttMaxSentPerLine") || 2);
 
-  // ---------- mount UI (NO innerHTML; TrustedTypes-safe) ----------
+  // ---------- mount UI ----------
   const root = document.createElement("div");
   root.id = ROOT_ID;
   root.setAttribute("role", "log");
@@ -52,7 +67,6 @@
   frame.appendChild(bubbleEN);
   frame.appendChild(bubbleVI);
   root.appendChild(frame);
-
   (document.body || document.documentElement).appendChild(root);
 
   l2EN.classList.add("compact");
@@ -71,15 +85,11 @@
     bubbleEN.style.display = showEN ? "" : "none";
     bubbleVI.style.display = showVI ? "" : "none";
 
-    // (tuỳ chọn) nếu muốn nhìn thấy overlay ngay cả khi chưa có text:
-    // hiển thị "…" khi bật mode mà chưa có nội dung
     if (showEN && !fullTextEN) l2EN.textContent = "…";
     if (showVI && !fullTextVI) l2VI.textContent = "…";
     if (!showEN) { l1EN.textContent = ""; l2EN.textContent = ""; l2EN.classList.add("compact"); }
     if (!showVI) { l1VI.textContent = ""; l2VI.textContent = ""; l2VI.classList.add("compact"); }
   }
-
-  // Ban đầu ẩn overlay, đợi mode
   applyOverlayMode(false, false);
 
   // ---------- measurer ----------
@@ -218,51 +228,215 @@
       line2 = lines[lines.length - 1];
     }
 
+    if (DEBUG) {
+      const prev1 = $l1.textContent || "";
+      const prev2 = $l2.textContent || "";
+      if (prev1 !== line1 || prev2 !== line2) {
+        dlog(`[render] maxPx=${innerMaxPx(bubbleEl).toFixed?.(0)} line1Len=${line1.length} line2Len=${line2.length}`);
+        dlog(`[render] prev1="${prev1}"`);
+        dlog(`[render] prev2="${prev2}"`);
+        dlog(`[render] new1 ="${line1}"`);
+        dlog(`[render] new2 ="${line2}"`);
+      }
+    }
+
     if ($l1.textContent !== line1) $l1.textContent = line1;
     if ($l2.textContent !== line2) $l2.textContent = line2;
 
     if (!line1.trim()) $l2.classList.add("compact"); else $l2.classList.remove("compact");
   }
 
-  // ---------- Models ----------
+  // ---------- Models (FIX: apply patches in-order) ----------
   let fullTextEN = "";
-  let qDelEN = 0, qInsEN = "";
   let scheduledEN = false;
 
-  function enqueuePatchEN(delN, insS) {
-    qDelEN += (delN | 0);
-    if (insS) qInsEN += String(insS);
-    if (!scheduledEN) { scheduledEN = true; requestAnimationFrame(flushPatchesEN); }
+  // Queue of operations to apply sequentially
+  const opsEN = []; // { del, ins, seq }
+  let lastPatchSeqEN = -1;
+  let lastStableSeqEN = -1;
+
+  function enqueueOpEN(delN, insS, seq = null) {
+    DBG.enPatch++;
+    DBG.opsInFrameEN++;
+
+    const t = nowMs();
+    const dt = DBG.lastRecvAt ? (t - DBG.lastRecvAt) : 0;
+    DBG.lastRecvAt = t;
+
+    const del = (delN | 0);
+    const ins = insS ? String(insS) : "";
+
+    // seq guard (best-effort). Accept ops without seq.
+    if (seq != null) {
+      const s = Number(seq);
+      if (Number.isFinite(s)) {
+        if (s <= lastPatchSeqEN) {
+          if (DEBUG) dlog(`[EN drop patch] seq=${s} <= lastPatchSeq=${lastPatchSeqEN}`);
+          return;
+        }
+        lastPatchSeqEN = s;
+      }
+    }
+
+    if (DEBUG) {
+      dlog(`[EN enqueue] dt=${dt}ms del=${del} insLen=${ins.length} fullLen=${fullTextEN.length} seq=${seq ?? "-"}`);
+      if (ins) dlog(`[EN enqueue] ins="${ins.slice(0, 80)}"${ins.length > 80 ? "..." : ""}`);
+    }
+
+    opsEN.push({ del, ins, seq: seq ?? null });
+
+    if (!scheduledEN) {
+      scheduledEN = true;
+      requestAnimationFrame(flushEN);
+    }
   }
-  function flushPatchesEN() {
+
+  function applyOneOp(text, op) {
+    let out = text;
+    if (op.del > 0) out = op.del >= out.length ? "" : out.slice(0, out.length - op.del);
+    if (op.ins) out += op.ins;
+    return out;
+  }
+
+  function flushEN() {
     try {
-      if (qDelEN || qInsEN) {
-        if (qDelEN > 0) fullTextEN = qDelEN >= fullTextEN.length ? "" : fullTextEN.slice(0, fullTextEN.length - qDelEN);
-        if (qInsEN) fullTextEN += qInsEN;
-        qDelEN = 0; qInsEN = "";
+      DBG.flush++;
+      const t = nowMs();
+      const dt = DBG.lastFlushAt ? (t - DBG.lastFlushAt) : 0;
+      DBG.lastFlushAt = t;
+
+      if (DEBUG) {
+        dlog(`[EN flush] dt=${dt}ms opsInFrame=${DBG.opsInFrameEN} queued=${opsEN.length} fullLen(before)=${fullTextEN.length}`);
+      }
+
+      if (opsEN.length) {
+        const beforeTail = fullTextEN.slice(Math.max(0, fullTextEN.length - 80));
+        for (let i = 0; i < opsEN.length; i++) {
+          fullTextEN = applyOneOp(fullTextEN, opsEN[i]);
+        }
+        opsEN.length = 0;
+
+        if (DEBUG) {
+          const afterTail = fullTextEN.slice(Math.max(0, fullTextEN.length - 80));
+          dlog(`[EN flush] fullLen(after)=${fullTextEN.length}`);
+          dlog(`[EN flush] tail(before)="${beforeTail}"`);
+          dlog(`[EN flush] tail(after )="${afterTail}"`);
+        }
+
         renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
       }
-    } finally { scheduledEN = false; }
+    } finally {
+      DBG.opsInFrameEN = 0;
+      scheduledEN = false;
+    }
   }
 
+  function applyStableEN(full, seq = null) {
+    if (typeof full !== "string") return;
+    DBG.enStable++;
+
+    // stable seq guard (best-effort)
+    if (seq != null) {
+      const s = Number(seq);
+      if (Number.isFinite(s) && s <= lastStableSeqEN) {
+        if (DEBUG) dlog(`[EN drop stable] seq=${s} <= lastStableSeq=${lastStableSeqEN}`);
+        return;
+      }
+      if (Number.isFinite(s)) lastStableSeqEN = s;
+    }
+
+    if (DEBUG) {
+      dlog(`[EN stable] fullLen=${full.length} curLen=${fullTextEN.length} scheduledEN=${scheduledEN} seq=${seq ?? "-"}`);
+      dlog(`[EN stable] tail="${full.slice(Math.max(0, full.length - 80))}"`);
+    }
+
+    // ensure pending ops applied first (keep monotonic)
+    if (scheduledEN) flushEN();
+
+    // Prefer stable as authoritative, but avoid weird shrink glitches:
+    if (full === fullTextEN) return;
+
+    if (full.length >= fullTextEN.length) {
+      fullTextEN = full;
+      renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
+      return;
+    }
+
+    // If stable is a prefix of current => allow shrink (safe)
+    if (fullTextEN.startsWith(full)) {
+      fullTextEN = full;
+      renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
+      return;
+    }
+
+    // If divergence lớn => resync theo stable (đỡ nhảy loạn lâu dài)
+    const diff = Math.abs(full.length - fullTextEN.length);
+    if (diff > 24) {
+      if (DEBUG) dlog(`[EN stable] RESYNC (diff=${diff})`);
+      fullTextEN = full;
+      renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
+      return;
+    }
+
+    // Otherwise: skip nhỏ để tránh giật
+    if (DEBUG) dlog(`[EN stable] SKIP (shorter but not prefix, diff=${diff})`);
+  }
+
+  // ---------- VI model (same fix) ----------
   let fullTextVI = "";
-  let qDelVI = 0, qInsVI = "";
   let scheduledVI = false;
+  const opsVI = [];
+  let lastPatchSeqVI = -1;
+  let lastStableSeqVI = -1;
 
-  function enqueuePatchVI(delN, insS) {
-    qDelVI += (delN | 0);
-    if (insS) qInsVI += String(insS);
-    if (!scheduledVI) { scheduledVI = true; requestAnimationFrame(flushPatchesVI); }
+  function enqueueOpVI(delN, insS, seq = null) {
+    DBG.opsInFrameVI++;
+    const del = (delN | 0);
+    const ins = insS ? String(insS) : "";
+
+    if (seq != null) {
+      const s = Number(seq);
+      if (Number.isFinite(s)) {
+        if (s <= lastPatchSeqVI) return;
+        lastPatchSeqVI = s;
+      }
+    }
+    opsVI.push({ del, ins, seq: seq ?? null });
+    if (!scheduledVI) { scheduledVI = true; requestAnimationFrame(flushVI); }
   }
-  function flushPatchesVI() {
+
+  function flushVI() {
     try {
-      if (qDelVI || qInsVI) {
-        if (qDelVI > 0) fullTextVI = qDelVI >= fullTextVI.length ? "" : fullTextVI.slice(0, fullTextVI.length - qDelVI);
-        if (qInsVI) fullTextVI += qInsVI;
-        qDelVI = 0; qInsVI = "";
+      if (opsVI.length) {
+        for (let i = 0; i < opsVI.length; i++) {
+          fullTextVI = applyOneOp(fullTextVI, opsVI[i]);
+        }
+        opsVI.length = 0;
         renderTwoLines(fullTextVI, bubbleVI, l1VI, l2VI);
       }
-    } finally { scheduledVI = false; }
+    } finally {
+      DBG.opsInFrameVI = 0;
+      scheduledVI = false;
+    }
+  }
+
+  function applyStableVI(full, seq = null) {
+    if (typeof full !== "string") return;
+
+    if (seq != null) {
+      const s = Number(seq);
+      if (Number.isFinite(s) && s <= lastStableSeqVI) return;
+      if (Number.isFinite(s)) lastStableSeqVI = s;
+    }
+
+    if (scheduledVI) flushVI();
+
+    if (full === fullTextVI) return;
+
+    if (full.length >= fullTextVI.length || fullTextVI.startsWith(full) || Math.abs(full.length - fullTextVI.length) > 24) {
+      fullTextVI = full;
+      renderTwoLines(fullTextVI, bubbleVI, l1VI, l2VI);
+    }
   }
 
   // ---------- message handlers ----------
@@ -271,41 +445,44 @@
     const type = msg.__cmd || msg.type;
     if (!type) return;
 
-    // EN
+    // EN patch
     if (type === "__TRANSCRIPT_PATCH__" || type === "patch") {
       const delN = Number(msg.payload?.delete ?? msg.delete ?? 0) || 0;
       const insS = String(msg.payload?.insert ?? msg.insert ?? "");
-      enqueuePatchEN(delN, insS);
-      return;
-    }
-    if (type === "__TRANSCRIPT_DELTA__" || type === "delta" || type === "delta-append") {
-      const append = String(msg.payload?.append ?? msg.append ?? "");
-      enqueuePatchEN(0, append);
-      return;
-    }
-    if (type === "__TRANSCRIPT_STABLE__" || type === "stable") {
-      const full = msg.full ?? msg.detail?.full ?? msg.payload?.full;
-      if (typeof full === "string" && full.length >= fullTextEN.length) {
-        if (scheduledEN) flushPatchesEN();
-        fullTextEN = full;
-        renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
-      }
+      const seq  = msg.payload?.seq ?? msg.seq ?? null;
+      enqueueOpEN(delN, insS, seq);
       return;
     }
 
-    // VI
-    if (type === "__TRANS_VI_DELTA__" || type === "vi-delta") {
+    // EN delta
+    if (type === "__TRANSCRIPT_DELTA__" || type === "delta" || type === "delta-append") {
+      DBG.enDelta++;
       const append = String(msg.payload?.append ?? msg.append ?? "");
-      enqueuePatchVI(0, append);
+      if (DEBUG) dlog(`[EN delta] appendLen=${append.length} "${append.slice(0,80)}"${append.length>80?"...":""}`);
+      enqueueOpEN(0, append, msg.payload?.seq ?? msg.seq ?? null);
       return;
     }
+
+    // EN stable
+    if (type === "__TRANSCRIPT_STABLE__" || type === "stable") {
+      const full = msg.full ?? msg.detail?.full ?? msg.payload?.full;
+      const seq  = msg.payload?.seq ?? msg.seq ?? null;
+      applyStableEN(full, seq);
+      return;
+    }
+
+    // VI delta
+    if (type === "__TRANS_VI_DELTA__" || type === "vi-delta") {
+      const append = String(msg.payload?.append ?? msg.append ?? "");
+      enqueueOpVI(0, append, msg.payload?.seq ?? msg.seq ?? null);
+      return;
+    }
+
+    // VI stable
     if (type === "__TRANS_VI_STABLE__" || type === "vi-stable") {
       const full = msg.full ?? msg.detail?.full ?? msg.payload?.full;
-      if (typeof full === "string" && full.length >= fullTextVI.length) {
-        if (scheduledVI) flushPatchesVI();
-        fullTextVI = full;
-        renderTwoLines(fullTextVI, bubbleVI, l1VI, l2VI);
-      }
+      const seq  = msg.payload?.seq ?? msg.seq ?? null;
+      applyStableVI(full, seq);
       return;
     }
 
@@ -318,17 +495,24 @@
       return;
     }
 
+    // RESET
     if (type === "__OVERLAY_RESET__") {
-      if (scheduledEN) flushPatchesEN();
-      if (scheduledVI) flushPatchesVI();
+      // flush remaining (optional)
+      if (scheduledEN) flushEN();
+      if (scheduledVI) flushVI();
+
       fullTextEN = ""; fullTextVI = "";
+      opsEN.length = 0; opsVI.length = 0;
+      lastPatchSeqEN = lastStableSeqEN = -1;
+      lastPatchSeqVI = lastStableSeqVI = -1;
+
       l1EN.textContent = ""; l2EN.textContent = ""; l2EN.classList.add("compact");
       l1VI.textContent = ""; l2VI.textContent = ""; l2VI.classList.add("compact");
-      // giữ mode hiện tại, nếu đang bật thì show placeholder
       applyOverlayMode(showEN, showVI);
       return;
     }
 
+    // TEARDOWN
     if (type === "__OVERLAY_TEARDOWN__") {
       try { root.remove(); } catch {}
       try { measurer.remove(); } catch {}
@@ -349,8 +533,8 @@
 
   window.addEventListener("resize", () => {
     syncMeasureStyle();
-    renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
-    renderTwoLines(fullTextVI, bubbleVI, l1VI, l2VI);
+    if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
+    if (showVI) renderTwoLines(fullTextVI, bubbleVI, l1VI, l2VI);
   });
 
   try { chrome.runtime.sendMessage({ __cmd: "__OVERLAY_PING__" }, () => {}); } catch {}

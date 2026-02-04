@@ -33,11 +33,13 @@ import re
 import traceback
 import platform
 import ctypes
+import threading
 import multiprocessing as mp
 import hmac
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Literal, List, Tuple, Any
+from typing import Optional, Literal, List, Tuple, Any, Dict
 from collections import deque
 from urllib.parse import urlparse, parse_qs
 
@@ -307,10 +309,26 @@ FORCE_REALTIME_PACE = os.getenv("FORCE_REALTIME_PACE", "1").strip().lower() in {
 MAX_BUF_MS = float(os.getenv("MAX_BUF_MS", "900"))
 DROP_BUF_TO_MS = float(os.getenv("DROP_BUF_TO_MS", "450"))
 
-# micro delta
+# micro delta chunking (still supported, but now we do end-diff based patch)
 UI_MICRO_DELTA_ENABLE = os.getenv("UI_MICRO_DELTA_ENABLE", "1").strip().lower() in {"1","true","yes"}
 UI_MICRO_DELTA_MAX_CHARS = int(os.getenv("UI_MICRO_DELTA_MAX_CHARS", "48"))
 UI_MICRO_DELTA_MIN_SLICE_CHARS = int(os.getenv("UI_MICRO_DELTA_MIN_SLICE_CHARS", "12"))
+
+# patch/stable tracing (debug overlay jumps)
+TRACE_PATCH = os.getenv("TRACE_PATCH", "0").strip().lower() in {"1", "true", "yes"}
+TRACE_PATCH_EVERY = int(os.getenv("TRACE_PATCH_EVERY", "1"))   # log every N updates
+TRACE_PATCH_MAX_TAIL = int(os.getenv("TRACE_PATCH_MAX_TAIL", "80"))  # tail chars in logs
+
+# ──────────────────────────────────────────────────────────────────────────────
+# STABILIZER (YouTube-like: append-mostly, confirm rewrites, rate-limit patches)
+# ──────────────────────────────────────────────────────────────────────────────
+STAB_ENABLE = os.getenv("STAB_ENABLE", "1").strip().lower() in {"1","true","yes"}
+PATCH_MAX_HZ = float(os.getenv("PATCH_MAX_HZ", "15"))  # max patch sends per second
+REWRITE_CONFIRM_N = int(os.getenv("REWRITE_CONFIRM_N", "2"))
+MAX_ROLLBACK_CHARS = int(os.getenv("MAX_ROLLBACK_CHARS", "18"))
+MIN_REWRITE_INTERVAL_MS = int(os.getenv("MIN_REWRITE_INTERVAL_MS", "120"))
+IGNORE_SHRINK = os.getenv("IGNORE_SHRINK", "1").strip().lower() in {"1","true","yes"}
+ALLOW_PUNCT_STRIP_APPEND = os.getenv("ALLOW_PUNCT_STRIP_APPEND", "1").strip().lower() in {"1","true","yes"}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Optional AUTH (disabled by default)
@@ -481,6 +499,8 @@ def _init_gpu_or_fail():
                 STT_MODEL, want, REQUIRE_GPU, STT_COMPUTE_TYPE, STT_COMPUTE_FALLBACK, STT_LANGUAGE)
     logger.info("FORCE_REALTIME_PACE=%s MAX_BUF_MS=%s DROP_BUF_TO_MS=%s", FORCE_REALTIME_PACE, MAX_BUF_MS, DROP_BUF_TO_MS)
     logger.info("AUTH: REQUIRE_AUTH=%s AUTH_MODE=%s", REQUIRE_AUTH, AUTH_MODE)
+    logger.info("STAB: enable=%s patch_max_hz=%s rewrite_confirm_n=%s max_rollback_chars=%s min_rewrite_ms=%s ignore_shrink=%s",
+                STAB_ENABLE, PATCH_MAX_HZ, REWRITE_CONFIRM_N, MAX_ROLLBACK_CHARS, MIN_REWRITE_INTERVAL_MS, IGNORE_SHRINK)
 
     if not _CT2_OK:
         logger.error("ctranslate2 is required for faster-whisper. Import failed: %s", _CT2_ERR)
@@ -516,7 +536,7 @@ _init_gpu_or_fail()
 from RealtimeSTT import AudioToTextRecorder  # type: ignore
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Tokenizer for micro-delta patching
+# Tokenizer (still used for chunking inserts)
 # ──────────────────────────────────────────────────────────────────────────────
 try:
     import regex as _re_u  # type: ignore
@@ -525,7 +545,7 @@ try:
         out = []
         for m in _TK.finditer(s or ""):
             tok, ws = m.group(1), m.group(2)
-            out.append((tok+ws, tok))
+            out.append((tok + ws, tok))
         return out
 except Exception:
     _TK = re.compile(r"([A-Za-zÀ-ÖØ-öø-ÿ0-9’'_]+|[.,!?…;:]+|[\"“”()–—-])(\s*)", re.UNICODE)
@@ -533,37 +553,8 @@ except Exception:
         out = []
         for m in _TK.finditer(s or ""):
             tok, ws = m.group(1), m.group(2)
-            out.append((tok+ws, tok))
+            out.append((tok + ws, tok))
         return out
-
-def _norm_core(core: str) -> str:
-    t = core
-    t = t.replace("’","'").replace("‘","'").replace("“",'"').replace("”",'"').replace("…","...")
-    t = re.sub(r"\.{2,}", "...", t)
-    return t.lower()
-
-def _is_punct(core: str) -> bool:
-    return bool(re.fullmatch(r"[.,!?…;:]+|[\"“”()–—-]", core))
-
-def _units_with_norms(s: str):
-    units = _token_units(s)
-    out = []
-    for emit, core in units:
-        if _is_punct(core):
-            norm = core.replace("…","...")
-        else:
-            norm = _norm_core(re.sub(r"[.,!?…;:]+$", "", core))
-        out.append((emit, core, norm))
-    return out
-
-def _overlap_suffix_prefix(a_norms: List[str], b_norms: List[str]) -> int:
-    maxl = min(len(a_norms), len(b_norms))
-    for l in range(maxl, -1, -1):
-        if l == 0:
-            return 0
-        if a_norms[-l:] == b_norms[:l]:
-            return l
-    return 0
 
 async def _ws_send(ws, obj: dict):
     try:
@@ -573,6 +564,9 @@ async def _ws_send(ws, obj: dict):
     except Exception as e:
         logger.debug("ws_send error: %r", e)
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Audio helpers
+# ──────────────────────────────────────────────────────────────────────────────
 def _apply_agc_peak_cpu(x: np.ndarray) -> np.ndarray:
     if x.size == 0:
         return x
@@ -651,6 +645,127 @@ def split_sentences_and_tail(text: str):
     return sents, tail
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Stabilizer helpers
+# ──────────────────────────────────────────────────────────────────────────────
+_TRAIL_PUNCT = " \t\r\n.,!?;:"
+
+def _norm_spaces(s: str) -> str:
+    return " ".join((s or "").strip().split())
+
+def _strip_trailing_punct(s: str) -> str:
+    return (s or "").rstrip(_TRAIL_PUNCT)
+
+def _lcp_len(a: str, b: str) -> int:
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+def _make_end_patch(old: str, new: str) -> Tuple[int, str, int]:
+    c = _lcp_len(old, new)
+    delete_n = len(old) - c
+    insert = new[c:]
+    return delete_n, insert, c
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+@dataclass
+class StabilizerDecision:
+    action: str      # append | rewrite | ignore | noop
+    shown: str
+    raw: str
+    rollback_chars: int
+    lcp: int
+    pending: Optional[str]
+    pending_count: int
+
+class TranscriptStabilizer:
+    """
+    Append-mostly stabilizer:
+      - Accept pure append immediately.
+      - Accept small tail rewrite only after repeating N times.
+      - Ignore shrink to avoid "text disappears".
+      - Throttle rewrite frequency.
+    """
+    def __init__(
+        self,
+        rewrite_confirm_n: int,
+        max_rollback_chars: int,
+        min_rewrite_interval_ms: int,
+        ignore_shrink: bool,
+        allow_punct_strip_append: bool
+    ):
+        self.rewrite_confirm_n = max(1, int(rewrite_confirm_n))
+        self.max_rollback_chars = max(0, int(max_rollback_chars))
+        self.min_rewrite_interval_ms = max(0, int(min_rewrite_interval_ms))
+        self.ignore_shrink = bool(ignore_shrink)
+        self.allow_punct_strip_append = bool(allow_punct_strip_append)
+
+        self.shown = ""
+        self.pending = None
+        self.pending_count = 0
+        self.last_rewrite_ms = 0
+
+    def reset(self, shown: str = ""):
+        self.shown = _norm_spaces(shown)
+        self.pending = None
+        self.pending_count = 0
+        self.last_rewrite_ms = 0
+
+    def update(self, raw_text: str) -> StabilizerDecision:
+        raw = _norm_spaces(raw_text)
+        if raw == self.shown:
+            return StabilizerDecision("noop", self.shown, raw, 0, len(self.shown), self.pending, self.pending_count)
+
+        # ignore shrink (prefix shrink)
+        if self.ignore_shrink and len(raw) < len(self.shown) and self.shown.startswith(raw):
+            return StabilizerDecision("ignore", self.shown, raw, len(self.shown) - len(raw), len(raw), self.pending, self.pending_count)
+
+        # pure append
+        if raw.startswith(self.shown) and len(raw) > len(self.shown):
+            self.shown = raw
+            self.pending = None
+            self.pending_count = 0
+            return StabilizerDecision("append", self.shown, raw, 0, len(self.shown), self.pending, self.pending_count)
+
+        # tolerant append with punctuation strip
+        if self.allow_punct_strip_append:
+            core_shown = _strip_trailing_punct(self.shown)
+            core_raw = _strip_trailing_punct(raw)
+            if core_raw.startswith(core_shown) and len(raw) > len(self.shown):
+                self.shown = raw
+                self.pending = None
+                self.pending_count = 0
+                return StabilizerDecision("append", self.shown, raw, 0, len(core_shown), self.pending, self.pending_count)
+
+        # rewrite candidate
+        c = _lcp_len(self.shown, raw)
+        rollback = len(self.shown) - c
+        if rollback > self.max_rollback_chars:
+            return StabilizerDecision("ignore", self.shown, raw, rollback, c, self.pending, self.pending_count)
+
+        tms = _now_ms()
+        if (tms - self.last_rewrite_ms) < self.min_rewrite_interval_ms:
+            return StabilizerDecision("ignore", self.shown, raw, rollback, c, self.pending, self.pending_count)
+
+        if self.pending == raw:
+            self.pending_count += 1
+        else:
+            self.pending = raw
+            self.pending_count = 1
+
+        if self.pending_count >= self.rewrite_confirm_n:
+            self.shown = raw
+            self.last_rewrite_ms = tms
+            self.pending = None
+            self.pending_count = 0
+            return StabilizerDecision("rewrite", self.shown, raw, rollback, c, self.pending, self.pending_count)
+
+        return StabilizerDecision("ignore", self.shown, raw, rollback, c, self.pending, self.pending_count)
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Single-client lock (ONLY 1 USER AT A TIME)
 # ──────────────────────────────────────────────────────────────────────────────
 _client_lock: Optional[asyncio.Lock] = None
@@ -697,7 +812,6 @@ async def handler(websocket):
         _active_client = sess_id
 
     loop = asyncio.get_running_loop()
-    conn_t0 = time.monotonic()
 
     # helper to schedule async safely from callback threads
     def _submit(coro):
@@ -783,9 +897,30 @@ async def handler(websocket):
         if not ok:
             return
 
+        # transcript state (append-mostly)
         last_emitted: str = ""
-        emitted_units: List[tuple] = []
-        stable_snapshot = ""
+        stable_snapshot: str = ""
+
+        # debug counters for transcript behavior
+        patch_seq = 0
+        stable_seq = 0
+        last_update_ts = time.monotonic()
+
+        # patch rate limiting
+        patch_min_interval_ms = int(1000.0 / max(1e-6, float(PATCH_MAX_HZ))) if PATCH_MAX_HZ > 0 else 0
+        last_patch_send_ms = 0
+
+        # thread-safety (callbacks come from RealtimeSTT threads)
+        patch_lock = threading.Lock()
+
+        # stabilizer (per session)
+        stabilizer = TranscriptStabilizer(
+            rewrite_confirm_n=REWRITE_CONFIRM_N,
+            max_rollback_chars=MAX_ROLLBACK_CHARS,
+            min_rewrite_interval_ms=MIN_REWRITE_INTERVAL_MS,
+            ignore_shrink=IGNORE_SHRINK,
+            allow_punct_strip_append=ALLOW_PUNCT_STRIP_APPEND,
+        )
 
         ui_e2e_samples: List[float] = []
         ui_e2e_last_ms: float = 0.0
@@ -842,134 +977,179 @@ async def handler(websocket):
             history_task = asyncio.create_task(_history_writer())
 
         # ──────────────────────────────────────────────────────────────────────
-        # Patch emitter
+        # Patch emitter (end-diff) + optional chunking
         # ──────────────────────────────────────────────────────────────────────
-        async def _emit_patch_chunked(delete_chars: int, units: List[tuple]):
-            nonlocal last_emitted, emitted_units
+        async def _emit_patch_insert_chunked(delete_chars: int, insert_text: str, seq: int, dbg: Optional[Dict[str, Any]] = None):
+            """
+            Send patch using end-diff semantics: delete N chars from end, then insert.
+            We optionally chunk insert_text into smaller pieces (micro delta) to smooth UI.
+            """
+            t_ms = int(time.time() * 1000)
 
-            if not units:
+            if not insert_text:
                 if delete_chars:
-                    await _ws_send(websocket, {"type": "patch", "delete": int(delete_chars), "insert": ""})
-                    last_emitted = last_emitted[:-delete_chars]
+                    msg = {"type": "patch", "delete": int(delete_chars), "insert": "", "seq": int(seq), "t_ms": t_ms}
+                    if dbg:
+                        msg["_dbg"] = dbg
+                    await _ws_send(websocket, msg)
                 return
 
             if not UI_MICRO_DELTA_ENABLE:
-                insert_text = "".join(u[0] for u in units)
-                await _ws_send(websocket, {"type": "patch", "delete": int(delete_chars), "insert": insert_text})
-                if delete_chars:
-                    last_emitted = last_emitted[:-delete_chars]
-                last_emitted += insert_text
-                emitted_units.extend(units)
+                msg = {"type": "patch", "delete": int(delete_chars), "insert": insert_text, "seq": int(seq), "t_ms": t_ms}
+                if dbg:
+                    msg["_dbg"] = dbg
+                await _ws_send(websocket, msg)
                 return
 
-            maxc = max(8, UI_MICRO_DELTA_MAX_CHARS)
-            minc = max(1, min(UI_MICRO_DELTA_MIN_SLICE_CHARS, maxc))
+            maxc = max(8, int(UI_MICRO_DELTA_MAX_CHARS))
+            minc = max(1, min(int(UI_MICRO_DELTA_MIN_SLICE_CHARS), maxc))
 
-            buf: List[tuple] = []
+            units = _token_units(insert_text)  # list[(emit, core)]
+            buf = []
             cur_len = 0
-            for u in units:
-                l = len(u[0])
-                if buf and cur_len + l > maxc and cur_len >= minc:
-                    insert_text = "".join(x[0] for x in buf)
-                    await _ws_send(websocket, {"type": "patch", "delete": int(delete_chars), "insert": insert_text})
-                    if delete_chars:
-                        last_emitted = last_emitted[:-delete_chars]
-                        delete_chars = 0
-                    last_emitted += insert_text
-                    emitted_units.extend(buf)
-                    buf = [u]
+            first = True
+
+            for emit, _core in units:
+                l = len(emit)
+                if buf and (cur_len + l > maxc) and (cur_len >= minc):
+                    chunk = "".join(x[0] for x in buf)
+                    msg = {"type": "patch", "delete": int(delete_chars if first else 0), "insert": chunk, "seq": int(seq), "t_ms": t_ms}
+                    if dbg:
+                        msg["_dbg"] = dbg if first else {"cont": True}
+                    await _ws_send(websocket, msg)
+                    first = False
+                    buf = [(emit, _core)]
                     cur_len = l
                 else:
-                    buf.append(u)
+                    buf.append((emit, _core))
                     cur_len += l
 
             if buf:
-                insert_text = "".join(x[0] for x in buf)
-                await _ws_send(websocket, {"type": "patch", "delete": int(delete_chars), "insert": insert_text})
-                if delete_chars:
-                    last_emitted = last_emitted[:-delete_chars]
-                last_emitted += insert_text
-                emitted_units.extend(buf)
+                chunk = "".join(x[0] for x in buf)
+                msg = {"type": "patch", "delete": int(delete_chars if first else 0), "insert": chunk, "seq": int(seq), "t_ms": t_ms}
+                if dbg:
+                    msg["_dbg"] = dbg if first else {"cont": True}
+                await _ws_send(websocket, msg)
 
-        def _patch_from_model_text(t: str, window: int = int(os.getenv("MUTABLE_WINDOW_TOKENS", "7"))):
-            nonlocal last_emitted, emitted_units, ui_e2e_last_ms, last_audio_enq_ts, ui_e2e_samples, warming_until_ts, fed_enq_watermark_ts
+        def _patch_from_model_text(raw_text: str):
+            """
+            Called from RealtimeSTT thread.
+            We stabilize raw_text -> shown_text, then do end-diff patch against last_emitted.
+            """
+            nonlocal last_emitted, patch_seq, last_update_ts, last_patch_send_ms
+            nonlocal ui_e2e_last_ms, last_audio_enq_ts, ui_e2e_samples, fed_enq_watermark_ts, warming_until_ts
 
             if time.monotonic() < warming_until_ts:
                 return
 
-            t = (t or "").strip()
-            if not t:
+            raw = _norm_spaces(raw_text or "")
+            if not raw:
                 return
 
+            # e2e sample for debug
             _ref_ts = fed_enq_watermark_ts if fed_enq_watermark_ts is not None else last_audio_enq_ts
             if _ref_ts is not None:
                 ui_e2e_last_ms = (time.monotonic() - _ref_ts) * 1000.0
                 if 0.0 < ui_e2e_last_ms < 3000.0:
                     ui_e2e_samples.append(ui_e2e_last_ms)
 
-            new_units = _units_with_norms(t)
+            with patch_lock:
+                # Stabilize
+                if STAB_ENABLE:
+                    dec = stabilizer.update(raw)
+                    shown = dec.shown
+                else:
+                    dec = StabilizerDecision("noop", raw, raw, 0, 0, None, 0)
+                    shown = raw
 
-            if not emitted_units:
-                _submit(_emit_patch_chunked(0, list(new_units)))
-                return
+                if shown == last_emitted:
+                    return
 
-            window = max(1, int(window))
-            old_tail_units = emitted_units[-min(window, len(emitted_units)):]
-            new_tail_units = new_units[-min(window, len(new_units)):]
+                # rate limit patch output
+                now_ms = _now_ms()
+                if patch_min_interval_ms > 0 and (now_ms - last_patch_send_ms) < patch_min_interval_ms:
+                    return
 
-            old_tail_norms = [u[2] for u in old_tail_units]
-            new_tail_norms = [u[2] for u in new_tail_units]
-            l = _overlap_suffix_prefix(old_tail_norms, new_tail_norms)
+                # compute end-diff
+                delete_chars, insert_text, lcp = _make_end_patch(last_emitted, shown)
 
-            SPACE_GUARD = os.getenv("SPACE_GUARD", "1").strip().lower() in {"1","true","yes"}
+                patch_seq += 1
+                seq = patch_seq
+                last_patch_send_ms = now_ms
 
-            if l > 0:
-                to_delete_units = old_tail_units[l:]
-                chars_to_delete = sum(len(u[0]) for u in to_delete_units)
-                to_insert_units = new_tail_units[l:]
+                # update local state immediately (avoid race)
+                prev = last_emitted
+                last_emitted = shown
 
-                if SPACE_GUARD and to_insert_units:
-                    if last_emitted and last_emitted[-1].isalnum():
-                        first_emit = to_insert_units[0][0]
-                        if first_emit and first_emit[0].isalnum():
-                            fe = to_insert_units[0]
-                            to_insert_units[0] = (" " + fe[0], fe[1], fe[2])
+            # tracing outside lock
+            now_ts = time.monotonic()
+            dt_ms = (now_ts - last_update_ts) * 1000.0
+            last_update_ts = now_ts
 
-                prefix_keep = emitted_units[:len(emitted_units) - len(old_tail_units)]
-                keep_suffix = old_tail_units[:l]
-                emitted_units[:] = prefix_keep + keep_suffix
-                _submit(_emit_patch_chunked(chars_to_delete, to_insert_units))
-            else:
-                to_insert_units = list(new_units)
-                if SPACE_GUARD and to_insert_units:
-                    if last_emitted and last_emitted[-1].isalnum():
-                        first_emit = to_insert_units[0][0]
-                        if first_emit and first_emit[0].isalnum():
-                            fe = to_insert_units[0]
-                            to_insert_units[0] = (" " + fe[0], fe[1], fe[2])
-                _submit(_emit_patch_chunked(0, to_insert_units))
+            if TRACE_PATCH and (seq % max(1, TRACE_PATCH_EVERY) == 0):
+                tail = shown[-TRACE_PATCH_MAX_TAIL:]
+                logger.info(
+                    "[%s] PATCH#%d dt=%.1fms action=%s rollback=%d del=%d ins=%d lcp=%d prev_tail=%r new_tail=%r",
+                    sess_id, seq, dt_ms, dec.action, int(dec.rollback_chars),
+                    int(delete_chars), len(insert_text), int(lcp),
+                    prev[-min(len(prev), TRACE_PATCH_MAX_TAIL):],
+                    tail
+                )
+
+            dbg = {
+                "action": dec.action,
+                "rollback": int(dec.rollback_chars),
+                "lcp": int(lcp),
+                "raw_len": int(len(dec.raw)),
+                "shown_len": int(len(shown)),
+                "del": int(delete_chars),
+                "ins_len": int(len(insert_text)),
+                "pending_n": int(dec.pending_count),
+            }
+
+            _submit(_emit_patch_insert_chunked(int(delete_chars), insert_text, int(seq), dbg))
 
         # Callbacks (called from RealtimeSTT threads!)
         def _on_update_cb(text: str):
             _patch_from_model_text(text)
 
         def _on_stable_cb(text: str):
-            nonlocal stable_snapshot, warming_until_ts
+            nonlocal stable_snapshot, warming_until_ts, stable_seq, last_emitted, last_patch_send_ms
+
             if time.monotonic() < warming_until_ts:
                 return
-            t = (text or "").strip()
+            t = _norm_spaces(text or "")
             if not t:
                 return
+
+            # stable should be monotonic
             if len(t) >= len(stable_snapshot):
                 stable_snapshot = t
 
-            _submit(_ws_send(websocket, {"type": "stable", "full": stable_snapshot}))
+            stable_seq += 1
+            t_ms = int(time.time() * 1000)
+
+            # Reset stabilizer to stable snapshot, and also sync last_emitted (avoid extra jumps)
+            with patch_lock:
+                stabilizer.reset(stable_snapshot)
+                last_emitted = stable_snapshot
+                last_patch_send_ms = _now_ms()
+
+            if TRACE_PATCH and (stable_seq % max(1, TRACE_PATCH_EVERY) == 0):
+                logger.info("[%s] STABLE#%d len=%d tail=%r", sess_id, stable_seq, len(stable_snapshot), stable_snapshot[-TRACE_PATCH_MAX_TAIL:])
+
+            _submit(_ws_send(websocket, {
+                "type": "stable",
+                "full": stable_snapshot,
+                "seq": int(stable_seq),
+                "t_ms": t_ms,
+            }))
+
             if HISTORY_ENABLE and history_q is not None:
                 try:
                     history_q.put_nowait(stable_snapshot)
                 except Exception:
                     pass
-            _patch_from_model_text(t)
 
         def _make_recorder(ct: str) -> AudioToTextRecorder:
             logger.info("[%s] init recorder: model=%s device=%s compute_type=%s lang=%s",
@@ -1205,6 +1385,14 @@ async def handler(websocket):
                             "force_realtime_pace": bool(FORCE_REALTIME_PACE),
                             "max_buf_ms": float(MAX_BUF_MS),
                             "drop_buf_to_ms": float(DROP_BUF_TO_MS),
+                            "stabilizer": {
+                                "enable": bool(STAB_ENABLE),
+                                "patch_max_hz": float(PATCH_MAX_HZ),
+                                "rewrite_confirm_n": int(REWRITE_CONFIRM_N),
+                                "max_rollback_chars": int(MAX_ROLLBACK_CHARS),
+                                "min_rewrite_interval_ms": int(MIN_REWRITE_INTERVAL_MS),
+                                "ignore_shrink": bool(IGNORE_SHRINK),
+                            }
                         }
                         if rss_mb is not None:
                             detail["rss_mb"] = float(rss_mb)
@@ -1229,7 +1417,6 @@ async def handler(websocket):
                 "tail_silence_sec": TAIL_SILENCE_SEC,
                 "queue_max": QUEUE_MAX,
                 "patch": True,
-                "mutable_window_tokens": int(os.getenv("MUTABLE_WINDOW_TOKENS", "7")),
                 "device": STT_DEVICE,
                 "gpu_name": GPU_NAME,
                 "ct2_cuda_device_count": int(_CT2_CUDA_COUNT),
@@ -1243,6 +1430,15 @@ async def handler(websocket):
                 "drop_buf_to_ms": float(DROP_BUF_TO_MS),
                 "idle_timeout_sec": float(IDLE_TIMEOUT_SEC),
                 "auth_required": bool(REQUIRE_AUTH),
+                "stabilizer": {
+                    "enable": bool(STAB_ENABLE),
+                    "patch_max_hz": float(PATCH_MAX_HZ),
+                    "rewrite_confirm_n": int(REWRITE_CONFIRM_N),
+                    "max_rollback_chars": int(MAX_ROLLBACK_CHARS),
+                    "min_rewrite_interval_ms": int(MIN_REWRITE_INTERVAL_MS),
+                    "ignore_shrink": bool(IGNORE_SHRINK),
+                    "allow_punct_strip_append": bool(ALLOW_PUNCT_STRIP_APPEND),
+                }
             }
         })
 

@@ -1,26 +1,49 @@
 // service_worker.js
 // Điều phối Offscreen/Overlay/Panel + proxy REST cho chatbot (__CHAT_REST__)
 // + Translator WS (VI) chỉ connect khi bật "Dịch phụ đề" và đang chạy capture.
-// FIX:
-// - Ưu tiên tabCapture trước, fallback getDisplayMedia sau (tránh mismatch tab => overlay không hiện).
-// - Không nuốt lỗi inject overlay (log rõ nguyên nhân).
+//
+// Tương thích server.py:
+// - Ticket query: ws(s)://... ?ticket=...
+// - Auth message đầu tiên: {"type":"auth","token":"..."} (offscreen sẽ gửi nếu auth.sendFirst=true)
+// - Server events: hello/status/patch/stable/error/auth_ok/ack (được relay qua offscreen)
+//
+// FIX/Behaviors:
+// - Ưu tiên tabCapture trước, fallback getDisplayMedia sau.
+// - Không nuốt lỗi inject overlay (log rõ và ném lỗi để panel thấy).
 // - __OVERLAY_PING__ không spam warning nếu chưa có receiver.
-// - Default bật EN mode khi start mà chưa có mode (overlay dễ thấy hơn).
-// ✅ AUTH REQUIRED: bắt buộc đăng nhập mới được dùng (START/CHAT...)
+// - Default bật EN mode khi start nếu chưa có mode.
+// - AUTH REQUIRED: bắt buộc đăng nhập mới được dùng (START/CHAT...)
 
 "use strict";
 
 // -------------------- Global state --------------------
-let current = null; // { tabId, server, startedAt, panelOpen, starting }
+// current: { tabId, server, finalWsUrl, startedAt, panelOpen, starting }
+let current = null;
 let currentModes = { en: false, vi: false, voice: false };
 let wantTranslateVI = false;
 
-const offscreenUrl = chrome.runtime.getURL("offscreen.html");
+// -------------------- Transcript relay debug --------------------
+let trCount = { patch: 0, delta: 0, stable: 0, lastLogAt: 0 };
+function maybeLogTranscriptRate(kind) {
+  trCount[kind] = (trCount[kind] || 0) + 1;
+  const now = Date.now();
+  if (!trCount.lastLogAt) trCount.lastLogAt = now;
+  if (now - trCount.lastLogAt >= 2000) {
+    log("TRANSCRIPT relay rate/2s:", { ...trCount });
+    trCount.patch = 0;
+    trCount.delta = 0;
+    trCount.stable = 0;
+    trCount.lastLogAt = now;
+  }
+}
 
+// -------------------- Const / Logging --------------------
 const TAG = "[VT][SW]";
 function log(...args) { console.log(TAG, ...args); }
 function warn(...args) { console.warn(TAG, ...args); }
 function err(...args) { console.error(TAG, ...args); }
+
+const offscreenUrl = chrome.runtime.getURL("offscreen.html");
 
 // -------------------- Product defaults --------------------
 const DEFAULT_SERVER = "wss://api.example.com/stt"; // TODO đổi domain thật
@@ -33,6 +56,7 @@ const STORAGE_KEYS = {
   VT_AUTH: "vtAuth",        // overlay session (profile/tokens)
   API_BASE: "sttApiBase",   // optional: https://api.example.com
   VT_NEED_AUTH: "vtNeedAuth",
+  TRANS_URL: "sttTranslatorWs", // optional: ws://127.0.0.1:8787
 };
 
 // -------------------- chrome.storage helpers --------------------
@@ -46,6 +70,21 @@ function storeRemove(keys) {
   return new Promise((resolve) => chrome.storage.local.remove(keys, resolve));
 }
 
+// -------------------- Utils: Tabs / Send message safely --------------------
+async function safeSendTab(tabId, msg) {
+  if (!tabId) return false;
+  try {
+    await chrome.tabs.sendMessage(tabId, msg);
+    return true;
+  } catch {
+    return false; // receiver may not exist
+  }
+}
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab || null;
+}
+
 // -------------------- Utils: URL & JWT --------------------
 function isForbiddenTabUrl(url = "") {
   return (
@@ -56,7 +95,6 @@ function isForbiddenTabUrl(url = "") {
     /^https?:\/\/chrome\.google\.com\/webstore\//i.test(url)
   );
 }
-
 function parseUrlOrNull(s) {
   try { return new URL(s); } catch { return null; }
 }
@@ -86,43 +124,36 @@ function safeJwtExpMs(token) {
 async function getVtAuthSession() {
   const st = await storeGet([STORAGE_KEYS.VT_AUTH]);
   const raw = st?.[STORAGE_KEYS.VT_AUTH] || null;
-
   const profile = raw?.profile || raw?.currentSession?.profile || null;
   const tokens  = raw?.tokens  || raw?.currentSession?.tokens  || null;
-
   return { raw, profile, tokens };
 }
-
 function isAuthedSession(sess) {
   const p = sess?.profile;
   if (!p) return false;
   return !!(p.email || p.id || p.name);
 }
-
 async function markNeedAuth(action = "unknown") {
   try {
-    await storeSet({
-      [STORAGE_KEYS.VT_NEED_AUTH]: { at: Date.now(), action }
-    });
+    await storeSet({ [STORAGE_KEYS.VT_NEED_AUTH]: { at: Date.now(), action } });
   } catch {}
 }
-
 function broadcastAuthRequired(action = "unknown") {
   try {
     chrome.runtime.sendMessage({ __cmd: "__AUTH_REQUIRED__", payload: { action } });
   } catch {}
 }
-
+async function notifyPanel(tabId, payload) {
+  if (!tabId) return;
+  await safeSendTab(tabId, { __cmd: "__PANEL_NOTIFY__", payload });
+}
 async function notifyAuthRequired({ action, tabId, sendResponse }) {
   const text = "🔒 Vui lòng đăng nhập để sử dụng tính năng này.";
   await markNeedAuth(action);
   broadcastAuthRequired(action);
-  if (tabId) {
-    try { await notifyPanel(tabId, { level: "error", text }); } catch {}
-  }
+  if (tabId) await notifyPanel(tabId, { level: "error", text });
   sendResponse?.({ ok: false, code: "AUTH_REQUIRED", error: text });
 }
-
 async function requireAuthOrFail({ action, tabId, sendResponse }) {
   const sess = await getVtAuthSession();
   if (isAuthedSession(sess)) return sess;
@@ -242,76 +273,90 @@ async function ensureOffscreen() {
 // -------------------- Overlay helpers --------------------
 async function trySendOverlayMode(tabId) {
   if (!tabId) return;
-  try {
-    await chrome.tabs.sendMessage(tabId, { __cmd: "__OVERLAY_MODE__", payload: currentModes });
-  } catch {
-    // ignore: receiver may not exist yet
-  }
+  await safeSendTab(tabId, { __cmd: "__OVERLAY_MODE__", payload: currentModes });
 }
 
-// -------------------- Overlay --------------------
+// -------------------- Overlay inject/remove --------------------
 async function injectOverlay(tabId) {
+  if (!tabId) throw new Error("Missing tabId");
+
   try {
     await chrome.scripting.insertCSS({ target: { tabId }, files: ["overlay.css"] });
   } catch (e) {
-    console.warn("[VT][SW] insertCSS overlay failed:", e);
+    warn("insertCSS overlay failed:", e);
+    // insertCSS có thể fail trên trang bị chặn, nhưng vẫn thử executeScript để lấy lỗi rõ hơn
   }
 
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ["overlay.js"] });
   } catch (e) {
-    console.warn("[VT][SW] executeScript overlay failed:", e);
+    err("executeScript overlay failed:", e);
+    // Đây là lỗi critical: nếu overlay không inject được, user sẽ không thấy phụ đề
+    throw new Error(`Không inject được overlay: ${String(e?.message || e)}`);
   }
 
-  try { await chrome.tabs.sendMessage(tabId, { __cmd: "__OVERLAY_RESET__" }); } catch {}
+  await safeSendTab(tabId, { __cmd: "__OVERLAY_RESET__" });
   await trySendOverlayMode(tabId);
 }
 
 async function removeOverlay(tabId) {
-  try { await chrome.tabs.sendMessage(tabId, { __cmd: "__OVERLAY_TEARDOWN__" }); } catch {}
+  if (!tabId) return;
+  await safeSendTab(tabId, { __cmd: "__OVERLAY_TEARDOWN__" });
   try { await chrome.scripting.removeCSS({ target: { tabId }, files: ["overlay.css"] }); } catch {}
 }
 
-// -------------------- In-page Panel --------------------
+// -------------------- In-page Panel inject/remove --------------------
 async function injectPanel(tabId) {
+  if (!tabId) return;
   try { await chrome.scripting.insertCSS({ target: { tabId }, files: ["panel.css"] }); } catch {}
-  await chrome.scripting.executeScript({ target: { tabId }, files: ["panel.js"] });
-  try { await chrome.tabs.sendMessage(tabId, { __cmd: "__PANEL_MOUNT__" }); } catch {}
+  try { await chrome.scripting.executeScript({ target: { tabId }, files: ["panel.js"] }); } catch {}
+  await safeSendTab(tabId, { __cmd: "__PANEL_MOUNT__" });
 }
 async function removePanel(tabId) {
-  try { await chrome.tabs.sendMessage(tabId, { __cmd: "__PANEL_TEARDOWN__" }); } catch {}
+  if (!tabId) return;
+  await safeSendTab(tabId, { __cmd: "__PANEL_TEARDOWN__" });
   try { await chrome.scripting.removeCSS({ target: { tabId }, files: ["panel.css"] }); } catch {}
 }
 
-// -------------------- Capture helpers --------------------
+// -------------------- Capture state helpers --------------------
 function setCurrentStarting(tabId, serverUrl) {
-  current = current || { tabId, server: serverUrl, startedAt: null, panelOpen: true, starting: false };
+  current = current || { tabId, server: serverUrl, finalWsUrl: serverUrl, startedAt: null, panelOpen: true, starting: false };
   current.tabId = tabId;
   current.server = serverUrl;
+  current.finalWsUrl = serverUrl;
   current.starting = true;
   current.startedAt = null;
 }
-
 function setCurrentRunning() {
   if (!current) return;
   current.starting = false;
   if (!current.startedAt) current.startedAt = Date.now();
 }
-
 function setCurrentStopped() {
   if (!current) return;
   current.starting = false;
   current.startedAt = null;
 }
 
-async function notifyPanel(tabId, payload) {
-  if (!tabId) return;
-  try { await chrome.tabs.sendMessage(tabId, { __cmd: "__PANEL_NOTIFY__", payload }); } catch {}
+// ✅ tabCapture.getMediaStreamId helper (Promise wrapper)
+function tabCaptureGetStreamId(targetTabId) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (!chrome.tabCapture?.getMediaStreamId) return resolve(null);
+      chrome.tabCapture.getMediaStreamId({ targetTabId }, (streamId) => {
+        const lastErr = chrome.runtime.lastError;
+        if (lastErr) return reject(new Error(lastErr.message));
+        resolve(streamId || null);
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
 }
 
 // ✅ tabCapture FIRST
-async function startCaptureOnTab(tabId, serverUrl, auth = null, strictWs = true) {
-  if (!serverUrl) throw new Error("Missing server");
+async function startCaptureOnTab(tabId, wsUrl, auth = null, strictWs = true) {
+  if (!wsUrl) throw new Error("Missing server");
 
   await ensureOffscreen();
 
@@ -324,16 +369,16 @@ async function startCaptureOnTab(tabId, serverUrl, auth = null, strictWs = true)
     );
   }
 
-  setCurrentStarting(tabId, serverUrl);
-  log("startCaptureOnTab tabId=", tabId, "serverUrl=", serverUrl, "strictWs=", strictWs);
+  setCurrentStarting(tabId, wsUrl);
+  current.finalWsUrl = wsUrl;
+
+  log("startCaptureOnTab tabId=", tabId, "wsUrl=", wsUrl, "strictWs=", strictWs);
 
   // 1) tabCapture first
   let streamId = null;
   try {
-    if (chrome.tabCapture?.getMediaStreamId) {
-      streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
-      log("tabCapture.getMediaStreamId OK");
-    }
+    streamId = await tabCaptureGetStreamId(tabId);
+    if (streamId) log("tabCapture.getMediaStreamId OK");
   } catch (e) {
     warn("tabCapture.getMediaStreamId failed -> fallback displayMedia. err=", String(e));
   }
@@ -341,7 +386,7 @@ async function startCaptureOnTab(tabId, serverUrl, auth = null, strictWs = true)
   if (streamId) {
     const resp = await chrome.runtime.sendMessage({
       __cmd: "__OFFSCREEN_START__",
-      payload: { streamId, server: serverUrl, auth, captureSource: "tab", strictWs },
+      payload: { streamId, server: wsUrl, auth, captureSource: "tab", strictWs },
     });
     if (!resp?.ok) throw new Error(resp?.error || "OFFSCREEN_START_FAILED");
     maybeUpdateTranslator();
@@ -358,7 +403,7 @@ async function startCaptureOnTab(tabId, serverUrl, auth = null, strictWs = true)
   try {
     resp2 = await chrome.runtime.sendMessage({
       __cmd: "__OFFSCREEN_START__",
-      payload: { server: serverUrl, auth, captureSource: "display", strictWs },
+      payload: { server: wsUrl, auth, captureSource: "display", strictWs },
     });
   } catch (e) {
     resp2 = { ok: false, error: String(e) };
@@ -377,32 +422,38 @@ async function stopCapture() {
 // -------------------- Open/Close in-page panel --------------------
 async function openPanel(tabId) {
   await injectPanel(tabId);
-  await injectOverlay(tabId);
 
-  current = current || { tabId, server: null, startedAt: null, panelOpen: true, starting: false };
+  // Overlay luôn inject để user thấy phụ đề ngay
+  try {
+    await injectOverlay(tabId);
+  } catch (e) {
+    // panel vẫn mở được, nhưng báo lỗi overlay rõ ràng
+    await notifyPanel(tabId, { level: "error", text: String(e?.message || e) });
+  }
+
+  current = current || { tabId, server: null, finalWsUrl: null, startedAt: null, panelOpen: true, starting: false };
   current.tabId = tabId;
   current.panelOpen = true;
 
   const st = await storeGet([STORAGE_KEYS.SERVER]);
   const server = (st[STORAGE_KEYS.SERVER] || DEFAULT_SERVER).trim();
 
-  try {
-    await chrome.tabs.sendMessage(tabId, {
-      __cmd: "__PANEL_OPENED__",
-      payload: {
-        server,
-        active: !!current.startedAt,
-        starting: !!current.starting,
-        url: (await chrome.tabs.get(tabId))?.url || ""
-      },
-    });
-  } catch {}
+  await safeSendTab(tabId, {
+    __cmd: "__PANEL_OPENED__",
+    payload: {
+      server,
+      active: !!current.startedAt,
+      starting: !!current.starting,
+      url: (await chrome.tabs.get(tabId))?.url || ""
+    },
+  });
 
   await trySendOverlayMode(tabId);
 }
 
 async function closePanel(tabId) {
   await removePanel(tabId);
+  // Overlay có thể giữ lại tùy sản phẩm; ở đây tắt luôn khi đóng panel
   await removeOverlay(tabId);
   if (current && current.tabId === tabId) current.panelOpen = false;
 }
@@ -411,11 +462,12 @@ async function closePanel(tabId) {
 chrome.action.onClicked.addListener((tab) => {
   if (!tab || tab.id == null || tab.windowId == null) return;
 
-  current = current || { tabId: tab.id, server: null, startedAt: null, panelOpen: false, starting: false };
+  current = current || { tabId: tab.id, server: null, finalWsUrl: null, startedAt: null, panelOpen: false, starting: false };
   current.tabId = tab.id;
 
   try { chrome.sidePanel?.setOptions?.({ tabId: tab.id, path: "sidepanel.html", enabled: true }); } catch {}
 
+  // fallback open if setPanelBehavior not available
   if (!chrome.sidePanel?.setPanelBehavior && chrome.sidePanel?.open) {
     chrome.sidePanel.open({ windowId: tab.windowId })
       .catch((e) => console.error("open sidepanel failed (fallback)", e));
@@ -427,6 +479,12 @@ let transWs = null;
 let transUrl = "ws://127.0.0.1:8787";
 let transBackoffMs = 500;
 let transReconnectTimer = null;
+
+async function loadTranslatorUrlFromStorage() {
+  const st = await storeGet([STORAGE_KEYS.TRANS_URL]);
+  const v = (st?.[STORAGE_KEYS.TRANS_URL] || "").trim();
+  if (v) transUrl = v;
+}
 
 function disconnectTranslator(hard = false) {
   try { if (transReconnectTimer) clearTimeout(transReconnectTimer); } catch {}
@@ -446,14 +504,18 @@ function disconnectTranslator(hard = false) {
 function shouldTranslateNow() {
   return !!(wantTranslateVI && current?.tabId && current?.startedAt);
 }
+
 function scheduleTranslatorReconnect() {
   if (!shouldTranslateNow()) return;
   const delay = Math.min(5000, transBackoffMs);
   transReconnectTimer = setTimeout(connectTranslator, delay);
   transBackoffMs = Math.min(5000, transBackoffMs * 2);
 }
-function connectTranslator() {
+
+async function connectTranslator() {
   if (!shouldTranslateNow()) return;
+
+  await loadTranslatorUrlFromStorage();
 
   disconnectTranslator(false);
 
@@ -470,11 +532,12 @@ function connectTranslator() {
       if (!obj || !obj.type) return;
       if (!current?.tabId) return;
 
+      // Relay VI translate events to overlay
       try {
         if (obj.type === "vi-delta" && typeof obj.append === "string") {
-          await chrome.tabs.sendMessage(current.tabId, { __cmd: "__TRANS_VI_DELTA__", payload: { append: obj.append } });
+          await safeSendTab(current.tabId, { __cmd: "__TRANS_VI_DELTA__", payload: { append: obj.append } });
         } else if (obj.type === "vi-stable" && typeof obj.full === "string") {
-          await chrome.tabs.sendMessage(current.tabId, { __cmd: "__TRANS_VI_STABLE__", payload: { full: obj.full } });
+          await safeSendTab(current.tabId, { __cmd: "__TRANS_VI_STABLE__", payload: { full: obj.full } });
         }
       } catch {}
     };
@@ -485,6 +548,7 @@ function connectTranslator() {
     scheduleTranslatorReconnect();
   }
 }
+
 function maybeUpdateTranslator(forceStop = false) {
   if (forceStop || !shouldTranslateNow()) { disconnectTranslator(true); return; }
   if (!transWs) connectTranslator();
@@ -523,6 +587,18 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 });
 
+// -------------------- Stop if tab closed --------------------
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (current?.tabId === tabId) {
+    (async () => {
+      warn("current tab closed -> stopping capture");
+      await stopCapture();
+      disconnectTranslator(true);
+      current = null;
+    })();
+  }
+});
+
 // -------------------- Message bus --------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -546,6 +622,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
       }
 
+      // logs
       if (s === "media-ok") {
         log("OFFSCREEN media-ok audioTracks=", p.audioTracks, "label=", p.audioLabel);
       } else if (s === "meter") {
@@ -553,7 +630,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           "wsOpen=", p.wsOpen, "bytesSent=", p.bytesSent, "chunksSent=", p.chunksSent);
       } else if (
         s === "ws-open" || s === "ws-auth-sent" || s === "ws-error" || s === "ws-close" ||
-        s === "server-hello" || s === "server-status" || s === "server-busy" || s === "server-error"
+        s === "server-hello" || s === "server-status" || s === "server-auth-ok" ||
+        s === "server-busy" || s === "server-error"
       ) {
         log("WS/state:", s, p);
       } else if (s === "error") {
@@ -562,23 +640,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         log("OFFSCREEN_STATUS:", s, p);
       }
 
+      // relay to tab (overlay/panel)
       if (current?.tabId) {
-        try { await chrome.tabs.sendMessage(current.tabId, msg); } catch {}
+        await safeSendTab(current.tabId, msg);
       }
       return;
     }
 
     // transcript relay
-    if (msg.__cmd === "__TRANSCRIPT_DELTA__" || msg.__cmd === "__TRANSCRIPT_STABLE__" || msg.__cmd === "__TRANSCRIPT_PATCH__") {
-      if (current?.tabId) {
-        try { await chrome.tabs.sendMessage(current.tabId, msg); } catch {}
-      }
+    if (
+      msg.__cmd === "__TRANSCRIPT_DELTA__" ||
+      msg.__cmd === "__TRANSCRIPT_STABLE__" ||
+      msg.__cmd === "__TRANSCRIPT_PATCH__"
+    ) {
+      if (msg.__cmd === "__TRANSCRIPT_PATCH__") maybeLogTranscriptRate("patch");
+      else if (msg.__cmd === "__TRANSCRIPT_DELTA__") maybeLogTranscriptRate("delta");
+      else if (msg.__cmd === "__TRANSCRIPT_STABLE__") maybeLogTranscriptRate("stable");
+
+      if (current?.tabId) await safeSendTab(current.tabId, msg);
       return;
     }
 
     // Toggle in-page panel (inject)
     if (msg.__cmd === "__PANEL_TOGGLE__") {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await getActiveTab();
       if (!tab?.id) { sendResponse?.({ ok: false }); return; }
 
       if (!current || current.tabId !== tab.id || !current.panelOpen) await openPanel(tab.id);
@@ -602,13 +687,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ...(overrideToken ? { [STORAGE_KEYS.API_TOKEN]: overrideToken } : {}),
       });
 
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await getActiveTab();
       if (!tab?.id) { sendResponse?.({ ok: false, error: "No active tab" }); return; }
 
       const authSess = await requireAuthOrFail({ action: "start", tabId: tab.id, sendResponse });
       if (!authSess) return;
 
-      // default mode
+      // default mode: bật EN để dễ thấy overlay
       if (!currentModes.en && !currentModes.vi && !currentModes.voice) {
         currentModes.en = true;
         currentModes.vi = false;
@@ -616,13 +701,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         wantTranslateVI = false;
       }
 
+      // nếu đang chạy ở tab khác -> stop
       if (current?.startedAt && current.tabId !== tab.id) {
         warn("Already running on another tab -> stopping previous session");
         await stopCapture();
       }
 
       try {
-        // inject overlay first (receiver)
+        // inject overlay first (receiver). Nếu fail -> throw rõ ràng
         await injectOverlay(tab.id);
 
         const u = parseUrlOrNull(server);
@@ -637,6 +723,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         let accessToken = tok.accessToken || "";
         const refreshToken = tok.refreshToken || "";
 
+        // production wss: yêu cầu token để xin ticket (nếu không có ticket endpoint)
         if (isWss && !isLocalDev && !accessToken) {
           throw new Error("Thiếu API token. Hãy nhập token (Advanced) hoặc cấu hình token trong vtAuth.");
         }
@@ -652,6 +739,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         let finalWsUrl = server;
         let auth = null;
 
+        // Ưu tiên ticket query (server.py AUTH_MODE=ticket/either)
+        // Fallback auth message (server.py AUTH_MODE=message/either)
         if (isWss && accessToken && apiBase) {
           try {
             const t = await requestWsTicket({ apiBase, accessToken, server });
@@ -670,12 +759,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         current = current || {};
         current.server = server;
+        current.finalWsUrl = finalWsUrl;
 
         await trySendOverlayMode(tab.id);
 
-        sendResponse?.({ ok: true, mode: auth ? "auth-message" : "ticket" });
+        sendResponse?.({ ok: true, mode: auth ? "auth-message" : "ticket", ws: finalWsUrl });
       } catch (e) {
-        sendResponse?.({ ok: false, error: String(e?.message || e) });
+        const msgErr = String(e?.message || e);
+        await notifyPanel(tab.id, { level: "error", text: msgErr });
+        sendResponse?.({ ok: false, error: msgErr });
       }
       return;
     }
@@ -687,7 +779,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    // overlay ping
+    // overlay ping (do overlay.js gọi)
     if (msg.__cmd === "__OVERLAY_PING__") {
       const tabId = (sender && sender.tab && sender.tab.id) || current?.tabId || null;
       if (tabId != null) await trySendOverlayMode(tabId);
@@ -710,7 +802,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       const tabId = current?.tabId ?? null;
       if (tabId != null) {
-        try { await chrome.tabs.sendMessage(tabId, { __cmd: "__OVERLAY_MODE__", payload: currentModes }); } catch {}
+        await safeSendTab(tabId, { __cmd: "__OVERLAY_MODE__", payload: currentModes });
       }
 
       maybeUpdateTranslator(false);
@@ -743,7 +835,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           },
           body: JSON.stringify(body || {}),
         });
-        const j = await r.json();
+        const j = await r.json().catch(() => ({}));
         sendResponse({
           ok: r.ok,
           text: j?.text || j?.answer || j?.output || JSON.stringify(j),
@@ -757,6 +849,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
   })();
 
+  // keep channel open for async sendResponse
   return true;
 });
 
