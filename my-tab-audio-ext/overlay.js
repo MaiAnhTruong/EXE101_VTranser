@@ -9,6 +9,7 @@
   // ---------- debug counters ----------
   const DBG = {
     recv: 0,
+
     enPatch: 0,
     enStable: 0,
     enDelta: 0,
@@ -16,12 +17,52 @@
     lastRecvAt: 0,
     lastFlushAt: 0,
     opsInFrameEN: 0,
+
+    // --- VI translate debug ---
+    viDelta: 0,
+    viStable: 0,
+    viDraft: 0,
+    viCommit: 0,
+
+    viFlush: 0,
+    viDropSeq: 0,
+    viDropEpoch: 0,
+    viDropReq: 0,
+    viDropEnSeq: 0,
+    viDropDiverge: 0,
+
+    viLastRecvAt: 0,
+    viLastFlushAt: 0,
     opsInFrameVI: 0,
+
+    lastViSeqSeen: -1,
+    lastViEnSeqSeen: -1,
+    lastEnStableSeqSeen: -1,
+
+    viLastRenderAt: 0,
+    viLastRenderedLen: 0,
   };
+
   function nowMs() { return Math.round(performance.now()); }
   window.__sttOverlayDbg = DBG;
 
+  // ---------- trace ring buffer (for debugging in DevTools) ----------
+  const TRACE_MAX = Number(localStorage.getItem("sttOverlayTraceMax") || 200);
+  const TRACE = [];
+  function tracePush(kind, data) {
+    if (!DEBUG) return;
+    const obj = { t: nowMs(), kind, ...(data || {}) };
+    TRACE.push(obj);
+    if (TRACE.length > TRACE_MAX) TRACE.splice(0, TRACE.length - TRACE_MAX);
+  }
+  window.__sttOverlayTrace = TRACE;
+
   const MAX_SENTENCES_PER_LINE = Number(localStorage.getItem("sttMaxSentPerLine") || 2);
+
+  // VI render throttling: “ra chữ theo word/cụm” cho ổn định
+  const VI_MIN_RENDER_MS = Number(localStorage.getItem("sttViMinRenderMs") || 120);
+  const VI_FORCE_RENDER_MS = Number(localStorage.getItem("sttViForceRenderMs") || 260);
+  const VI_RENDER_BOUNDARY_RE = /(\s|[.!?…,:;，。？！])$/;
 
   // ---------- mount UI ----------
   const root = document.createElement("div");
@@ -32,10 +73,16 @@
   const frame = document.createElement("div");
   frame.className = "frame";
 
+  // 🔒 Force EN on top, VI below (không phụ thuộc CSS ngoài)
+  frame.style.display = "flex";
+  frame.style.flexDirection = "column";
+  frame.style.gap = "6px";
+
   // EN bubble
   const bubbleEN = document.createElement("div");
   bubbleEN.className = "bubble";
   bubbleEN.id = "bubble-en";
+  bubbleEN.style.order = "0";
 
   const l1EN = document.createElement("div");
   l1EN.className = "line line1";
@@ -52,6 +99,7 @@
   const bubbleVI = document.createElement("div");
   bubbleVI.className = "bubble-vi";
   bubbleVI.id = "bubble-vi";
+  bubbleVI.style.order = "1";
 
   const l1VI = document.createElement("div");
   l1VI.className = "line line1";
@@ -86,30 +134,44 @@
     bubbleVI.style.display = showVI ? "" : "none";
 
     if (showEN && !fullTextEN) l2EN.textContent = "…";
-    if (showVI && !fullTextVI) l2VI.textContent = "…";
+    if (showVI && !getVIVisibleText()) l2VI.textContent = "…";
+
     if (!showEN) { l1EN.textContent = ""; l2EN.textContent = ""; l2EN.classList.add("compact"); }
     if (!showVI) { l1VI.textContent = ""; l2VI.textContent = ""; l2VI.classList.add("compact"); }
   }
   applyOverlayMode(false, false);
 
-  // ---------- measurer ----------
-  const measurer = document.createElement("div");
-  (document.body || document.documentElement).appendChild(measurer);
+  // ---------- measurer (EN + VI separate to avoid wrap jitter) ----------
+  const measurerEN = document.createElement("div");
+  const measurerVI = document.createElement("div");
+  (document.body || document.documentElement).appendChild(measurerEN);
+  (document.body || document.documentElement).appendChild(measurerVI);
 
   const syncMeasureStyle = () => {
-    const cs = getComputedStyle(l2EN);
-    measurer.style.cssText = `
+    const csEN = getComputedStyle(l2EN);
+    measurerEN.style.cssText = `
       position: fixed; left: -99999px; top: -99999px;
       visibility: hidden; white-space: nowrap;
-      font-family: ${cs.fontFamily};
-      font-weight: ${cs.fontWeight};
-      font-size: ${cs.fontSize};
-      line-height: ${cs.lineHeight};
+      font-family: ${csEN.fontFamily};
+      font-weight: ${csEN.fontWeight};
+      font-size: ${csEN.fontSize};
+      line-height: ${csEN.lineHeight};
+    `;
+
+    const csVI = getComputedStyle(l2VI);
+    measurerVI.style.cssText = `
+      position: fixed; left: -99999px; top: -99999px;
+      visibility: hidden; white-space: nowrap;
+      font-family: ${csVI.fontFamily};
+      font-weight: ${csVI.fontWeight};
+      font-size: ${csVI.fontSize};
+      line-height: ${csVI.lineHeight};
     `;
   };
   syncMeasureStyle();
 
-  const textWidth = (s) => { measurer.textContent = s; return measurer.scrollWidth; };
+  const textWidthEN = (s) => { measurerEN.textContent = s; return measurerEN.scrollWidth; };
+  const textWidthVI = (s) => { measurerVI.textContent = s; return measurerVI.scrollWidth; };
 
   const innerMaxPx = (bubbleEl) => {
     const frameW = frame.clientWidth;
@@ -132,7 +194,7 @@
     return { sents, tail };
   }
 
-  function fitPrefixByWidth(sentence, remPx) {
+  function fitPrefixByWidth(sentence, remPx, widthFn) {
     if (remPx <= 0) return { fit: "", rest: sentence };
     const tokens = String(sentence).split(/(\s+)/);
     let fit = "";
@@ -140,7 +202,7 @@
       const tok = tokens[i];
       if (!tok) continue;
       const next = fit + tok;
-      if (textWidth(next) <= remPx) {
+      if (widthFn(next) <= remPx) {
         fit = next;
       } else {
         if (!fit) {
@@ -149,7 +211,7 @@
             const mid = (lo + hi) >> 1;
             const cand = tok.slice(0, mid);
             if (!cand) { lo = mid + 1; continue; }
-            if (textWidth(cand) <= remPx) { best = mid; lo = mid + 1; }
+            if (widthFn(cand) <= remPx) { best = mid; lo = mid + 1; }
             else { hi = mid - 1; }
           }
           const cut = tok.slice(0, best);
@@ -163,7 +225,7 @@
     return { fit, rest: "" };
   }
 
-  function buildLines(text, bubbleEl) {
+  function buildLines(text, bubbleEl, widthFn) {
     const { sents, tail } = splitSentencesAndTail(text);
     const queue = sents.slice();
     if (tail) queue.push(tail);
@@ -180,18 +242,18 @@
         const sentence = queue.shift();
         const candidate = line + sentence;
 
-        if (textWidth(candidate) <= maxPx) {
+        if (widthFn(candidate) <= maxPx) {
           line = candidate;
           used += 1;
           continue;
         }
 
-        const remPx = maxPx - textWidth(line);
+        const remPx = maxPx - widthFn(line);
         if (remPx <= 0) {
           queue.unshift(sentence);
           break;
         }
-        const { fit, rest } = fitPrefixByWidth(sentence, remPx);
+        const { fit, rest } = fitPrefixByWidth(sentence, remPx, widthFn);
         if (fit) {
           line += fit;
           used += 1;
@@ -206,7 +268,7 @@
         lines.push(line);
       } else {
         const s = queue.shift();
-        const { fit, rest } = fitPrefixByWidth(s, maxPx);
+        const { fit, rest } = fitPrefixByWidth(s, maxPx, widthFn);
         lines.push(fit || s.slice(0, 1));
         if (rest) queue.unshift(rest);
       }
@@ -215,8 +277,8 @@
     return lines;
   }
 
-  function renderTwoLines(text, bubbleEl, $l1, $l2) {
-    const lines = buildLines(text, bubbleEl);
+  function renderTwoLines(text, bubbleEl, $l1, $l2, widthFn) {
+    const lines = buildLines(text, bubbleEl, widthFn);
     let line1 = "", line2 = "";
 
     if (lines.length === 0) {
@@ -233,10 +295,6 @@
       const prev2 = $l2.textContent || "";
       if (prev1 !== line1 || prev2 !== line2) {
         dlog(`[render] maxPx=${innerMaxPx(bubbleEl).toFixed?.(0)} line1Len=${line1.length} line2Len=${line2.length}`);
-        dlog(`[render] prev1="${prev1}"`);
-        dlog(`[render] prev2="${prev2}"`);
-        dlog(`[render] new1 ="${line1}"`);
-        dlog(`[render] new2 ="${line2}"`);
       }
     }
 
@@ -246,11 +304,10 @@
     if (!line1.trim()) $l2.classList.add("compact"); else $l2.classList.remove("compact");
   }
 
-  // ---------- Models (FIX: apply patches in-order) ----------
+  // ---------- Models (EN: patch in-order) ----------
   let fullTextEN = "";
   let scheduledEN = false;
 
-  // Queue of operations to apply sequentially
   const opsEN = []; // { del, ins, seq }
   let lastPatchSeqEN = -1;
   let lastStableSeqEN = -1;
@@ -266,7 +323,6 @@
     const del = (delN | 0);
     const ins = insS ? String(insS) : "";
 
-    // seq guard (best-effort). Accept ops without seq.
     if (seq != null) {
       const s = Number(seq);
       if (Number.isFinite(s)) {
@@ -278,10 +334,7 @@
       }
     }
 
-    if (DEBUG) {
-      dlog(`[EN enqueue] dt=${dt}ms del=${del} insLen=${ins.length} fullLen=${fullTextEN.length} seq=${seq ?? "-"}`);
-      if (ins) dlog(`[EN enqueue] ins="${ins.slice(0, 80)}"${ins.length > 80 ? "..." : ""}`);
-    }
+    if (DEBUG) dlog(`[EN enqueue] dt=${dt}ms del=${del} insLen=${ins.length} fullLen=${fullTextEN.length} seq=${seq ?? "-"}`);
 
     opsEN.push({ del, ins, seq: seq ?? null });
 
@@ -305,25 +358,15 @@
       const dt = DBG.lastFlushAt ? (t - DBG.lastFlushAt) : 0;
       DBG.lastFlushAt = t;
 
-      if (DEBUG) {
-        dlog(`[EN flush] dt=${dt}ms opsInFrame=${DBG.opsInFrameEN} queued=${opsEN.length} fullLen(before)=${fullTextEN.length}`);
-      }
+      if (DEBUG) dlog(`[EN flush] dt=${dt}ms opsInFrame=${DBG.opsInFrameEN} queued=${opsEN.length} fullLen(before)=${fullTextEN.length}`);
 
       if (opsEN.length) {
-        const beforeTail = fullTextEN.slice(Math.max(0, fullTextEN.length - 80));
         for (let i = 0; i < opsEN.length; i++) {
           fullTextEN = applyOneOp(fullTextEN, opsEN[i]);
         }
         opsEN.length = 0;
 
-        if (DEBUG) {
-          const afterTail = fullTextEN.slice(Math.max(0, fullTextEN.length - 80));
-          dlog(`[EN flush] fullLen(after)=${fullTextEN.length}`);
-          dlog(`[EN flush] tail(before)="${beforeTail}"`);
-          dlog(`[EN flush] tail(after )="${afterTail}"`);
-        }
-
-        renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
+        if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
       }
     } finally {
       DBG.opsInFrameEN = 0;
@@ -335,108 +378,274 @@
     if (typeof full !== "string") return;
     DBG.enStable++;
 
-    // stable seq guard (best-effort)
     if (seq != null) {
       const s = Number(seq);
       if (Number.isFinite(s) && s <= lastStableSeqEN) {
         if (DEBUG) dlog(`[EN drop stable] seq=${s} <= lastStableSeq=${lastStableSeqEN}`);
         return;
       }
-      if (Number.isFinite(s)) lastStableSeqEN = s;
+      if (Number.isFinite(s)) {
+        lastStableSeqEN = s;
+        DBG.lastEnStableSeqSeen = s;
+      }
     }
 
-    if (DEBUG) {
-      dlog(`[EN stable] fullLen=${full.length} curLen=${fullTextEN.length} scheduledEN=${scheduledEN} seq=${seq ?? "-"}`);
-      dlog(`[EN stable] tail="${full.slice(Math.max(0, full.length - 80))}"`);
-    }
-
-    // ensure pending ops applied first (keep monotonic)
     if (scheduledEN) flushEN();
-
-    // Prefer stable as authoritative, but avoid weird shrink glitches:
     if (full === fullTextEN) return;
 
     if (full.length >= fullTextEN.length) {
       fullTextEN = full;
-      renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
+      if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
       return;
     }
 
-    // If stable is a prefix of current => allow shrink (safe)
     if (fullTextEN.startsWith(full)) {
       fullTextEN = full;
-      renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
+      if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
       return;
     }
 
-    // If divergence lớn => resync theo stable (đỡ nhảy loạn lâu dài)
     const diff = Math.abs(full.length - fullTextEN.length);
     if (diff > 24) {
-      if (DEBUG) dlog(`[EN stable] RESYNC (diff=${diff})`);
       fullTextEN = full;
-      renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
+      if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
       return;
     }
 
-    // Otherwise: skip nhỏ để tránh giật
     if (DEBUG) dlog(`[EN stable] SKIP (shorter but not prefix, diff=${diff})`);
   }
 
-  // ---------- VI model (same fix) ----------
-  let fullTextVI = "";
+  // ---------- VI model: commit + draft + throttle render ----------
+  // commit: phần đã “ổn định”
+  let viCommitText = "";
+  // draft: phần nháp thay đổi liên tục (không được phép phá commit)
+  let viDraftText = "";
+
+  // ops apply lên COMMIT (delta/commit/patch)
   let scheduledVI = false;
-  const opsVI = [];
-  let lastPatchSeqVI = -1;
-  let lastStableSeqVI = -1;
+  const opsVI = []; // { del, ins, seq }
 
-  function enqueueOpVI(delN, insS, seq = null) {
-    DBG.opsInFrameVI++;
-    const del = (delN | 0);
-    const ins = insS ? String(insS) : "";
+  let lastViSeqApplied = -1;       // guard mọi msg VI có seq
+  let lastViEnSeqApplied = -1;     // guard theo en_seq nếu có
+  let viEpoch = 0;                // guard theo epoch nếu có
+  let viLastReqId = -1;           // guard theo req_id nếu có
 
+  function getVIVisibleText() {
+    if (viDraftText && viDraftText.startsWith(viCommitText)) return viDraftText;
+    return viCommitText;
+  }
+
+  function viAcceptMeta(payload) {
+    const epoch = payload?.epoch ?? payload?.Epoch ?? payload?.ep ?? null;
+    const reqId = payload?.req_id ?? payload?.reqId ?? payload?.request_id ?? null;
+    const enSeq = payload?.en_seq ?? payload?.enSeq ?? null;
+    const seq = payload?.seq ?? payload?.Seq ?? null;
+    return { epoch, reqId, enSeq, seq };
+  }
+
+  function viGuardAndUpdate({ epoch, reqId, enSeq, seq }, kind) {
+    // epoch guard
+    if (epoch != null) {
+      const e = Number(epoch);
+      if (Number.isFinite(e)) {
+        if (e < viEpoch) {
+          DBG.viDropEpoch++;
+          tracePush("vi-drop-epoch", { kind, epoch: e, cur: viEpoch });
+          return false;
+        }
+        if (e > viEpoch) {
+          // adopt newer epoch if upstream uses it
+          viEpoch = e;
+          viLastReqId = -1;
+          lastViSeqApplied = -1;
+          lastViEnSeqApplied = -1;
+          tracePush("vi-epoch-adopt", { kind, epoch: e });
+        }
+      }
+    }
+
+    // req_id guard (chỉ để chống draft cũ đè draft mới)
+    if (reqId != null) {
+      const r = Number(reqId);
+      if (Number.isFinite(r)) {
+        if (r < viLastReqId) {
+          DBG.viDropReq++;
+          tracePush("vi-drop-req", { kind, reqId: r, last: viLastReqId });
+          return false;
+        }
+        if (r > viLastReqId) viLastReqId = r;
+      }
+    }
+
+    // en_seq guard (đảm bảo VI không “đi lùi” theo EN stable cũ)
+    if (enSeq != null) {
+      const es = Number(enSeq);
+      if (Number.isFinite(es)) {
+        if (es < lastViEnSeqApplied) {
+          DBG.viDropEnSeq++;
+          tracePush("vi-drop-enseq", { kind, enSeq: es, last: lastViEnSeqApplied });
+          return false;
+        }
+        lastViEnSeqApplied = es;
+        DBG.lastViEnSeqSeen = es;
+      }
+    }
+
+    // seq guard
     if (seq != null) {
       const s = Number(seq);
       if (Number.isFinite(s)) {
-        if (s <= lastPatchSeqVI) return;
-        lastPatchSeqVI = s;
+        if (s <= lastViSeqApplied) {
+          DBG.viDropSeq++;
+          tracePush("vi-drop-seq", { kind, seq: s, last: lastViSeqApplied });
+          return false;
+        }
+        lastViSeqApplied = s;
+        DBG.lastViSeqSeen = s;
       }
     }
-    opsVI.push({ del, ins, seq: seq ?? null });
-    if (!scheduledVI) { scheduledVI = true; requestAnimationFrame(flushVI); }
+
+    return true;
+  }
+
+  function enqueueOpVI(delN, insS, meta) {
+    DBG.opsInFrameVI++;
+
+    const t = nowMs();
+    const dt = DBG.viLastRecvAt ? (t - DBG.viLastRecvAt) : 0;
+    DBG.viLastRecvAt = t;
+
+    const del = (delN | 0);
+    const ins = insS ? String(insS) : "";
+
+    // best-effort guard
+    if (!viGuardAndUpdate(meta || {}, "vi-op")) return;
+
+    opsVI.push({ del, ins, seq: meta?.seq ?? null });
+    tracePush("vi-enqueue", { dt, del, insLen: ins.length, commitLen: viCommitText.length });
+
+    if (!scheduledVI) {
+      scheduledVI = true;
+      requestAnimationFrame(flushVI);
+    }
+  }
+
+  // throttle render VI: ra theo word/cụm, tránh update liên tục gây loạn
+  let viRenderTimer = null;
+
+  function shouldRenderVI(text, force = false) {
+    if (force) return true;
+    const t = nowMs();
+    const dt = DBG.viLastRenderAt ? (t - DBG.viLastRenderAt) : 999999;
+
+    // nếu tới hạn bắt buộc thì render
+    if (dt >= VI_FORCE_RENDER_MS) return true;
+
+    // nếu gặp boundary thì render sớm hơn
+    if (dt >= VI_MIN_RENDER_MS && VI_RENDER_BOUNDARY_RE.test(text)) return true;
+
+    return false;
+  }
+
+  function doRenderVI(force = false) {
+    if (!showVI) return;
+    const text = getVIVisibleText();
+
+    const t = nowMs();
+    const can = shouldRenderVI(text, force);
+    if (!can) {
+      // đảm bảo không “kẹt” quá lâu: setTimeout ép render
+      if (!viRenderTimer) {
+        viRenderTimer = setTimeout(() => {
+          viRenderTimer = null;
+          doRenderVI(true);
+        }, Math.max(0, VI_FORCE_RENDER_MS));
+      }
+      return;
+    }
+
+    DBG.viLastRenderAt = t;
+    DBG.viLastRenderedLen = text.length;
+    renderTwoLines(text, bubbleVI, l1VI, l2VI, textWidthVI);
   }
 
   function flushVI() {
     try {
-      if (opsVI.length) {
-        for (let i = 0; i < opsVI.length; i++) {
-          fullTextVI = applyOneOp(fullTextVI, opsVI[i]);
-        }
-        opsVI.length = 0;
-        renderTwoLines(fullTextVI, bubbleVI, l1VI, l2VI);
+      if (!opsVI.length) return;
+
+      DBG.viFlush++;
+      const t = nowMs();
+      const dt = DBG.viLastFlushAt ? (t - DBG.viLastFlushAt) : 0;
+      DBG.viLastFlushAt = t;
+
+      if (DEBUG) {
+        dlog(`[VI flush] dt=${dt}ms opsInFrame=${DBG.opsInFrameVI} queued=${opsVI.length} commitLen(before)=${viCommitText.length}`);
       }
+
+      for (let i = 0; i < opsVI.length; i++) {
+        viCommitText = applyOneOp(viCommitText, opsVI[i]);
+      }
+      opsVI.length = 0;
+
+      // nếu draft không còn extends commit => bỏ draft (tránh draft cũ đè commit mới)
+      if (viDraftText && !viDraftText.startsWith(viCommitText)) {
+        // nhưng nếu commit lại là prefix của draft (ngược) => vẫn ok (đã check)
+        // ở đây là diverge => drop draft
+        viDraftText = "";
+      }
+
+      tracePush("vi-flush", { dt, commitLen: viCommitText.length, visLen: getVIVisibleText().length });
+
+      doRenderVI(false);
     } finally {
       DBG.opsInFrameVI = 0;
       scheduledVI = false;
     }
   }
 
-  function applyStableVI(full, seq = null) {
+  function applyStableVI(full, meta) {
     if (typeof full !== "string") return;
+    DBG.viStable++;
 
-    if (seq != null) {
-      const s = Number(seq);
-      if (Number.isFinite(s) && s <= lastStableSeqVI) return;
-      if (Number.isFinite(s)) lastStableSeqVI = s;
-    }
+    if (!viGuardAndUpdate(meta || {}, "vi-stable")) return;
 
     if (scheduledVI) flushVI();
+    if (full === viCommitText) return;
 
-    if (full === fullTextVI) return;
+    // policy: accept grow / prefix shrink / big diff resync
+    if (
+      full.length >= viCommitText.length ||
+      viCommitText.startsWith(full) ||
+      Math.abs(full.length - viCommitText.length) > 24
+    ) {
+      viCommitText = full;
 
-    if (full.length >= fullTextVI.length || fullTextVI.startsWith(full) || Math.abs(full.length - fullTextVI.length) > 24) {
-      fullTextVI = full;
-      renderTwoLines(fullTextVI, bubbleVI, l1VI, l2VI);
+      // draft chỉ được giữ nếu nó extends commit
+      if (viDraftText && !viDraftText.startsWith(viCommitText)) viDraftText = "";
+
+      doRenderVI(true);
+    } else {
+      // shorter but not prefix => skip (tránh giật)
+      if (DEBUG) dlog(`[VI stable] SKIP (shorter but not prefix, diff=${Math.abs(full.length - viCommitText.length)})`);
+      tracePush("vi-stable-skip", { diff: Math.abs(full.length - viCommitText.length) });
     }
+  }
+
+  function applyDraftVI(full, meta) {
+    if (typeof full !== "string") return;
+    DBG.viDraft++;
+
+    if (!viGuardAndUpdate(meta || {}, "vi-draft")) return;
+
+    // draft không được phép phá commit => nếu diverge thì drop
+    if (viCommitText && !full.startsWith(viCommitText)) {
+      DBG.viDropDiverge++;
+      tracePush("vi-drop-diverge", { draftLen: full.length, commitLen: viCommitText.length });
+      return;
+    }
+
+    viDraftText = full;
+    doRenderVI(false);
   }
 
   // ---------- message handlers ----------
@@ -458,7 +667,6 @@
     if (type === "__TRANSCRIPT_DELTA__" || type === "delta" || type === "delta-append") {
       DBG.enDelta++;
       const append = String(msg.payload?.append ?? msg.append ?? "");
-      if (DEBUG) dlog(`[EN delta] appendLen=${append.length} "${append.slice(0,80)}"${append.length>80?"...":""}`);
       enqueueOpEN(0, append, msg.payload?.seq ?? msg.seq ?? null);
       return;
     }
@@ -471,18 +679,55 @@
       return;
     }
 
-    // VI delta
+    // ---------- VI: delta/commit/patch (apply to COMMIT) ----------
+    // VI delta (append)
     if (type === "__TRANS_VI_DELTA__" || type === "vi-delta") {
-      const append = String(msg.payload?.append ?? msg.append ?? "");
-      enqueueOpVI(0, append, msg.payload?.seq ?? msg.seq ?? null);
+      DBG.viDelta++;
+      const payload = msg.payload || msg.detail || {};
+      const append = String(payload.append ?? msg.append ?? "");
+      const meta = viAcceptMeta(payload);
+
+      tracePush("vi-delta", { appendLen: append.length, seq: meta.seq ?? null, en_seq: meta.enSeq ?? null, epoch: meta.epoch ?? null, req: meta.reqId ?? null });
+
+      enqueueOpVI(0, append, meta);
       return;
     }
 
-    // VI stable
+    // VI commit (append or patch)
+    if (type === "__TRANS_VI_COMMIT__" || type === "vi-commit") {
+      DBG.viCommit++;
+      const payload = msg.payload || msg.detail || {};
+      const delN = Number(payload.delete ?? msg.delete ?? 0) || 0;
+      const insS = String(payload.insert ?? payload.append ?? msg.insert ?? msg.append ?? "");
+      const meta = viAcceptMeta(payload);
+
+      tracePush("vi-commit", { del: delN, insLen: insS.length, seq: meta.seq ?? null });
+
+      enqueueOpVI(delN, insS, meta);
+      return;
+    }
+
+    // VI stable (authoritative full commit)
     if (type === "__TRANS_VI_STABLE__" || type === "vi-stable") {
-      const full = msg.full ?? msg.detail?.full ?? msg.payload?.full;
-      const seq  = msg.payload?.seq ?? msg.seq ?? null;
-      applyStableVI(full, seq);
+      const payload = msg.payload || msg.detail || {};
+      const full = msg.full ?? payload.full ?? msg.detail?.full;
+      const meta = viAcceptMeta(payload);
+
+      tracePush("vi-stable-msg", { fullLen: (full || "").length, seq: meta.seq ?? null });
+
+      applyStableVI(full, meta);
+      return;
+    }
+
+    // VI draft (replace, frequent) -> THROTTLED + must extend commit
+    if (type === "__TRANS_VI_DRAFT__" || type === "vi-draft") {
+      const payload = msg.payload || msg.detail || {};
+      const full = msg.full ?? payload.full ?? payload.text ?? msg.detail?.full;
+      const meta = viAcceptMeta(payload);
+
+      tracePush("vi-draft-msg", { fullLen: (full || "").length, seq: meta.seq ?? null });
+
+      applyDraftVI(full, meta);
       return;
     }
 
@@ -495,27 +740,35 @@
       return;
     }
 
-    // RESET
-    if (type === "__OVERLAY_RESET__") {
-      // flush remaining (optional)
-      if (scheduledEN) flushEN();
+    // ✅ RESET VI ONLY (không đụng EN)
+    if (type === "__TRANS_VI_RESET__") {
       if (scheduledVI) flushVI();
 
-      fullTextEN = ""; fullTextVI = "";
-      opsEN.length = 0; opsVI.length = 0;
-      lastPatchSeqEN = lastStableSeqEN = -1;
-      lastPatchSeqVI = lastStableSeqVI = -1;
+      viCommitText = "";
+      viDraftText = "";
+      opsVI.length = 0;
 
-      l1EN.textContent = ""; l2EN.textContent = ""; l2EN.classList.add("compact");
-      l1VI.textContent = ""; l2VI.textContent = ""; l2VI.classList.add("compact");
-      applyOverlayMode(showEN, showVI);
+      lastViSeqApplied = -1;
+      lastViEnSeqApplied = -1;
+      viLastReqId = -1;
+      viEpoch = (viEpoch | 0) + 1; // bump local epoch to drop late messages
+
+      if (viRenderTimer) { clearTimeout(viRenderTimer); viRenderTimer = null; }
+
+      l1VI.textContent = "";
+      l2VI.textContent = "";
+      l2VI.classList.add("compact");
+
+      if (showVI && !getVIVisibleText()) l2VI.textContent = "…";
+      tracePush("vi-reset", { epoch: viEpoch });
       return;
     }
 
     // TEARDOWN
     if (type === "__OVERLAY_TEARDOWN__") {
       try { root.remove(); } catch {}
-      try { measurer.remove(); } catch {}
+      try { measurerEN.remove(); } catch {}
+      try { measurerVI.remove(); } catch {}
       return;
     }
   }
@@ -533,8 +786,8 @@
 
   window.addEventListener("resize", () => {
     syncMeasureStyle();
-    if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN);
-    if (showVI) renderTwoLines(fullTextVI, bubbleVI, l1VI, l2VI);
+    if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
+    if (showVI) doRenderVI(true);
   });
 
   try { chrome.runtime.sendMessage({ __cmd: "__OVERLAY_PING__" }, () => {}); } catch {}

@@ -57,6 +57,7 @@ const STORAGE_KEYS = {
   API_BASE: "sttApiBase",   // optional: https://api.example.com
   VT_NEED_AUTH: "vtNeedAuth",
   TRANS_URL: "sttTranslatorWs", // optional: ws://127.0.0.1:8787
+  TRANS_DEBUG: "sttTransDebug",
 };
 
 // -------------------- chrome.storage helpers --------------------
@@ -474,11 +475,64 @@ chrome.action.onClicked.addListener((tab) => {
   }
 });
 
-// -------------------- Translator WS (VI) — LAZY --------------------
+// -------------------- Translator debug flag (chrome.storage) --------------------
+let TRANS_DEBUG = false;
+
+async function loadTransDebugFlag() {
+  try {
+    const st = await storeGet([STORAGE_KEYS.TRANS_DEBUG]);
+    const v = st?.[STORAGE_KEYS.TRANS_DEBUG];
+    TRANS_DEBUG = (v === 1 || v === true || v === "1");
+  } catch {}
+}
+
+function tlog(...args) { if (TRANS_DEBUG) log("[TR]", ...args); }
+function twarn(...args) { warn("[TR]", ...args); }
+
+let trDbg = {
+  txReset: 0,
+  txBaseline: 0,
+  txStable: 0,
+  dropStable: 0,
+  rxHello: 0,
+  rxStatus: 0,
+  rxDelta: 0,
+  rxStable: 0,
+  rxError: 0,
+  lastLogAt: 0,
+  lastTxStableSeq: -1,
+  lastRxViSeq: -1,
+};
+
+function maybeLogTranslatorRate() {
+  if (!TRANS_DEBUG) return;
+  const now = Date.now();
+  if (!trDbg.lastLogAt) trDbg.lastLogAt = now;
+  if (now - trDbg.lastLogAt >= 2000) {
+    tlog("rate/2s", { ...trDbg });
+    // reset moving counters only (giữ lastTxStableSeq/lastRxViSeq)
+    trDbg.txReset = trDbg.txBaseline = trDbg.txStable = trDbg.dropStable = 0;
+    trDbg.rxHello = trDbg.rxStatus = trDbg.rxDelta = trDbg.rxStable = trDbg.rxError = 0;
+    trDbg.lastLogAt = now;
+  }
+}
+
+
+// -------------------- Translator WS (VI) — LAZY (STABLE-ONLY) --------------------
 let transWs = null;
-let transUrl = "ws://127.0.0.1:8787";
+// ✅ default đúng với translator.py TR_PORT=8766
+let transUrl = "ws://127.0.0.1:8766";
+
 let transBackoffMs = 500;
 let transReconnectTimer = null;
+
+// cache stable EN để baseline khi translator connect
+let lastEnStable = { full: "", seq: 0, t_ms: 0 };
+
+// khi bật dịch / start capture => reset+bắt đầu từ baseline (không dịch history)
+let transNeedHardResetOnOpen = false;
+// guard stable gửi theo seq
+let lastSentStableSeq = -1;
 
 async function loadTranslatorUrlFromStorage() {
   const st = await storeGet([STORAGE_KEYS.TRANS_URL]);
@@ -498,12 +552,21 @@ function disconnectTranslator(hard = false) {
   } catch {}
   transWs = null;
 
-  if (hard) transBackoffMs = 500;
+  if (hard) {
+    transBackoffMs = 500;
+    lastSentStableSeq = -1;
+
+    // ✅ CRITICAL: clear cached stable from previous session
+    lastEnStable = { full: "", seq: 0, t_ms: 0 };
+  }
 }
 
+
 function shouldTranslateNow() {
-  return !!(wantTranslateVI && current?.tabId && current?.startedAt);
+  // ✅ allow connect while "starting" (tránh miss thời điểm startedAt chưa set)
+  return !!(wantTranslateVI && current?.tabId && (current?.startedAt || current?.starting));
 }
+
 
 function scheduleTranslatorReconnect() {
   if (!shouldTranslateNow()) return;
@@ -512,10 +575,70 @@ function scheduleTranslatorReconnect() {
   transBackoffMs = Math.min(5000, transBackoffMs * 2);
 }
 
+function transSend(obj) {
+  try {
+    if (!transWs || transWs.readyState !== 1) return false;
+    transWs.send(JSON.stringify(obj));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function transSendBaselineIfAny() {
+  const full = String(lastEnStable?.full || "");
+  const seq = Number(lastEnStable?.seq || 0);
+  const t_ms = Number(lastEnStable?.t_ms || 0);
+  if (!full) {
+    tlog("baseline skip (no lastEnStable)");
+    return;
+  }
+  trDbg.txBaseline++;
+  tlog("-> baseline", { seq, t_ms, fullLen: full.length, tail: full.slice(-60) });
+  maybeLogTranslatorRate();
+  transSend({ type: "baseline", full, seq, t_ms });
+}
+
+
+function transSendReset() {
+  trDbg.txReset++;
+  tlog("-> reset");
+  maybeLogTranslatorRate();
+  transSend({ type: "reset" });
+}
+
+
+function feedTranslatorStable(full, seq, t_ms) {
+  if (!shouldTranslateNow()) return;
+  if (!transWs || transWs.readyState !== 1) return;
+
+  const s = Number(seq ?? 0);
+  if (Number.isFinite(s) && s > 0) {
+    if (s <= lastSentStableSeq) {
+      trDbg.dropStable++;
+      tlog("drop stable (old/out-of-order)", { seq: s, lastSentStableSeq });
+      maybeLogTranslatorRate();
+      return;
+    }
+    lastSentStableSeq = s;
+    trDbg.lastTxStableSeq = s;
+  }
+
+  const text = String(full || "");
+  trDbg.txStable++;
+  tlog("-> stable", { seq: s || 0, t_ms: Number(t_ms || 0), fullLen: text.length, tail: text.slice(-60) });
+  maybeLogTranslatorRate();
+
+  transSend({ type: "stable", full: text, seq: s || 0, t_ms: Number(t_ms || 0) });
+}
+
+
 async function connectTranslator() {
   if (!shouldTranslateNow()) return;
 
   await loadTranslatorUrlFromStorage();
+  await loadTransDebugFlag();
+  tlog("connectTranslator()", { transUrl, wantTranslateVI, startedAt: !!current?.startedAt, starting: !!current?.starting });
 
   disconnectTranslator(false);
 
@@ -523,27 +646,82 @@ async function connectTranslator() {
     const ws = new WebSocket(transUrl);
     transWs = ws;
 
-    ws.onopen = () => { transBackoffMs = 500; };
+    ws.onopen = () => {
+      transBackoffMs = 500;
+      tlog("WS open");
+
+      if (transNeedHardResetOnOpen) {
+        tlog("hard reset on open");
+        transSendReset();
+        transSendBaselineIfAny();
+        transNeedHardResetOnOpen = false;
+        return;
+      }
+
+      tlog("reconnect baseline");
+      transSendBaselineIfAny();
+    };
+
 
     ws.onmessage = async (ev) => {
       if (typeof ev.data !== "string") return;
+
       let obj = null;
       try { obj = JSON.parse(ev.data); } catch { return; }
       if (!obj || !obj.type) return;
       if (!current?.tabId) return;
 
-      // Relay VI translate events to overlay
-      try {
-        if (obj.type === "vi-delta" && typeof obj.append === "string") {
-          await safeSendTab(current.tabId, { __cmd: "__TRANS_VI_DELTA__", payload: { append: obj.append } });
-        } else if (obj.type === "vi-stable" && typeof obj.full === "string") {
-          await safeSendTab(current.tabId, { __cmd: "__TRANS_VI_STABLE__", payload: { full: obj.full } });
-        }
-      } catch {}
+      const typ = String(obj.type || "").toLowerCase();
+
+      if (typ === "hello") { trDbg.rxHello++; tlog("<- hello", obj.detail || obj); }
+      if (typ === "status") { trDbg.rxStatus++; tlog("<- status", obj.detail || obj); }
+
+      if (typ === "vi-delta") {
+        trDbg.rxDelta++;
+        const viSeq = Number(obj.seq ?? 0);
+        if (Number.isFinite(viSeq) && viSeq > 0) trDbg.lastRxViSeq = viSeq;
+
+        tlog("<- vi-delta", {
+          seq: obj.seq ?? null,
+          en_seq: obj.en_seq ?? null,
+          appendLen: (obj.append || "").length,
+          tr_ms: obj.tr_ms ?? null,
+          tail: String(obj.append || "").slice(-60),
+        });
+        maybeLogTranslatorRate();
+
+        // ✅ Relay: gửi toàn bộ obj xuống overlay để overlay log được en_seq/tr_ms/...
+        await safeSendTab(current.tabId, { __cmd: "__TRANS_VI_DELTA__", payload: obj });
+        return;
+      }
+
+      if (typ === "vi-stable") {
+        trDbg.rxStable++;
+        tlog("<- vi-stable", { seq: obj.seq ?? null, fullLen: (obj.full || "").length });
+        maybeLogTranslatorRate();
+
+        await safeSendTab(current.tabId, { __cmd: "__TRANS_VI_STABLE__", payload: obj });
+        return;
+      }
+
+      if (typ === "error") {
+        trDbg.rxError++;
+        twarn("Translator error:", obj.error || obj);
+        maybeLogTranslatorRate();
+        return;
+      }
     };
 
-    ws.onclose = () => { if (shouldTranslateNow()) scheduleTranslatorReconnect(); };
-    ws.onerror = () => { try { ws.close(); } catch {} };
+
+    ws.onclose = (e) => {
+      tlog("WS close", { code: e?.code, reason: e?.reason });
+      if (shouldTranslateNow()) scheduleTranslatorReconnect();
+    };
+    ws.onerror = (e) => {
+      twarn("WS error", e);
+      try { ws.close(); } catch {}
+    };
+
   } catch {
     scheduleTranslatorReconnect();
   }
@@ -657,7 +835,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       else if (msg.__cmd === "__TRANSCRIPT_DELTA__") maybeLogTranscriptRate("delta");
       else if (msg.__cmd === "__TRANSCRIPT_STABLE__") maybeLogTranscriptRate("stable");
 
+      // relay to overlay
       if (current?.tabId) await safeSendTab(current.tabId, msg);
+
+      // ✅ STABLE-ONLY translation: chỉ feed stable.full sang translator
+      if (msg.__cmd === "__TRANSCRIPT_STABLE__") {
+        const p = msg.payload || msg.detail || {};
+        const full = (p.full ?? msg.full ?? p.detail?.full ?? "").toString();
+        const seq = (p.seq ?? msg.seq ?? null);
+        const t_ms = (p.t_ms ?? msg.t_ms ?? null);
+
+        // cache for baseline on connect
+        lastEnStable = { full, seq: Number(seq || 0), t_ms: Number(t_ms || 0) };
+
+        // feed stable if translator online
+        feedTranslatorStable(full, seq, t_ms);
+      }
+
       return;
     }
 
@@ -797,6 +991,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // modes from sidepanel
     if (msg.__cmd === "__TRANSCRIPT_MODES__") {
       const modes = normalizeModes(msg.payload);
+
+      const prevWantVI = !!wantTranslateVI;
+
       currentModes = modes;
       wantTranslateVI = !!modes.vi;
 
@@ -805,10 +1002,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await safeSendTab(tabId, { __cmd: "__OVERLAY_MODE__", payload: currentModes });
       }
 
-      maybeUpdateTranslator(false);
+      // ✅ nếu vừa bật VI: reset riêng VI + hard reset translator + baseline current stable
+      if (!prevWantVI && wantTranslateVI) {
+        if (tabId != null) {
+          await safeSendTab(tabId, { __cmd: "__TRANS_VI_RESET__" }); // reset VI only
+        }
+        transNeedHardResetOnOpen = true;
+        maybeUpdateTranslator(false);
+      }
+
+      // ✅ nếu vừa tắt VI: disconnect translator (hard)
+      if (prevWantVI && !wantTranslateVI) {
+        maybeUpdateTranslator(true);
+      }
+
       sendResponse?.({ ok: true, modes: currentModes });
       return;
     }
+
 
     // ✅ Proxy REST for chatbot (AUTH REQUIRED)
     if (msg.__cmd === "__CHAT_REST__") {

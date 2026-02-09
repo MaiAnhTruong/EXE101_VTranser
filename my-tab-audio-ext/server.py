@@ -6,6 +6,10 @@
 # - Robust cleanup: add idle-timeout so slot is released if client stops sending data (tab crash / network stall).
 # - Optional auth for product: ticket query (?ticket=...) and/or first auth message {"type":"auth","token":"..."}.
 #   (Disabled by default; enable via env REQUIRE_AUTH=1 and set WS_TICKET_SECRET / ACCESS_JWT_SECRET)
+# - TXT saving (for translator.py):
+#     * Write "current" EN files atomically + append committed sentences to a feed file.
+#     * Keep last tail uncommitted during streaming; flush tail on session end.
+#     * Optional draft file (stabilized realtime text).
 #
 # Input:
 #   - Binary: PCM int16 LE (default SRC_SAMPLE_RATE)
@@ -331,6 +335,29 @@ IGNORE_SHRINK = os.getenv("IGNORE_SHRINK", "1").strip().lower() in {"1","true","
 ALLOW_PUNCT_STRIP_APPEND = os.getenv("ALLOW_PUNCT_STRIP_APPEND", "1").strip().lower() in {"1","true","yes"}
 
 # ──────────────────────────────────────────────────────────────────────────────
+# TXT SAVE (for translator.py consumption)
+# ──────────────────────────────────────────────────────────────────────────────
+# Backward-compatible alias: if you used HISTORY_ENABLE before, it can also turn on TXT saving.
+TXT_SAVE_ENABLE = (os.getenv("TXT_SAVE_ENABLE", "1") or os.getenv("HISTORY_ENABLE", "1")).strip().lower() in {"1","true","yes"}
+TXT_SAVE_DIR = Path(os.getenv("TXT_SAVE_DIR", "txt_out")).expanduser()
+TXT_SAVE_WRITE_CURRENT = os.getenv("TXT_SAVE_WRITE_CURRENT", "1").strip().lower() in {"1","true","yes"}
+TXT_SAVE_TRUNCATE_CURRENT_ON_START = os.getenv("TXT_SAVE_TRUNCATE_CURRENT_ON_START", "1").strip().lower() in {"1","true","yes"}
+TXT_SAVE_DRAFT = os.getenv("TXT_SAVE_DRAFT", "0").strip().lower() in {"1","true","yes"}  # write stabilized realtime text to draft file
+TXT_SAVE_LINE_TS = os.getenv("TXT_SAVE_LINE_TS", "0").strip().lower() in {"1","true","yes"}  # prefix each committed line with t_ms
+TXT_SAVE_MIN_LATEST_INTERVAL_MS = int(os.getenv("TXT_SAVE_MIN_LATEST_INTERVAL_MS", "150"))
+TXT_SAVE_MIN_DRAFT_INTERVAL_MS = int(os.getenv("TXT_SAVE_MIN_DRAFT_INTERVAL_MS", "200"))
+TXT_SAVE_FLUSH_TAIL_ON_END = os.getenv("TXT_SAVE_FLUSH_TAIL_ON_END", "1").strip().lower() in {"1","true","yes"}
+TXT_SAVE_QUEUE_MAX = int(os.getenv("TXT_SAVE_QUEUE_MAX", "256"))
+TXT_SAVE_MAX_CHARS_LATEST = int(os.getenv("TXT_SAVE_MAX_CHARS_LATEST", "0"))  # 0 = unlimited; else keep last N chars
+
+def _iso_local(ts: Optional[float] = None) -> str:
+    try:
+        t = time.localtime(ts if ts is not None else time.time())
+        return time.strftime("%Y-%m-%d %H:%M:%S", t)
+    except Exception:
+        return str(ts if ts is not None else time.time())
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Optional AUTH (disabled by default)
 # ──────────────────────────────────────────────────────────────────────────────
 REQUIRE_AUTH = os.getenv("REQUIRE_AUTH", "0").strip().lower() in {"1","true","yes"}
@@ -501,6 +528,8 @@ def _init_gpu_or_fail():
     logger.info("AUTH: REQUIRE_AUTH=%s AUTH_MODE=%s", REQUIRE_AUTH, AUTH_MODE)
     logger.info("STAB: enable=%s patch_max_hz=%s rewrite_confirm_n=%s max_rollback_chars=%s min_rewrite_ms=%s ignore_shrink=%s",
                 STAB_ENABLE, PATCH_MAX_HZ, REWRITE_CONFIRM_N, MAX_ROLLBACK_CHARS, MIN_REWRITE_INTERVAL_MS, IGNORE_SHRINK)
+    logger.info("TXT_SAVE: enable=%s dir=%s current=%s draft=%s",
+                TXT_SAVE_ENABLE, str(TXT_SAVE_DIR), TXT_SAVE_WRITE_CURRENT, TXT_SAVE_DRAFT)
 
     if not _CT2_OK:
         logger.error("ctranslate2 is required for faster-whisper. Import failed: %s", _CT2_ERR)
@@ -930,51 +959,259 @@ async def handler(websocket):
         warming_until_ts = time.monotonic() + max(0.0, WARMUP_SILENCE_SEC)
 
         # ──────────────────────────────────────────────────────────────────────
-        # History (disable by default for product; enable explicitly)
+        # TXT SAVE (for translator.py) — stable commits + current latest (atomic)
         # ──────────────────────────────────────────────────────────────────────
-        HISTORY_ENABLE = os.getenv("HISTORY_ENABLE", "0").lower() in {"1","true","yes"}
-        CHAT_HISTORY_PATH: Optional[Path] = None
-        history_q: Optional[asyncio.Queue] = None
-        history_task: Optional[asyncio.Task] = None
-        written_sent_count = 0
+        txt_enable = bool(TXT_SAVE_ENABLE)
+        txt_q: Optional[asyncio.Queue] = None
+        txt_task: Optional[asyncio.Task] = None
 
-        if HISTORY_ENABLE:
-            HISTORY_DIR = Path(os.getenv("HISTORY_DIR", "history")).expanduser()
-            HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-            safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(authed_user or sess_id))
-            CHAT_HISTORY_PATH = HISTORY_DIR / f"history_{safe_id}_{int(time.time())}.txt"
-            history_q = asyncio.Queue()
+        txt_session_dir: Optional[Path] = None
+        txt_cur_latest: Optional[Path] = None
+        txt_cur_feed: Optional[Path] = None
+        txt_cur_draft: Optional[Path] = None
+        txt_sess_latest: Optional[Path] = None
+        txt_sess_feed: Optional[Path] = None
+        txt_sess_draft: Optional[Path] = None
 
-            async def _history_writer():
-                nonlocal written_sent_count
+        # Producer-side throttling for draft pushes (called from STT thread)
+        _draft_last_push_ms = 0
+        _draft_last_text = ""
+
+        def _safe_id(x: str) -> str:
+            return re.sub(r"[^A-Za-z0-9_.-]+", "_", (x or "client"))
+
+        if txt_enable:
+            try:
+                TXT_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+            sid = _safe_id(str(authed_user or sess_id))
+            sess_tag = f"{int(time.time())}_{sid}"
+            txt_session_dir = TXT_SAVE_DIR / f"session_{sess_tag}"
+            try:
+                txt_session_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                txt_session_dir = TXT_SAVE_DIR
+
+            # session-scoped files
+            txt_sess_latest = (txt_session_dir / "en_latest.txt") if txt_session_dir else None
+            txt_sess_feed = (txt_session_dir / "en_feed.txt") if txt_session_dir else None
+            txt_sess_draft = (txt_session_dir / "en_draft.txt") if txt_session_dir else None
+
+            # stable "current" files (constant paths for translator.py to read)
+            if TXT_SAVE_WRITE_CURRENT:
+                txt_cur_latest = TXT_SAVE_DIR / f"en_latest_current_{sid}.txt"
+                txt_cur_feed = TXT_SAVE_DIR / f"en_feed_current_{sid}.txt"
+                txt_cur_draft = TXT_SAVE_DIR / f"en_draft_current_{sid}.txt"
+
+            txt_q = asyncio.Queue(maxsize=max(1, int(TXT_SAVE_QUEUE_MAX)))
+
+            # init / truncate current feed on start (so translator can tail from fresh session)
+            def _init_files_sync():
+                header = f"# session_start={_iso_local()} | sess_id={sess_id} | user={authed_user or '-'}\n"
+                # session feed always starts fresh
+                if txt_sess_feed is not None:
+                    try:
+                        with open(txt_sess_feed, "w", encoding="utf-8", newline="\n") as f:
+                            f.write(header)
+                            f.flush()
+                            try:
+                                os.fsync(f.fileno())
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                if TXT_SAVE_WRITE_CURRENT and TXT_SAVE_TRUNCATE_CURRENT_ON_START and txt_cur_feed is not None:
+                    try:
+                        with open(txt_cur_feed, "w", encoding="utf-8", newline="\n") as f:
+                            f.write(header)
+                            f.flush()
+                            try:
+                                os.fsync(f.fileno())
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                # clear drafts on start (optional)
+                if TXT_SAVE_DRAFT:
+                    for p in [txt_sess_draft, txt_cur_draft]:
+                        if p is None:
+                            continue
+                        try:
+                            with open(p, "w", encoding="utf-8", newline="\n") as f:
+                                f.write("")
+                                f.flush()
+                                try:
+                                    os.fsync(f.fileno())
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+            try:
+                await asyncio.to_thread(_init_files_sync)
+            except Exception:
+                pass
+
+            async def _txt_atomic_write(path: Path, text: str):
+                if path is None:
+                    return
+                def _sync():
+                    try:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                    except Exception:
+                        pass
+                    tmp = Path(str(path) + ".tmp")
+                    try:
+                        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                            f.write(text)
+                            if not text.endswith("\n"):
+                                f.write("\n")
+                            f.flush()
+                            try:
+                                os.fsync(f.fileno())
+                            except Exception:
+                                pass
+                        os.replace(tmp, path)
+                    except Exception:
+                        try:
+                            if tmp.exists():
+                                tmp.unlink()
+                        except Exception:
+                            pass
+                await asyncio.to_thread(_sync)
+
+            async def _txt_append_lines(path: Path, lines: List[str]):
+                if path is None or not lines:
+                    return
+                def _sync():
+                    try:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                    except Exception:
+                        pass
+                    try:
+                        with open(path, "a", encoding="utf-8", newline="\n") as f:
+                            for ln in lines:
+                                ln = (ln or "").rstrip("\r\n")
+                                if ln:
+                                    f.write(ln + "\n")
+                            f.flush()
+                            try:
+                                os.fsync(f.fileno())
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                await asyncio.to_thread(_sync)
+
+            async def _txt_writer():
+                written_sent_count = 0
+                last_latest_write_ms = 0
+                last_draft_write_ms = 0
+                last_seen_full = ""
+                last_seen_draft = ""
+
                 try:
                     while True:
-                        full_stable = await history_q.get()
-                        if full_stable is None:
+                        item = await txt_q.get()
+                        if item is None:
                             break
-                        if not isinstance(full_stable, str):
+                        if not isinstance(item, dict):
                             continue
 
-                        sents, _tail = split_sentences_and_tail(full_stable)
-                        target = max(0, len(sents) - 1)  # keep last tail uncommitted
+                        kind = (item.get("kind") or "").lower().strip()
+                        t_ms = int(item.get("t_ms") or _now_ms())
 
-                        if target > written_sent_count and CHAT_HISTORY_PATH is not None:
-                            new_sents = sents[written_sent_count:target]
-                            try:
-                                with open(CHAT_HISTORY_PATH, "a", encoding="utf-8") as f:
-                                    for s in new_sents:
-                                        s = s.strip()
-                                        if s:
-                                            f.write(s + "\n")
-                                    f.flush()
-                                    os.fsync(f.fileno())
+                        if kind in {"stable", "final"}:
+                            full = _norm_spaces(item.get("full") or "")
+                            if not full:
+                                continue
+                            last_seen_full = full
+
+                            # limit latest length if configured
+                            latest_out = full
+                            if TXT_SAVE_MAX_CHARS_LATEST and TXT_SAVE_MAX_CHARS_LATEST > 0 and len(latest_out) > TXT_SAVE_MAX_CHARS_LATEST:
+                                latest_out = latest_out[-TXT_SAVE_MAX_CHARS_LATEST:]
+
+                            # rate-limit latest writes
+                            nowm = _now_ms()
+                            do_latest = (nowm - last_latest_write_ms) >= max(0, int(TXT_SAVE_MIN_LATEST_INTERVAL_MS))
+                            if do_latest:
+                                last_latest_write_ms = nowm
+                                for p in [txt_sess_latest, txt_cur_latest]:
+                                    if p is not None:
+                                        await _txt_atomic_write(p, latest_out)
+
+                            # commit sentences: keep last tail uncommitted during streaming; flush on final
+                            sents, tail = split_sentences_and_tail(full)
+                            if kind == "final" and TXT_SAVE_FLUSH_TAIL_ON_END:
+                                target = len(sents)
+                            else:
+                                target = max(0, len(sents) - 1)
+
+                            if target > written_sent_count:
+                                new_sents = sents[written_sent_count:target]
+                                lines = []
+                                for s in new_sents:
+                                    s = (s or "").strip()
+                                    if not s:
+                                        continue
+                                    if TXT_SAVE_LINE_TS:
+                                        lines.append(f"{t_ms}\t{s}")
+                                    else:
+                                        lines.append(s)
+                                if lines:
+                                    for p in [txt_sess_feed, txt_cur_feed]:
+                                        if p is not None:
+                                            await _txt_append_lines(p, lines)
                                 written_sent_count = target
-                            except Exception as e:
-                                logger.debug("[%s] history write failed: %r", sess_id, e)
-                except Exception as e:
-                    logger.debug("[%s] history writer crashed: %r", sess_id, e)
 
-            history_task = asyncio.create_task(_history_writer())
+                            # on final: also flush tail (even without punctuation) as a last line
+                            if kind == "final" and TXT_SAVE_FLUSH_TAIL_ON_END:
+                                tail_line = (tail or "").strip()
+                                if tail_line:
+                                    ln = f"{t_ms}\t{tail_line}" if TXT_SAVE_LINE_TS else tail_line
+                                    for p in [txt_sess_feed, txt_cur_feed]:
+                                        if p is not None:
+                                            await _txt_append_lines(p, [ln])
+
+                        elif kind == "draft" and TXT_SAVE_DRAFT:
+                            draft = _norm_spaces(item.get("text") or "")
+                            if not draft:
+                                continue
+                            if draft == last_seen_draft:
+                                continue
+                            nowm = _now_ms()
+                            if (nowm - last_draft_write_ms) < max(0, int(TXT_SAVE_MIN_DRAFT_INTERVAL_MS)):
+                                continue
+                            last_draft_write_ms = nowm
+                            last_seen_draft = draft
+                            for p in [txt_sess_draft, txt_cur_draft]:
+                                if p is not None:
+                                    await _txt_atomic_write(p, draft)
+
+                except Exception as e:
+                    logger.debug("[%s] txt_writer crashed: %r", sess_id, e)
+
+            txt_task = asyncio.create_task(_txt_writer())
+
+        def _txt_enqueue_from_thread(item: dict):
+            """Thread-safe enqueue into txt_q from STT callbacks."""
+            if not txt_enable or txt_q is None:
+                return
+            try:
+                def _put():
+                    try:
+                        txt_q.put_nowait(item)
+                    except asyncio.QueueFull:
+                        # drop newest to avoid blocking realtime
+                        pass
+                    except Exception:
+                        pass
+                loop.call_soon_threadsafe(_put)
+            except Exception:
+                pass
 
         # ──────────────────────────────────────────────────────────────────────
         # Patch emitter (end-diff) + optional chunking
@@ -1038,6 +1275,7 @@ async def handler(websocket):
             """
             nonlocal last_emitted, patch_seq, last_update_ts, last_patch_send_ms
             nonlocal ui_e2e_last_ms, last_audio_enq_ts, ui_e2e_samples, fed_enq_watermark_ts, warming_until_ts
+            nonlocal _draft_last_push_ms, _draft_last_text
 
             if time.monotonic() < warming_until_ts:
                 return
@@ -1068,6 +1306,12 @@ async def handler(websocket):
                 # rate limit patch output
                 now_ms = _now_ms()
                 if patch_min_interval_ms > 0 and (now_ms - last_patch_send_ms) < patch_min_interval_ms:
+                    # still allow optional draft saving (throttled separately)
+                    if txt_enable and TXT_SAVE_DRAFT:
+                        if (now_ms - _draft_last_push_ms) >= max(0, int(TXT_SAVE_MIN_DRAFT_INTERVAL_MS)) and shown != _draft_last_text:
+                            _draft_last_push_ms = now_ms
+                            _draft_last_text = shown
+                            _txt_enqueue_from_thread({"kind":"draft","text":shown,"t_ms":now_ms})
                     return
 
                 # compute end-diff
@@ -1080,6 +1324,13 @@ async def handler(websocket):
                 # update local state immediately (avoid race)
                 prev = last_emitted
                 last_emitted = shown
+
+                # optional draft saving
+                if txt_enable and TXT_SAVE_DRAFT:
+                    if (now_ms - _draft_last_push_ms) >= max(0, int(TXT_SAVE_MIN_DRAFT_INTERVAL_MS)) and shown != _draft_last_text:
+                        _draft_last_push_ms = now_ms
+                        _draft_last_text = shown
+                        _txt_enqueue_from_thread({"kind":"draft","text":shown,"t_ms":now_ms})
 
             # tracing outside lock
             now_ts = time.monotonic()
@@ -1138,18 +1389,16 @@ async def handler(websocket):
             if TRACE_PATCH and (stable_seq % max(1, TRACE_PATCH_EVERY) == 0):
                 logger.info("[%s] STABLE#%d len=%d tail=%r", sess_id, stable_seq, len(stable_snapshot), stable_snapshot[-TRACE_PATCH_MAX_TAIL:])
 
+            # enqueue stable snapshot for txt saving (thread-safe)
+            if txt_enable:
+                _txt_enqueue_from_thread({"kind":"stable","full":stable_snapshot,"t_ms":t_ms})
+
             _submit(_ws_send(websocket, {
                 "type": "stable",
                 "full": stable_snapshot,
                 "seq": int(stable_seq),
                 "t_ms": t_ms,
             }))
-
-            if HISTORY_ENABLE and history_q is not None:
-                try:
-                    history_q.put_nowait(stable_snapshot)
-                except Exception:
-                    pass
 
         def _make_recorder(ct: str) -> AudioToTextRecorder:
             logger.info("[%s] init recorder: model=%s device=%s compute_type=%s lang=%s",
@@ -1392,6 +1641,12 @@ async def handler(websocket):
                                 "max_rollback_chars": int(MAX_ROLLBACK_CHARS),
                                 "min_rewrite_interval_ms": int(MIN_REWRITE_INTERVAL_MS),
                                 "ignore_shrink": bool(IGNORE_SHRINK),
+                            },
+                            "txt_save": {
+                                "enable": bool(txt_enable),
+                                "dir": str(TXT_SAVE_DIR),
+                                "write_current": bool(TXT_SAVE_WRITE_CURRENT),
+                                "draft": bool(TXT_SAVE_DRAFT),
                             }
                         }
                         if rss_mb is not None:
@@ -1438,6 +1693,15 @@ async def handler(websocket):
                     "min_rewrite_interval_ms": int(MIN_REWRITE_INTERVAL_MS),
                     "ignore_shrink": bool(IGNORE_SHRINK),
                     "allow_punct_strip_append": bool(ALLOW_PUNCT_STRIP_APPEND),
+                },
+                "txt_save": {
+                    "enable": bool(txt_enable),
+                    "dir": str(TXT_SAVE_DIR),
+                    "write_current": bool(TXT_SAVE_WRITE_CURRENT),
+                    "truncate_current_on_start": bool(TXT_SAVE_TRUNCATE_CURRENT_ON_START),
+                    "draft": bool(TXT_SAVE_DRAFT),
+                    "line_ts": bool(TXT_SAVE_LINE_TS),
+                    "flush_tail_on_end": bool(TXT_SAVE_FLUSH_TAIL_ON_END),
                 }
             }
         })
@@ -1602,6 +1866,16 @@ async def handler(websocket):
 
         finally:
             logger.info("[%s] closing session...", sess_id)
+
+            # Flush TXT files (final tail) BEFORE stopping writer
+            if txt_enable and txt_q is not None:
+                final_text = stable_snapshot or last_emitted
+                if final_text:
+                    try:
+                        await txt_q.put({"kind":"final","full":final_text,"t_ms":_now_ms()})
+                    except Exception:
+                        pass
+
             try:
                 await queue.put(None)
             except Exception:
@@ -1622,10 +1896,14 @@ async def handler(websocket):
             except Exception as e:
                 logger.warning("[%s] recorder stop/shutdown error: %r", sess_id, e)
 
-            if HISTORY_ENABLE and history_q is not None and history_task is not None:
+            # stop txt writer
+            if txt_enable and txt_q is not None and txt_task is not None:
                 try:
-                    await history_q.put(None)
-                    await asyncio.wait_for(history_task, timeout=3.0)
+                    await txt_q.put(None)
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(txt_task, timeout=4.0)
                 except Exception:
                     pass
 
