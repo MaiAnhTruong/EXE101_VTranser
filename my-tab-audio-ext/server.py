@@ -149,7 +149,7 @@ _win_bootstrap_dlls_early()
 # LOGGING
 # ──────────────────────────────────────────────────────────────────────────────
 LOG_LEVEL = (os.getenv("LOG_LEVEL", "DEBUG") or "DEBUG").upper()
-LOG_TO_FILE = (os.getenv("LOG_TO_FILE", "1").strip().lower() in {"1", "true", "yes"})
+LOG_TO_FILE = (os.getenv("LOG_TO_FILE", "0").strip().lower() in {"1", "true", "yes"})
 LOG_FILE = os.getenv("LOG_FILE", "stt_server_debug.log")
 LOG_STDERR = (os.getenv("LOG_STDERR", "1").strip().lower() in {"1", "true", "yes"})
 LOG_WS_EVERY_N = int(os.getenv("LOG_WS_EVERY_N", "25"))
@@ -195,6 +195,14 @@ def _setup_logging():
     return logger
 
 logger = _setup_logging()
+
+# Suppress noisy shutdown traceback from RealtimeSTT on Windows ("Error receiving data from connection: [WinError 6]")
+class _NoiseFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover
+        msg = str(record.getMessage())
+        return "Error receiving data from connection" not in msg
+
+logging.getLogger().addFilter(_NoiseFilter())
 
 def _pkg_version(dist_name: str) -> Optional[str]:
     try:
@@ -338,7 +346,7 @@ ALLOW_PUNCT_STRIP_APPEND = os.getenv("ALLOW_PUNCT_STRIP_APPEND", "1").strip().lo
 # TXT SAVE (for translator.py consumption)
 # ──────────────────────────────────────────────────────────────────────────────
 # Backward-compatible alias: if you used HISTORY_ENABLE before, it can also turn on TXT saving.
-TXT_SAVE_ENABLE = (os.getenv("TXT_SAVE_ENABLE", "1") or os.getenv("HISTORY_ENABLE", "1")).strip().lower() in {"1","true","yes"}
+TXT_SAVE_ENABLE = (os.getenv("TXT_SAVE_ENABLE", "0") or os.getenv("HISTORY_ENABLE", "0")).strip().lower() in {"1","true","yes"}
 TXT_SAVE_DIR = Path(os.getenv("TXT_SAVE_DIR", "txt_out")).expanduser()
 TXT_SAVE_WRITE_CURRENT = os.getenv("TXT_SAVE_WRITE_CURRENT", "1").strip().lower() in {"1","true","yes"}
 TXT_SAVE_TRUNCATE_CURRENT_ON_START = os.getenv("TXT_SAVE_TRUNCATE_CURRENT_ON_START", "1").strip().lower() in {"1","true","yes"}

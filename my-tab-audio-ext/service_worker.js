@@ -14,6 +14,7 @@
 // - Default bật EN mode khi start nếu chưa có mode.
 // - AUTH REQUIRED: bắt buộc đăng nhập mới được dùng (START/CHAT...)
 
+import { createTranscriptPersist } from "./sw/transcript_persist.js";
 "use strict";
 
 // -------------------- Global state --------------------
@@ -21,6 +22,7 @@
 let current = null;
 let currentModes = { en: false, vi: false, voice: false };
 let wantTranslateVI = false;
+let transcriptPersist = null;
 
 // -------------------- Transcript relay debug --------------------
 let trCount = { patch: 0, delta: 0, stable: 0, lastLogAt: 0 };
@@ -418,6 +420,10 @@ async function stopCapture() {
   try { await chrome.runtime.sendMessage({ __cmd: "__OFFSCREEN_STOP__" }); } catch {}
   setCurrentStopped();
   maybeUpdateTranslator(true);
+  if (transcriptPersist) {
+    try { await transcriptPersist.stop(lastEnStable?.full || ""); } catch {}
+    transcriptPersist = null;
+  }
 }
 
 // -------------------- Open/Close in-page panel --------------------
@@ -841,8 +847,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // ✅ STABLE-ONLY translation: chỉ feed stable.full sang translator
       if (msg.__cmd === "__TRANSCRIPT_STABLE__") {
         const p = msg.payload || msg.detail || {};
-        const full = (p.full ?? msg.full ?? p.detail?.full ?? "").toString();
-        const seq = (p.seq ?? msg.seq ?? null);
+        const full = (
+          p.full ??
+          msg.full ??
+          p.text ??
+          msg.text ??
+          p.detail?.full ??
+          p.detail?.text ??
+          ""
+        ).toString();
+        const seq = (p.seq ?? msg.seq ?? p.stable_seq ?? null);
         const t_ms = (p.t_ms ?? msg.t_ms ?? null);
 
         // cache for baseline on connect
@@ -850,6 +864,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         // feed stable if translator online
         feedTranslatorStable(full, seq, t_ms);
+
+        // persist to Supabase (delay 1 sentence)
+        if (transcriptPersist) {
+          try { transcriptPersist.handleStable(full, seq); } catch {}
+        }
       }
 
       return;
@@ -949,6 +968,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         const strictWs = !(isLocalDev && u.protocol === "ws:");
+
+        // start transcript persistence to Supabase (delay 1 sentence)
+        if (transcriptPersist) {
+          try { await transcriptPersist.stop(lastEnStable?.full || ""); } catch {}
+        }
+        const transUrlSt = await storeGet([STORAGE_KEYS.TRANS_URL]);
+        const transServer = (transUrlSt[STORAGE_KEYS.TRANS_URL] || "").trim();
+        const profile = authSess?.profile || authSess?.raw?.profile || authSess?.currentSession?.profile || {};
+        const pkLike = (s) => /^\d+$/.test(String(s || "").trim());
+        const userId = pkLike(profile.id) ? String(profile.id).trim() : "";
+        const userEmail = profile.email || "";
+        transcriptPersist = createTranscriptPersist({
+          userId,
+          userEmail,
+          tabUrl: tab.url || "",
+          sttServer: server,
+          translatorServer: transServer,
+          langSrc: "en",
+          langTgt: wantTranslateVI ? "vi" : "",
+        });
+        try { await transcriptPersist.start(); } catch {}
+
         await startCaptureOnTab(tab.id, finalWsUrl, auth, strictWs);
 
         current = current || {};
@@ -960,6 +1001,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse?.({ ok: true, mode: auth ? "auth-message" : "ticket", ws: finalWsUrl });
       } catch (e) {
         const msgErr = String(e?.message || e);
+        if (transcriptPersist) {
+          try { await transcriptPersist.stop(lastEnStable?.full || ""); } catch {}
+          transcriptPersist = null;
+        }
         await notifyPanel(tab.id, { level: "error", text: msgErr });
         sendResponse?.({ ok: false, error: msgErr });
       }

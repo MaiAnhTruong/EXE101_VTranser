@@ -134,7 +134,7 @@ SPM_SRC = os.getenv("SPM_SRC", "").strip()
 SPM_TGT = os.getenv("SPM_TGT", "").strip()
 MT_PREFIX = os.getenv("MT_PREFIX", "").strip()
 
-VI_OUTPUT_PATH = os.getenv("VI_OUTPUT_PATH", "translator_vi.txt").strip()
+VI_OUTPUT_PATH = os.getenv("VI_OUTPUT_PATH", "").strip()
 VI_TRUNCATE_ON_START = os.getenv("VI_TRUNCATE_ON_START", "1").strip().lower() in {"1", "true", "yes"}
 VI_TRUNCATE_ON_RESET = os.getenv("VI_TRUNCATE_ON_RESET", "0").strip().lower() in {"1", "true", "yes"}
 
@@ -804,6 +804,8 @@ def _mt_translate_many(src_segments: List[str], is_draft: bool = False) -> List[
 
 # ---------- File output ----------
 def _prepare_output_file(path: str, truncate: bool = True):
+    if not path:
+        return
     try:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     except Exception:
@@ -821,7 +823,7 @@ _prepare_output_file(VI_OUTPUT_PATH, truncate=VI_TRUNCATE_ON_START)
 
 
 async def _write_vi_append(text: str):
-    if not text:
+    if not text or not VI_OUTPUT_PATH:
         return
     try:
         with open(VI_OUTPUT_PATH, "a", encoding="utf-8") as f:
