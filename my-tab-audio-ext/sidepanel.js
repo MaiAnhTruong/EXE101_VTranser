@@ -1,3 +1,5 @@
+// D:\vtranser\EXE101_VTranser\my-tab-audio-ext\sidepanel.js
+
 document.addEventListener('DOMContentLoaded', () => {
   // ===== Constants =====
   const LS_KEY_SERVER = 'sttServerWs';
@@ -99,25 +101,50 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   async function isAuthed() {
     const p = await getVtAuthProfile();
-    return !!(p && (p.email || p.id || p.name));
+    return !!(p && (p.email || p.id || p.name || p.full_name));
   }
 
   // ===== DOM Refs =====
+  const panelEl = document.getElementById('panel');
   const chatButton = document.getElementById('btn-chat');
   const transcriptButton = document.getElementById('btn-transcript');
+  const historyButton = document.getElementById('btn-history'); // ✅ NEW
+  const moreButton = document.getElementById('btn-more');
+  const collapseButton = document.getElementById('btn-collapse');
+  const fullscreenButton = document.getElementById('btn-fullscreen');
   const settingButton = document.getElementById('btn-setting');
-  const allToolbarButtons = document.querySelectorAll('.toolbar .icon-btn');
+  const navButtons = document.querySelectorAll('.toolbar .nav-btn');
 
   const chatView = document.getElementById('chat-content');
   const transcriptView = document.getElementById('transcript-content');
-  const allViews = [chatView, transcriptView];
+  const historyView = document.getElementById('history-content'); // ✅ NEW
+  const allViews = [chatView, transcriptView, historyView];
 
-  const chatHeader = document.querySelector('.main-header');
-  const chatActionButtons = document.querySelector('.action-buttons');
-  const chatInputArea = document.querySelector('.chat-input-area');
+  // busy modal
+  const busyModal = document.getElementById('vtBusyModal');
+  const busyClose = document.getElementById('vtBusyClose');
+  const busyText = document.querySelector('#vtBusyModal .vt-busy-text');
+
+  // error modal
+  const errorModal = document.getElementById('vtErrorModal');
+  const errorClose = document.getElementById('vtErrorClose');
+  const errorText = document.querySelector('#vtErrorModal .vt-modal-text');
+
+  // bottom bar
+  const bottomGreetingEl = document.getElementById('bottomGreeting');
+  const loginBtns = document.querySelectorAll('.login-btn');
+
+  // chat view elements
   const chatTextArea = document.querySelector('#chat-content .textarea-wrapper textarea');
   const chatHistory = document.querySelector('.chat-history-area');
 
+  const chipButtons = document.querySelectorAll('.input-header .chip-button');
+  const chipRag = chipButtons[0] || null;
+  const chipR1 = chipButtons[1] || null;
+
+  const sendBtn = document.getElementById('icon-btn-send');
+
+  // transcript view elements
   const transcriptStart = document.querySelector('.transcript-btn1.start');
   const transcriptBody = document.querySelector('.transcript-body');
   const transcriptLiveFooter = document.querySelector('.transcript-live-footer span');
@@ -127,13 +154,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const subtitleBtn = document.getElementById('btn-subtitle');            // EN
   const subtitleTransBtn = document.getElementById('btn-subtitle-trans'); // VI translate
   const voiceBtn = document.getElementById('btn-voice');
-
-  const chipButtons = document.querySelectorAll('.input-header .chip-button');
-  const chipRag = chipButtons[0] || null;
-  const chipR1 = chipButtons[1] || null;
-
-  const sendBtn = document.getElementById('icon-btn-send');
-  const loginBtns = document.querySelectorAll('.login-btn');
 
   // ===== Auth open helper =====
   function openAuthOverlayFromPanel() {
@@ -151,6 +171,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnAccount) btnAccount.click();
   }
 
+  // bottom-bar login buttons
   if (loginBtns && loginBtns.length) {
     loginBtns.forEach((btn) => {
       btn.addEventListener('click', (e) => {
@@ -171,6 +192,28 @@ document.addEventListener('DOMContentLoaded', () => {
       if (need) await storeRemove(['vtNeedAuth']);
     } catch {}
   })();
+
+  // ===== Greeting on bottom bar =====
+  async function refreshGreeting() {
+    try {
+      const p = await getVtAuthProfile();
+      const name = String(p?.full_name || p?.name || p?.email || '').trim();
+      if (bottomGreetingEl) bottomGreetingEl.textContent = name ? `Xin chào, ${name}` : 'Hi';
+      // hide login when authed
+      if (loginBtns && loginBtns.length) {
+        const authed = !!name;
+        loginBtns.forEach((b) => b.classList.toggle('hidden', authed));
+      }
+    } catch {}
+  }
+  refreshGreeting();
+
+  // auto refresh if vtAuth changes
+  if (chrome?.storage?.onChanged) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes.vtAuth) refreshGreeting();
+    });
+  }
 
   // ===== Setting: config API + WS =====
   if (settingButton) {
@@ -260,40 +303,121 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ===== View switching =====
+  // ============================================================
+  // ✅ VIEW SWITCHING (chỉ đổi màn giữa)
+  // ============================================================
   function showView(viewId, clickedButton) {
     allViews.forEach(view => view && view.classList.add('hidden'));
-    allToolbarButtons.forEach(btn => btn.classList.remove('active'));
+    navButtons.forEach(btn => btn.classList.remove('active'));
 
     const viewToShow = document.getElementById(viewId);
     if (viewToShow) viewToShow.classList.remove('hidden');
 
     if (clickedButton) clickedButton.classList.add('active');
 
-    if (viewId === 'chat-content') {
-      chatHeader && chatHeader.classList.remove('hidden');
-      chatActionButtons && chatActionButtons.classList.remove('hidden');
-      chatInputArea && chatInputArea.classList.remove('hidden');
-    } else {
-      chatHeader && chatHeader.classList.add('hidden');
-      chatActionButtons && chatActionButtons.classList.add('hidden');
-      chatInputArea && chatInputArea.classList.add('hidden');
+    // reset focus-mode when leaving chat
+    if (viewId !== 'chat-content') {
       chatView && chatView.classList.remove('focus-mode');
     }
+
+    // refresh transcript url when open transcript
+    if (viewId === 'transcript-content') updateTranscriptHeaderUrl();
   }
 
   if (chatButton) chatButton.addEventListener('click', () => showView('chat-content', chatButton));
   if (transcriptButton) transcriptButton.addEventListener('click', () => showView('transcript-content', transcriptButton));
+  if (historyButton) historyButton.addEventListener('click', () => showView('history-content', historyButton));
 
   if (transcriptButton) showView('transcript-content', transcriptButton);
   else showView('chat-content', chatButton);
 
-  // ===== Transcript: clock =====
-  if (liveTimestampEl) {
-    liveTimestampEl.textContent = nowTime();
-    setInterval(() => (liveTimestampEl.textContent = nowTime()), 1000);
+  // ===== Toolbar utilities: collapse / fullscreen / more =====
+  function setCollapsed() {
+    if (!panelEl) return;
+    panelEl.classList.remove('is-fullscreen');
+    panelEl.classList.add('is-collapsed');
   }
 
+  function setFullscreen() {
+    if (!panelEl) return;
+    panelEl.classList.remove('is-collapsed');
+    panelEl.classList.add('is-fullscreen');
+  }
+
+  if (collapseButton) collapseButton.addEventListener('click', setCollapsed);
+  if (fullscreenButton) fullscreenButton.addEventListener('click', setFullscreen);
+  if (moreButton) {
+    moreButton.addEventListener('click', () => {
+      console.log('[sidepanel] More feature clicked');
+    });
+  }
+
+  // ===== Busy modal =====
+  function showBusyModal(text = 'Hệ thống đang bận, vui lòng thử lại sau.') {
+    if (busyText) busyText.textContent = text;
+    if (busyModal) busyModal.classList.remove('hidden');
+  }
+  function hideBusyModal() {
+    if (busyModal) busyModal.classList.add('hidden');
+  }
+  if (busyClose) busyClose.addEventListener('click', hideBusyModal);
+
+  // ===== Error modal =====
+  function showErrorModal(text = 'Đã xảy ra lỗi.') {
+    if (errorText) errorText.textContent = text;
+    if (errorModal) errorModal.classList.remove('hidden');
+  }
+  function hideErrorModal() {
+    if (errorModal) errorModal.classList.add('hidden');
+  }
+  if (errorClose) errorClose.addEventListener('click', hideErrorModal);
+
+  // ===== Transcript: elapsed clock (start -> counting, stop -> reset) =====
+  let liveTimer = null;
+  let liveStartedAt = null;
+  let startInFlight = false;
+
+  function formatElapsed(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const two = (n) => (n < 10 ? '0' + n : '' + n);
+    return `${two(h)}:${two(m)}:${two(s)}`;
+  }
+
+  function stopLiveTimer() {
+    if (liveTimer) clearInterval(liveTimer);
+    liveTimer = null;
+    liveStartedAt = null;
+    if (liveTimestampEl) liveTimestampEl.textContent = '00:00:00';
+  }
+
+  function setPlayVisual(on) {
+    if (!transcriptStart) return;
+    transcriptStart.classList.toggle('is-playing', !!on);
+  }
+
+  function setStartLoading(on) {
+    if (!transcriptStart) return;
+    transcriptStart.classList.toggle('is-loading', !!on);
+  }
+
+  function startLiveTimer() {
+    if (!liveTimestampEl) return;
+    liveStartedAt = Date.now();
+    liveTimestampEl.textContent = '00:00:00';
+    if (liveTimer) clearInterval(liveTimer);
+    liveTimer = setInterval(() => {
+      if (!liveStartedAt) return;
+      const elapsed = Date.now() - liveStartedAt;
+      liveTimestampEl.textContent = formatElapsed(elapsed);
+    }, 1000);
+  }
+
+  stopLiveTimer();
+
+  // ===== Transcript sentence delay logging =====
   let loggedSentCount = 0;
 
   const SENT_RE = /[^.!?…]*[.!?…]+(?:["”’']+)?(?:\s+|$)/g;
@@ -329,6 +453,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ===== START/STOP capture =====
   if (transcriptStart) {
     transcriptStart.addEventListener('click', async () => {
+      if (startInFlight) return;
       const currentlyActive = transcriptStart.classList.contains('active');
 
       if (!currentlyActive) {
@@ -336,6 +461,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!ok) {
           openAuthOverlayFromPanel();
           if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
+          stopLiveTimer();
           return;
         }
       }
@@ -344,11 +470,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (hasChromeRuntime) {
         if (isActive) {
+          startInFlight = true;
+          setStartLoading(true);
           chrome.runtime.sendMessage(
             { __cmd: '__PANEL_START__', payload: { server: getServer() } },
             (res) => {
               if (!res?.ok) {
                 transcriptStart.classList.remove('active');
+                startInFlight = false;
+                setStartLoading(false);
+                setPlayVisual(false);
                 if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
 
                 if (res?.code === 'AUTH_REQUIRED') {
@@ -356,7 +487,14 @@ document.addEventListener('DOMContentLoaded', () => {
                   return;
                 }
 
-                if (res?.error) alert('Không capture được tab hiện tại:\n' + res.error);
+                if (res?.error) {
+                  const msgErr = String(res.error || '');
+                  if (/bận|busy/i.test(msgErr)) {
+                    showBusyModal(msgErr);
+                  } else {
+                    showErrorModal(msgErr);
+                  }
+                }
               }
             }
           );
@@ -371,8 +509,14 @@ document.addEventListener('DOMContentLoaded', () => {
           loggedSentCount = 0;
           updateTranscriptHeaderUrl();
           sendTranscriptModes();
+          // timer & play visual sẽ bật khi nhận state 'running' từ OFFSCREEN_STATUS
+          setPlayVisual(true);
         } else {
+          startInFlight = false;
+          setStartLoading(false);
           chrome.runtime.sendMessage({ __cmd: '__PANEL_STOP__' });
+          stopLiveTimer();
+          setPlayVisual(false);
         }
       }
 
@@ -399,6 +543,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof msg.payload?.active === 'boolean' && transcriptLiveFooter) {
           transcriptLiveFooter.textContent = msg.payload.active ? 'Live • Đang ghi' : 'Live';
           if (transcriptStart) transcriptStart.classList.toggle('active', msg.payload.active);
+          if (!msg.payload.active) stopLiveTimer();
+          setPlayVisual(!!msg.payload?.active);
         }
 
         if (msg.payload?.url && transcriptHeaderUrlEl) {
@@ -409,10 +555,51 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      if (msg.__cmd === '__PANEL_NOTIFY__') {
+        const level = msg.payload?.level || '';
+        const text = msg.payload?.text || '';
+        if (level === 'error' && /bận|busy/i.test(text || '')) {
+          showBusyModal(text || undefined);
+        }
+        if (level === 'error') {
+          stopLiveTimer();
+          setPlayVisual(false);
+          if (transcriptStart) transcriptStart.classList.remove('active');
+          if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
+          startInFlight = false;
+          setStartLoading(false);
+        }
+        return;
+      }
+
+      if (msg.__cmd === '__OFFSCREEN_STATUS__') {
+        const s = msg.payload?.state || '';
+        if (s === 'running') {
+          startLiveTimer();
+          setPlayVisual(true);
+          startInFlight = false;
+          setStartLoading(false);
+        }
+        if (s === 'stopped' || s === 'server-busy' || s === 'server-error' || s === 'error') {
+          if (s === 'server-busy') {
+            showBusyModal(msg.payload?.text || 'Hệ thống đang bận, vui lòng thử lại sau.');
+          }
+          stopLiveTimer();
+          setPlayVisual(false);
+          if (transcriptStart) transcriptStart.classList.remove('active');
+          if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
+          startInFlight = false;
+          setStartLoading(false);
+        }
+        return;
+      }
+
       if (msg.__cmd === '__TRANSCRIPT_STABLE__') {
         const full = String(msg.payload?.full ?? msg.full ?? '');
         if (!full) return;
         const { sents } = splitSentencesAndTail(full);
+
+        // delay 1 sentence
         const target = Math.max(0, sents.length - 1);
         if (target > loggedSentCount) {
           const t = nowTime();
@@ -427,23 +614,29 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    try {
-      chrome.runtime.sendMessage({ __cmd: '__OVERLAY_PING__' }, (res) => {
-        if (transcriptLiveFooter) {
-          transcriptLiveFooter.textContent = res?.active ? 'Live • Đang ghi' : 'Live';
-        }
-        if (transcriptStart && typeof res?.active === 'boolean') {
-          transcriptStart.classList.toggle('active', res.active);
-        }
-      });
-    } catch {}
-  }
+      try {
+        chrome.runtime.sendMessage({ __cmd: '__OVERLAY_PING__' }, (res) => {
+          if (transcriptLiveFooter) {
+            transcriptLiveFooter.textContent = res?.active ? 'Live • Đang ghi' : 'Live';
+          }
+          if (transcriptStart && typeof res?.active === 'boolean') {
+            transcriptStart.classList.toggle('active', res.active);
+            if (!res.active) stopLiveTimer();
+            setPlayVisual(!!res.active);
+            if (!res.active) {
+              startInFlight = false;
+              setStartLoading(false);
+            }
+          }
+        });
+      } catch {}
+    }
 
   // ============================================================
   // ✅ CHAT TOGGLES
   // ============================================================
   const chatToggles = {
-    useRag: readBoolLS(LS_CHAT_USE_RAG, true),  // default ON
+    useRag: readBoolLS(LS_CHAT_USE_RAG, true),
     useR1: readBoolLS(LS_CHAT_USE_R1, false),
   };
 
@@ -464,7 +657,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ============================================================
-  // ✅ Smart rewrite (TRÁNH chữ "tóm tắt tài liệu" để không trigger template)
+  // ✅ Smart rewrite (giữ nguyên logic của bạn)
   // ============================================================
   function isGenericAboutQuery(q) {
     const s = String(q || '').trim().toLowerCase();
@@ -490,7 +683,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function buildRagQuestionV1(userQ) {
-    // V1: prompt "mềm" nhưng rõ ràng, không dùng từ "tóm tắt tài liệu"
     return [
       'Hãy trả lời trực tiếp dựa trên các đoạn transcript đã được truy xuất (RAG).',
       'Câu hỏi: Bài nói đang nói về chủ đề gì?',
@@ -501,7 +693,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function buildRagQuestionV2(userQ) {
-    // V2: prompt "cứng" để tránh model tiếp tục boilerplate
     return [
       'NHIỆM VỤ BẮT BUỘC: trả lời câu hỏi ngay, KHÔNG đặt câu hỏi ngược.',
       'Trả lời dựa trên transcript RAG. Nếu RAG rỗng: trả lời "Không tìm thấy transcript".',
@@ -523,8 +714,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return attempt === 0 ? buildRagQuestionV1(q) : buildRagQuestionV2(q);
     }
 
-    // query thường: append thêm english hint nhẹ để match transcript EN
-    // (không phá nghĩa câu hỏi)
     return [
       q,
       '',
@@ -534,7 +723,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function looksLikeBoilerplateAnswer(text) {
     const s = String(text || '').toLowerCase();
-    // các câu bạn đang gặp
     if (s.includes('hiểu rồi! tôi sẽ') && s.includes('tóm tắt')) return true;
     if (s.includes('bạn cần tôi') && s.includes('tóm tắt')) return true;
     if (s.includes('xin vui lòng cung cấp') && s.includes('tóm tắt')) return true;
@@ -585,7 +773,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof dataStr === 'string') {
       const s = dataStr.trim();
 
-      // Handle: {"session_id":"..."}TEXT
       if (s.startsWith('{') && s.includes('"session_id"')) {
         const close = s.indexOf('}');
         if (close > 0 && close < s.length - 1) {
@@ -682,7 +869,6 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         }
 
-        // lenient fallback for non-sse chunk
         if (buf.length > 4096 && !buf.includes('data:') && !buf.includes('event:')) {
           const s = buf.trim();
           buf = '';
@@ -726,7 +912,6 @@ document.addEventListener('DOMContentLoaded', () => {
       );
       return acc;
     } catch (e) {
-      // fallback REST
       const r = await fetch(restUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-user-id': 'sidepanel' },
@@ -743,7 +928,6 @@ document.addEventListener('DOMContentLoaded', () => {
   async function sendChat(question) {
     if (!question || !question.trim()) return;
 
-    // AUTH gate
     const ok = await isAuthed();
     if (!ok) {
       openAuthOverlayFromPanel();
@@ -769,7 +953,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const metaLine = `${nowTime()}${useRag ? ' • RAG: ON' : ' • RAG: OFF'}`;
 
-    // attempt 0
     const q0 = buildQuestionToServer(rawUserQ, useRag, 0);
     const body0 = { question: q0, session_id: sid, user_id: 'sidepanel', use_rag: useRag };
 
@@ -780,7 +963,6 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       out0 = await callChatOnce(apiBase, body0, assistBubble);
 
-      // ✅ nếu backend trả boilerplate -> retry 1 lần với prompt cứng hơn
       if (useRag && looksLikeBoilerplateAnswer(out0)) {
         if (assistBubble) assistBubble.textContent = '… (retry)';
         const q1 = buildQuestionToServer(rawUserQ, useRag, 1);
@@ -789,9 +971,10 @@ document.addEventListener('DOMContentLoaded', () => {
         out0 = await callChatOnce(apiBase, body1, assistBubble);
       }
 
-      // attach meta
       if (assistBubble) {
-        const extra = isDebug() ? `\n\n[sent]\n${(useRag ? (looksLikeBoilerplateAnswer(out0) ? 'retry' : 'ok') : 'no-rag')}` : '';
+        const extra = isDebug()
+          ? `\n\n[sent]\n${(useRag ? (looksLikeBoilerplateAnswer(out0) ? 'retry' : 'ok') : 'no-rag')}`
+          : '';
         assistBubble.innerHTML =
           escapeHtml(assistBubble.textContent + extra) +
           `<span class="meta">${escapeHtml(metaLine)}</span>`;

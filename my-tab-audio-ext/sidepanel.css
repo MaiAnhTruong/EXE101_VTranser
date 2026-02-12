@@ -1,4 +1,4 @@
-/*D:\ubuntu_truong\EXE\VTranser\vtranser\sidepanel.css */
+/* D:\ubuntu_truong\EXE\VTranser\vtranser\sidepanel.css */
 
 :root{
   --accent:#60A5FA;
@@ -14,7 +14,7 @@
 
   /* ✅ đồng bộ khoảng cách đáy giữa view & toolbar */
   --panel-pad: 24px;
-  --panel-bottom: 14px;  /* chỉnh 12~16 tuỳ bạn để “ngang” với icon account */
+  --panel-bottom: 14px;
 
   font-family:"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
@@ -43,10 +43,21 @@ html,body{
   width:100%;
   background:var(--bg);
   box-shadow:0 2px 10px rgba(0,0,0,.08);
-  overflow:hidden; /* bo góc của host sẽ clip nếu con bị kéo ra ngoài */
+  overflow:hidden;
 }
 
-/* ✅ Toolbar luôn nổi trên để bấm được icon */
+/* ✅ LEFT: main column (center screen + bottom bar fixed) */
+.main-col{
+  flex:1;
+  min-width:290px;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  background:var(--bg);
+}
+
+/* ✅ RIGHT TOOLBAR luôn nổi trên để bấm được icon */
 .toolbar{
   width:60px;
   flex-shrink:0;
@@ -56,13 +67,57 @@ html,body{
   flex-direction:column;
   align-items:center;
   justify-content:flex-start;
-  padding-top:12px;
+  padding-top:16px;
   padding-bottom: var(--panel-bottom);
-  gap:10px;
+  gap:14px;
   box-sizing:border-box;
 
   position:relative;
-  z-index: 20; /* ✅ tránh bị footer view che */
+  z-index: 20;
+}
+
+.toolbar-mini-row{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:2px;
+  width:100%;
+}
+
+.toolbar-item{
+  width:100%;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:6px;
+}
+
+.icon-label{
+  font-size:11px;
+  line-height:1.2;
+  color:var(--text-muted);
+  text-align:center;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  max-width:56px;
+}
+
+.nav-btn.active + .icon-label{
+  color:var(--text);
+  font-weight:600;
+}
+
+.toolbar-item.nav-item + .toolbar-item.nav-item{
+  margin-top:12px;
+}
+
+.toolbar-spacer{
+  flex:1;
+}
+
+.toolbar-footer{
+  margin-top:2px;
 }
 
 .view-container{
@@ -71,19 +126,31 @@ html,body{
   flex-direction:column;
   min-width:290px;
   min-height:0;
-  overflow:hidden; /* ✅ không scroll toàn view */
+  overflow:hidden;
   box-sizing:border-box;
   background:var(--bg);
 
-  /* ✅ bỏ “padding-bottom 24px” để footer không bị hụt lên,
-     thay bằng panel-bottom đồng bộ toolbar */
-  padding: var(--panel-pad) var(--panel-pad) var(--panel-bottom) var(--panel-pad);
+  /* ✅ bottom bar nằm ngoài view-container => padding-bottom = 0 */
+  padding: var(--panel-pad) var(--panel-pad) 0 var(--panel-pad);
 
   position:relative;
   z-index: 1;
 }
 
-/* container chỉ chứa 1 view active, không scroll */
+#panel.is-collapsed{
+  width:25vw;
+  min-width:240px;
+  max-width:480px;
+}
+#panel.is-fullscreen{
+  position:fixed;
+  inset:0;
+  width:100vw;
+  height:100vh;
+  z-index:9999;
+  border-radius:0;
+}
+
 .content-flipper{
   flex:1;
   display:flex;
@@ -93,11 +160,40 @@ html,body{
   overflow:hidden;
 }
 
-/* Không set display ở đây để khỏi đè .hidden */
 .content-view{
   width:100%;
   height:100%;
   min-height:0;
+}
+
+/* ✅ BOTTOM BAR cố định cho mọi màn */
+.bottom-bar{
+  flex-shrink:0;
+  height:48px;
+  border-top:1px solid var(--border);
+  background:var(--bg);
+  padding:0 var(--panel-pad);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  box-sizing:border-box;
+}
+
+.bottom-left{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  min-width:0;
+}
+
+.bottom-greeting{
+  color:var(--text);
+  font-size:14px;
+  font-weight:500;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  max-width: 240px;
 }
 
 /* --- 1. HEADER --- */
@@ -151,7 +247,6 @@ html,body{
   min-height:0;
 }
 
-/* History là vùng scroll */
 .chat-history-area{
   flex:1;
   min-height:0;
@@ -162,13 +257,12 @@ html,body{
   border-radius: 12px;
 }
 
-/* Input area pinned dưới */
 .chat-input-area{
   flex-shrink:0;
   margin-top:12px;
   border-top:1px solid var(--border);
   padding-top:16px;
-  padding-bottom:0; /* ✅ view-container đã có panel-bottom rồi */
+  padding-bottom:0;
   background:var(--bg);
 }
 
@@ -179,7 +273,7 @@ html,body{
   padding-right:5px;
 }
 
-.input-header, .input-footer{
+.input-header{
   width:100%;
   display:flex;
   justify-content:space-between;
@@ -205,7 +299,6 @@ html,body{
 }
 .icon-btn-simple:hover{ background: rgba(0,0,0,0.04); }
 
-/* Chip mode */
 .chip-button{
   background:#FFFFFF;
   border:1px solid #FFFFFF;
@@ -252,10 +345,6 @@ html,body{
 }
 .textarea-wrapper textarea::placeholder{ color:var(--text-muted); }
 
-.input-footer{
-  margin-top:12px;
-}
-
 .login-btn{
   font-size:12px;
   font-weight:500;
@@ -267,13 +356,12 @@ html,body{
   margin-right:auto;
 }
 
-/* focus-mode */
 #chat-content.focus-mode .main-header,
 #chat-content.focus-mode .action-buttons{
   display:none;
 }
 
-/* ===== TRANSCRIPT VIEW LAYOUT (pin footer) ===== */
+/* ===== TRANSCRIPT VIEW LAYOUT ===== */
 #transcript-content{
   display:flex;
   flex-direction:column;
@@ -291,7 +379,7 @@ html,body{
   overflow:hidden;
   box-shadow:0 4px 12px rgba(0,0,0,.05);
   flex-shrink:0;
-  max-height:40vh; /* giống UI gốc */
+  max-height:40vh;
 }
 
 .transcript-header{
@@ -346,7 +434,6 @@ html,body{
   flex-shrink:0;
 }
 
-/* vùng giữa để nút Play nằm trung tâm */
 .transcript-controls-row{
   display:flex;
   flex:1;
@@ -361,13 +448,17 @@ html,body{
   justify-content:center;
   background-size:contain;
   border:none;
-  width:150px;
-  height:150px;
+  width:220px;
+  height:220px;
   background-repeat:no-repeat;
   cursor:pointer;
 }
+.transcript-btn1.is-loading{
+  opacity:.6;
+  pointer-events:none;
+}
 .transcript-btn1.start{ background-image:url("icons/start.svg"); }
-.transcript-btn1.start.active{ background-image:url("icons/stop.svg"); }
+.transcript-btn1.start.is-playing{ background-image:url("icons/play.gif"); }
 
 .transcript-actions-row{
   display:flex;
@@ -400,14 +491,79 @@ html,body{
   box-shadow:0 0 0 1px rgba(96,165,250,.6);
 }
 
-/* ✅ Transcript footer pinned dưới, KHÔNG margin âm nữa => không bị clip góc */
-.input-footer.transcript{
-  margin-top:auto;
+/* ✅ transcript entries (để addTranscriptRow đẹp) */
+.transcript-entry{
+  display:flex;
+  gap:10px;
+  padding:10px 8px;
+  border-radius:10px;
+}
+.transcript-entry:hover{
+  background: rgba(0,0,0,0.03);
+}
+.transcript-entry .timestamp{
+  font-size:12px;
+  color: var(--text-muted);
+  width:64px;
   flex-shrink:0;
+}
+.transcript-entry .text-block{
+  flex:1;
+  min-width:0;
+}
+.transcript-entry .text-block p{
+  margin:0;
+  color: var(--text);
+  line-height:1.45;
+  white-space:pre-wrap;
+  word-break:break-word;
+}
+.transcript-entry .speaker-info{
+  display:block;
+  margin-top:6px;
+  font-size:12px;
+  color: var(--text-muted);
+}
+
+/* ===== ✅ HISTORY VIEW (NEW) ===== */
+#history-content{
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
+
+.history-box{
+  display:flex;
+  flex-direction:column;
   background:var(--bg);
-  border-top:1px solid var(--border);
-  padding-top:10px;
-  padding-bottom:0;
+  border:1px solid var(--border);
+  border-radius:12px;
+  overflow:hidden;
+  box-shadow:0 4px 12px rgba(0,0,0,.05);
+  min-height:0;
+}
+
+.history-header{
+  padding:16px;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.history-header h3{
+  margin:0 0 4px 0;
+  font-size:16px;
+  font-weight:600;
+}
+.history-sub{
+  margin:0;
+  font-size:13px;
+  color:var(--text-muted);
+}
+
+.history-body{
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  padding:16px;
 }
 
 /* ===== TOOLBAR ICONS ===== */
@@ -430,26 +586,35 @@ html,body{
   box-shadow:0 2px 6px rgba(96,165,250,.45);
 }
 
+.icon-btn.mini{
+  width:26px;
+  height:26px;
+  border-radius:8px;
+  background-size:58%;
+}
+
 #btn-chat{ background-image:url('icons/message.svg'); }
 #btn-transcript{ background-image:url('icons/transcript.svg'); }
+#btn-history{ background-image:url('icons/history.svg'); }
+#btn-more{ background-image:url('icons/more.svg'); }
+
+#btn-collapse{
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' fill='none' stroke='%236B7280' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='15 18 9 12 15 6'/%3E%3C/svg%3E");
+}
+#btn-fullscreen{ background-image:url('icons/maximize.svg'); }
+
 #btn-setting{
   background-image:url('icons/setting.svg');
-  margin-top:auto;
 }
 #btnAccount{ background-image:url('icons/account.svg'); }
 
-/* Footer icons */
+/* Footer icons (bottom bar) */
 #icon-btn-gift{ background-image:url('icons/gift.svg'); }
 #icon-btn-heart{ background-image:url('icons/heart.svg'); }
 #icon-btn-help{ background-image:url('icons/help.svg'); }
 #icon-btn-mail{ background-image:url('icons/mail.svg'); }
 
-#icon-btn-gift-t{ background-image:url('icons/gift.svg'); }
-#icon-btn-heart-t{ background-image:url('icons/heart.svg'); }
-#icon-btn-help-t{ background-image:url('icons/help.svg'); }
-#icon-btn-mail-t{ background-image:url('icons/mail.svg'); }
-
-/* Ẩn icon ghim & 3 chấm */
+/* Hide unused (nếu HTML không có thì cũng OK) */
 #icon-btn-paperclip,
 #icon-btn-more{ display:none; }
 
@@ -526,7 +691,6 @@ html,body{
   background:transparent;
 }
 
-/* Optional: chấm báo đã login */
 #btnAccount.vt-authed::after{
   content:"";
   position:absolute;
@@ -539,7 +703,7 @@ html,body{
   box-shadow:0 0 0 4px rgba(58,167,255,.12);
 }
 
-/* ===== ACCOUNT MENU (giống ảnh) ===== */
+/* ===== ACCOUNT MENU ===== */
 .vt-account-overlay{
   position:fixed;
   inset:0;
@@ -548,12 +712,12 @@ html,body{
 .vt-account-backdrop{
   position:absolute;
   inset:0;
-  background:transparent; /* giống popover ảnh */
+  background:transparent;
 }
 
 .vt-account-popover{
   position:fixed;
-  right:72px;  /* né toolbar 60px */
+  right:72px;
   top:10px;
   width: 320px;
   max-width: calc(100vw - 86px);
@@ -618,7 +782,6 @@ html,body{
   flex-shrink:0;
 }
 
-/* Credits card */
 .vt-acc-credits{
   display:flex;
   align-items:center;
@@ -869,7 +1032,105 @@ html,body{
   box-shadow:0 14px 40px rgba(0,0,0,.22);
 }
 
-/* ===== UX: Save button loading state ===== */
+/* ===== BUSY MODAL ===== */
+.vt-busy{
+  position:fixed;
+  inset:0;
+  display:grid;
+  place-items:center;
+  background:rgba(0,0,0,.35);
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
+  z-index:9998;
+}
+.vt-busy.hidden{ display:none !important; }
+
+.vt-busy-card{
+  position:relative;
+  width:min(360px, 92vw);
+  padding:18px 18px 16px;
+  background:#fff;
+  border-radius:14px;
+  box-shadow:0 16px 60px rgba(0,0,0,.22);
+  border:1px solid rgba(0,0,0,.08);
+  text-align:center;
+  color:#111827;
+  font-weight:600;
+  line-height:1.4;
+}
+.vt-busy-text{
+  font-size:14px;
+}
+.vt-busy-img{
+  width:140px;
+  height:140px;
+  max-width:70%;
+  aspect-ratio:1/1;
+  object-fit:contain;
+  display:block;
+  margin:12px auto 0;
+}
+.vt-busy-close{
+  position:absolute;
+  top:8px;
+  right:8px;
+  width:28px;
+  height:28px;
+  border-radius:8px;
+  border:1px solid #e5e7eb;
+  background:#fff;
+  cursor:pointer;
+  font-size:18px;
+  line-height:24px;
+  color:#6b7280;
+}
+.vt-busy-close:hover{ background:#f3f4f6; }
+
+/* ===== GENERIC ERROR MODAL (reuse sizing) ===== */
+.vt-modal{
+  position:fixed;
+  inset:0;
+  display:grid;
+  place-items:center;
+  background:rgba(0,0,0,.35);
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
+  z-index:9998;
+}
+.vt-modal.hidden{ display:none !important; }
+.vt-modal-card{
+  position:relative;
+  width:min(340px, 92vw);
+  padding:16px 18px 14px;
+  background:#fff;
+  border-radius:14px;
+  box-shadow:0 16px 60px rgba(0,0,0,.22);
+  border:1px solid rgba(0,0,0,.08);
+  text-align:left;
+  color:#111827;
+  font-weight:600;
+  line-height:1.45;
+}
+.vt-modal-text{
+  font-size:14px;
+  white-space:pre-line;
+}
+.vt-modal-close{
+  position:absolute;
+  top:8px;
+  right:8px;
+  width:28px;
+  height:28px;
+  border-radius:8px;
+  border:1px solid #e5e7eb;
+  background:#fff;
+  cursor:pointer;
+  font-size:18px;
+  line-height:24px;
+  color:#6b7280;
+}
+.vt-modal-close:hover{ background:#f3f4f6; }
+
 .vt-profile-primary-btn.is-loading{
   position: relative;
   opacity: .95;

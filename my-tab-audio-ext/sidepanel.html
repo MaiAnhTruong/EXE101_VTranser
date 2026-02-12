@@ -1,4 +1,3 @@
-<!-- D:\ubuntu_truong\EXE\VTranser\vtranser\sidepanel.html -->
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -9,115 +8,179 @@
 </head>
 <body>
   <div id="panel">
-    <div class="view-container">
-      <div class="content-flipper">
 
-        <!-- CHAT VIEW -->
-        <div id="chat-content" class="content-view hidden">
-          <div class="main-header">
-            <p>Tôi có thể hỗ trợ gì cho bạn?</p>
-          </div>
+    <!-- ✅ LEFT: main column (center screen + bottom bar fixed) -->
+    <div class="main-col">
+      <!-- center screens -->
+      <div class="view-container">
+        <div class="content-flipper">
 
-          <div class="action-buttons">
-            <button class="action-btn" type="button">
-              <img src="icons/maximize.svg" alt="" class="action-btn-icon" /> Toàn màn hình
-            </button>
-            <button class="action-btn" type="button">
-              <img src="icons/database.svg" alt="" class="action-btn-icon" /> Truy xuất thông tin
-            </button>
-            <button class="action-btn" type="button">
-              <img src="icons/star.svg" alt="" class="action-btn-icon" /> Kho lưu trữ
-            </button>
-            <button class="action-btn" type="button">
-              <img src="icons/file-text.svg" alt="" class="action-btn-icon" /> Vẽ hình tài liệu
-            </button>
-          </div>
+          <!-- CHAT VIEW -->
+          <div id="chat-content" class="content-view hidden">
+            <div class="main-header">
+              <p>Tôi có thể hỗ trợ gì cho bạn?</p>
+            </div>
 
-          <div class="chat-history-area"></div>
-
-          <div class="chat-input-area">
-            <div class="input-header">
-              <button class="chip-button" type="button">
-                <img src="icons/database.svg" alt="" class="input-btn-icon" />Truy xuất thông tin
+            <div class="action-buttons">
+              <button class="action-btn" type="button">
+                <img src="icons/maximize.svg" alt="" class="action-btn-icon" /> Toàn màn hình
               </button>
-              <button class="chip-button" type="button">
-                <img src="icons/brain.svg" alt="" class="input-btn-icon" />Suy luận (R1)
+              <button class="action-btn" type="button">
+                <img src="icons/database.svg" alt="" class="action-btn-icon" /> Truy xuất thông tin
+              </button>
+              <button class="action-btn" type="button">
+                <img src="icons/star.svg" alt="" class="action-btn-icon" /> Kho lưu trữ
+              </button>
+              <button class="action-btn" type="button">
+                <img src="icons/file-text.svg" alt="" class="action-btn-icon" /> Vẽ hình tài liệu
               </button>
             </div>
 
-            <div class="textarea-wrapper">
-              <textarea placeholder="Hãy viết gì đó"></textarea>
-              <button id="icon-btn-send" class="icon-btn-simple" title="send" type="button"></button>
-            </div>
+            <div class="chat-history-area"></div>
 
-            <div class="input-footer">
-              <button class="login-btn" id="loginLink" type="button">Log in</button>
-              <div class="icon-group">
-                <button id="icon-btn-gift" class="icon-btn-simple" title="gift" type="button"></button>
-                <button id="icon-btn-heart" class="icon-btn-simple" title="heart" type="button"></button>
-                <button id="icon-btn-help" class="icon-btn-simple" title="help" type="button"></button>
-                <button id="icon-btn-mail" class="icon-btn-simple" title="mail" type="button"></button>
+            <div class="chat-input-area">
+              <div class="input-header">
+                <button class="chip-button" type="button">
+                  <img src="icons/database.svg" alt="" class="input-btn-icon" />Truy xuất thông tin
+                </button>
+                <button class="chip-button" type="button">
+                  <img src="icons/brain.svg" alt="" class="input-btn-icon" />Suy luận (R1)
+                </button>
+              </div>
+
+              <div class="textarea-wrapper">
+                <textarea placeholder="Hãy viết gì đó"></textarea>
+                <button id="icon-btn-send" class="icon-btn-simple" title="send" type="button"></button>
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- TRANSCRIPT VIEW -->
-        <div id="transcript-content" class="content-view">
-          <div class="transcript-box">
-            <div class="transcript-header">
-              <h3>Transcript</h3>
-              <p class="transcript-url">Website: (chưa bắt đầu)</p>
-            </div>
+          <!-- TRANSCRIPT VIEW -->
+          <div id="transcript-content" class="content-view">
+            <div class="transcript-box">
+              <div class="transcript-header">
+                <h3>Nội dung chi tiết</h3>
+                <p class="transcript-url">Website: (chưa bắt đầu)</p>
+              </div>
 
-            <div class="transcript-body">
-              <div class="placeholder-text transcript-placeholder">
-                Nhấn nút Play bên dưới để bắt đầu ghi phụ đề.
+              <div class="transcript-body">
+                <div class="placeholder-text transcript-placeholder">
+                  Nhấn nút bên dưới để bắt đầu.
+                </div>
+              </div>
+
+              <div class="transcript-live-footer">
+                <span>Live</span>
               </div>
             </div>
 
-            <div class="transcript-live-footer">
-              <span>Live</span>
+            <div class="live-timestamp">00:00:00</div>
+
+            <div class="transcript-controls-row">
+              <button class="transcript-btn1 start" type="button" aria-label="Start/Stop"></button>
+            </div>
+
+            <div class="transcript-actions-row">
+              <button id="btn-subtitle" class="transcript-btn" type="button">
+                <img src="icons/phude.svg" alt="" class="action-btn-icon" />Phụ đề
+              </button>
+              <button id="btn-subtitle-trans" class="transcript-btn" type="button">
+                <img src="icons/dichphude.svg" alt="" class="action-btn-icon" />Phiên dịch
+              </button>
+              <button id="btn-voice" class="transcript-btn" type="button">
+                <img src="icons/giongnoi.svg" alt="" class="action-btn-icon" />Giọng nói
+              </button>
             </div>
           </div>
 
-          <div class="live-timestamp">00:00:00</div>
+          <!-- ✅ HISTORY VIEW (NEW) -->
+          <div id="history-content" class="content-view hidden">
+            <div class="history-box">
+              <div class="history-header">
+                <h3>Lịch sử</h3>
+                <p class="history-sub">Màn lịch sử (đang phát triển). Hiện tại chỉ cần chuyển màn.</p>
+              </div>
 
-          <div class="transcript-controls-row">
-            <button class="transcript-btn1 start" type="button" aria-label="Start/Stop"></button>
-          </div>
-
-          <div class="transcript-actions-row">
-            <button id="btn-subtitle" class="transcript-btn" type="button">
-              <img src="icons/phude.svg" alt="" class="action-btn-icon" />Phụ đề
-            </button>
-            <button id="btn-subtitle-trans" class="transcript-btn" type="button">
-              <img src="icons/dichphude.svg" alt="" class="action-btn-icon" />Dịch phụ đề
-            </button>
-            <button id="btn-voice" class="transcript-btn" type="button">
-              <img src="icons/giongnoi.svg" alt="" class="action-btn-icon" />Giọng nói
-            </button>
-          </div>
-
-          <div class="input-footer transcript">
-            <button class="login-btn" id="loginLinkT" type="button">Log in</button>
-            <div class="icon-group">
-              <button id="icon-btn-gift-t" class="icon-btn-simple" title="gift" type="button"></button>
-              <button id="icon-btn-heart-t" class="icon-btn-simple" title="heart" type="button"></button>
-              <button id="icon-btn-help-t" class="icon-btn-simple" title="help" type="button"></button>
-              <button id="icon-btn-mail-t" class="icon-btn-simple" title="mail" type="button"></button>
+              <div class="history-body">
+                <div class="placeholder-text">
+                  (Placeholder) — Sau này bạn sẽ render danh sách lịch sử ở đây.
+                </div>
+              </div>
             </div>
           </div>
+
+        </div>
+      </div>
+
+      <!-- ✅ BOTTOM BAR: fixed for ALL features -->
+      <div class="bottom-bar">
+        <div class="bottom-left">
+          <span id="bottomGreeting" class="bottom-greeting">Hi</span>
+          <button class="login-btn" id="loginLink" type="button">Log in</button>
         </div>
 
+        <div class="icon-group">
+          <button id="icon-btn-gift" class="icon-btn-simple" title="gift" type="button"></button>
+          <button id="icon-btn-heart" class="icon-btn-simple" title="heart" type="button"></button>
+          <button id="icon-btn-help" class="icon-btn-simple" title="help" type="button"></button>
+          <button id="icon-btn-mail" class="icon-btn-simple" title="mail" type="button"></button>
+        </div>
       </div>
     </div>
 
+    <!-- ✅ RIGHT: toolbar fixed -->
     <div class="toolbar">
-      <button id="btn-transcript" class="icon-btn active" title="Transcript" type="button"></button>
-      <button id="btn-chat" class="icon-btn" title="Chat" type="button"></button>
-      <button id="btn-setting" class="icon-btn" title="Setting" type="button"></button>
-      <button id="btnAccount" class="icon-btn" title="Account" type="button" data-vt-account></button>
+      <div class="toolbar-mini-row">
+        <button id="btn-collapse" class="icon-btn mini" title="Thu gọn" type="button"></button>
+        <button id="btn-fullscreen" class="icon-btn mini" title="Toàn màn hình" type="button"></button>
+      </div>
+
+      <div class="toolbar-item nav-item">
+        <button id="btn-transcript" class="icon-btn nav-btn active" data-view="transcript" title="Transcript" type="button"></button>
+        <span class="icon-label">Phiên dịch</span>
+      </div>
+
+      <div class="toolbar-item nav-item">
+        <button id="btn-chat" class="icon-btn nav-btn" data-view="chat" title="Chat" type="button"></button>
+        <span class="icon-label">Trợ lý ảo</span>
+      </div>
+
+      <div class="toolbar-item nav-item">
+        <button id="btn-history" class="icon-btn nav-btn" data-view="history" title="History" type="button"></button>
+        <span class="icon-label">Lịch sử</span>
+      </div>
+
+      <div class="toolbar-item nav-item">
+        <button id="btn-more" class="icon-btn" title="More" type="button"></button>
+        <span class="icon-label">Thêm</span>
+      </div>
+
+      <div class="toolbar-spacer" aria-hidden="true"></div>
+
+      <div class="toolbar-item toolbar-footer">
+        <button id="btn-setting" class="icon-btn" title="Setting" type="button"></button>
+      </div>
+
+      <div class="toolbar-item toolbar-footer">
+        <button id="btnAccount" class="icon-btn" title="Account" type="button" data-vt-account></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Busy modal -->
+  <div id="vtBusyModal" class="vt-busy hidden" role="alertdialog" aria-live="assertive">
+    <div class="vt-busy-card">
+      <button id="vtBusyClose" class="vt-busy-close" type="button" aria-label="Đóng">×</button>
+      <div class="vt-busy-text">Hệ thống đang bận, vui lòng thử lại sau.</div>
+      <img src="icons/busy.gif" alt="Đang xử lý" class="vt-busy-img" />
+    </div>
+  </div>
+
+  <!-- Error modal -->
+  <div id="vtErrorModal" class="vt-modal hidden" role="alertdialog" aria-live="assertive">
+    <div class="vt-modal-card">
+      <button id="vtErrorClose" class="vt-modal-close" type="button" aria-label="Đóng">×</button>
+      <div class="vt-modal-text">Đã xảy ra lỗi.</div>
     </div>
   </div>
 
@@ -129,7 +192,7 @@
     </div>
   </div>
 
-  <!-- ✅ ACCOUNT MENU (giống ảnh) -->
+  <!-- ACCOUNT MENU -->
   <div id="vtAccountOverlay" class="vt-account-overlay vt-hidden" aria-hidden="true">
     <div id="vtAccountBackdrop" class="vt-account-backdrop"></div>
 
@@ -195,7 +258,7 @@
     </div>
   </div>
 
-  <!-- ✅ MY ACCOUNT (EDIT PROFILE) OVERLAY -->
+  <!-- MY ACCOUNT (EDIT PROFILE) OVERLAY -->
   <div id="vtProfileOverlay" class="vt-profile-overlay vt-hidden" aria-hidden="true">
     <div id="vtProfileBackdrop" class="vt-profile-backdrop"></div>
 
@@ -243,10 +306,7 @@
     </div>
   </div>
 
-  <!-- ✅ Load config trước để host dùng chung -->
   <script src="auth/config.js"></script>
-
-  <!-- ✅ Load auth_host trước để icon account click chắc chắn hoạt động -->
   <script src="auth/auth_host.js"></script>
   <script src="sidepanel.js"></script>
 </body>
