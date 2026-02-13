@@ -24,6 +24,8 @@
   let ws = null;
   let wsOpen = false;
   let strictWs = true;
+  // Khi false: WS fail sẽ fail session luôn (tránh trạng thái "running giả")
+  const ALLOW_WS_FAIL_FOR_DEBUG = false;
 
   // gate: only stream PCM after we sent start/config message
   let wsReadyToStream = false;
@@ -547,7 +549,7 @@
       });
     } catch (e) {
       sendStatus({ state: "error", stage: "ws", error: String(e?.message || e) });
-      if (strictWs) {
+      if (strictWs || !ALLOW_WS_FAIL_FOR_DEBUG) {
         await stopAll("ws-fail");
         throw e;
       }

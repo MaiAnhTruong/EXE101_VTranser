@@ -648,6 +648,51 @@
     doRenderVI(false);
   }
 
+  function resetOverlayState({ keepMode = true, showDots = true } = {}) {
+    // EN reset
+    fullTextEN = "";
+    opsEN.length = 0;
+    scheduledEN = false;
+    lastPatchSeqEN = -1;
+    lastStableSeqEN = -1;
+
+    // VI reset
+    viCommitText = "";
+    viDraftText = "";
+    opsVI.length = 0;
+    scheduledVI = false;
+    lastViSeqApplied = -1;
+    lastViEnSeqApplied = -1;
+    viLastReqId = -1;
+    viEpoch = (viEpoch | 0) + 1; // drop late VI packets from previous session
+
+    if (viRenderTimer) {
+      clearTimeout(viRenderTimer);
+      viRenderTimer = null;
+    }
+
+    l1EN.textContent = "";
+    l2EN.textContent = "";
+    l1VI.textContent = "";
+    l2VI.textContent = "";
+    l2EN.classList.add("compact");
+    l2VI.classList.add("compact");
+
+    if (!keepMode) {
+      applyOverlayMode(false, false);
+      tracePush("overlay-reset", { keepMode: false, showDots: false, epoch: viEpoch });
+      return;
+    }
+
+    // Keep current mode but clear old text from previous run.
+    applyOverlayMode(showEN, showVI);
+    if (!showDots) {
+      if (showEN) l2EN.textContent = "";
+      if (showVI) l2VI.textContent = "";
+    }
+    tracePush("overlay-reset", { keepMode: true, showDots: !!showDots, epoch: viEpoch });
+  }
+
   // ---------- message handlers ----------
   function handleMessage(msg) {
     if (!msg) return;
@@ -737,6 +782,16 @@
       const enOn = !!(cfg.en ?? cfg.subtitle ?? cfg.showEN);
       const viOn = !!(cfg.vi ?? cfg.subtitle_vi ?? cfg.showVI);
       applyOverlayMode(enOn, viOn);
+      return;
+    }
+
+    // Full reset between sessions (start/stop/restart).
+    if (type === "__OVERLAY_RESET__" || type === "overlay-reset") {
+      const p = msg.payload || msg.detail || {};
+      resetOverlayState({
+        keepMode: p.keepMode !== false,
+        showDots: p.showDots !== false,
+      });
       return;
     }
 

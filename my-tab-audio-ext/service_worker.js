@@ -417,8 +417,19 @@ async function startCaptureOnTab(tabId, wsUrl, auth = null, strictWs = true) {
 }
 
 async function stopCapture() {
-  try { await chrome.runtime.sendMessage({ __cmd: "__OFFSCREEN_STOP__" }); } catch {}
+  const tabId = current?.tabId || null;
+
+  // Mark stopped immediately so late packets from previous run are ignored.
   setCurrentStopped();
+
+  try { await chrome.runtime.sendMessage({ __cmd: "__OFFSCREEN_STOP__" }); } catch {}
+
+  // Clear + remove overlay so next run starts from a clean visual state.
+  if (tabId != null) {
+    try { await safeSendTab(tabId, { __cmd: "__OVERLAY_RESET__", payload: { keepMode: false, showDots: false } }); } catch {}
+    await removeOverlay(tabId);
+  }
+
   maybeUpdateTranslator(true);
   if (transcriptPersist) {
     try { await transcriptPersist.stop(lastEnStable?.full || ""); } catch {}
@@ -804,6 +815,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             detail: p,
           });
         }
+      } else if (s === "error") {
+        // đảm bảo không giữ trạng thái running/starting giả nếu offscreen lỗi
+        setCurrentStopped();
       }
 
       // logs
@@ -837,6 +851,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       msg.__cmd === "__TRANSCRIPT_STABLE__" ||
       msg.__cmd === "__TRANSCRIPT_PATCH__"
     ) {
+      // Drop transcript from stale sessions (e.g., packets arriving right after Stop).
+      if (!(current?.tabId && (current?.startedAt || current?.starting))) {
+        return;
+      }
+
       if (msg.__cmd === "__TRANSCRIPT_PATCH__") maybeLogTranscriptRate("patch");
       else if (msg.__cmd === "__TRANSCRIPT_DELTA__") maybeLogTranscriptRate("delta");
       else if (msg.__cmd === "__TRANSCRIPT_STABLE__") maybeLogTranscriptRate("stable");

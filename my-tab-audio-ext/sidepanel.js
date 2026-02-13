@@ -21,6 +21,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Optional debug
   const LS_CHAT_DEBUG = 'sttChatDebug'; // set "1" to log + show sent prompt in meta
 
+  // play.gif của một số asset có thể không loop tự nhiên trên mọi môi trường;
+  // refresh định kỳ để luôn "chạy vô tận" khi đang active.
+  const PLAY_GIF_REFRESH_MS = 1800;
+
   const hasChromeRuntime =
     typeof chrome !== 'undefined' &&
     chrome.runtime &&
@@ -148,7 +152,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const transcriptStart = document.querySelector('.transcript-btn1.start');
   const transcriptBody = document.querySelector('.transcript-body');
   const transcriptLiveFooter = document.querySelector('.transcript-live-footer span');
-  const liveTimestampEl = document.querySelector('.live-timestamp');
   const transcriptHeaderUrlEl = document.querySelector('.transcript-header .transcript-url');
 
   const subtitleBtn = document.getElementById('btn-subtitle');            // EN
@@ -372,50 +375,47 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   if (errorClose) errorClose.addEventListener('click', hideErrorModal);
 
-  // ===== Transcript: elapsed clock (start -> counting, stop -> reset) =====
-  let liveTimer = null;
-  let liveStartedAt = null;
+  // ===== Transcript start/play states =====
   let startInFlight = false;
+  let playGifLoopTimer = null;
+  let playGifFlip = 0;
 
-  function formatElapsed(ms) {
-    const total = Math.max(0, Math.floor(ms / 1000));
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    const two = (n) => (n < 10 ? '0' + n : '' + n);
-    return `${two(h)}:${two(m)}:${two(s)}`;
+  function stopPlayGifLoop() {
+    if (playGifLoopTimer) clearInterval(playGifLoopTimer);
+    playGifLoopTimer = null;
+    if (transcriptStart) transcriptStart.style.backgroundImage = '';
   }
 
-  function stopLiveTimer() {
-    if (liveTimer) clearInterval(liveTimer);
-    liveTimer = null;
-    liveStartedAt = null;
-    if (liveTimestampEl) liveTimestampEl.textContent = '00:00:00';
+  function refreshPlayGifOnce() {
+    if (!transcriptStart) return;
+    if (!transcriptStart.classList.contains('is-playing')) return;
+    playGifFlip = (playGifFlip + 1) % 2;
+    transcriptStart.style.backgroundImage = `url("icons/play.gif?v=${playGifFlip}")`;
+  }
+
+  function startPlayGifLoop() {
+    stopPlayGifLoop();
+    refreshPlayGifOnce();
+    playGifLoopTimer = setInterval(refreshPlayGifOnce, PLAY_GIF_REFRESH_MS);
   }
 
   function setPlayVisual(on) {
     if (!transcriptStart) return;
-    transcriptStart.classList.toggle('is-playing', !!on);
+    const play = !!on;
+    transcriptStart.classList.toggle('is-playing', play);
+    if (play) startPlayGifLoop();
+    else stopPlayGifLoop();
+  }
+
+  function setStartActive(on) {
+    if (!transcriptStart) return;
+    transcriptStart.classList.toggle('active', !!on);
   }
 
   function setStartLoading(on) {
     if (!transcriptStart) return;
     transcriptStart.classList.toggle('is-loading', !!on);
   }
-
-  function startLiveTimer() {
-    if (!liveTimestampEl) return;
-    liveStartedAt = Date.now();
-    liveTimestampEl.textContent = '00:00:00';
-    if (liveTimer) clearInterval(liveTimer);
-    liveTimer = setInterval(() => {
-      if (!liveStartedAt) return;
-      const elapsed = Date.now() - liveStartedAt;
-      liveTimestampEl.textContent = formatElapsed(elapsed);
-    }, 1000);
-  }
-
-  stopLiveTimer();
 
   // ===== Transcript sentence delay logging =====
   let loggedSentCount = 0;
@@ -432,7 +432,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return { sents, tail: text.slice(lastEnd) };
   }
 
-  function addTranscriptRow(timeStr, text, meta = 'Speaker • en • live') {
+  function addTranscriptRow(text, meta = 'Speaker • en • live') {
     if (!transcriptBody) return;
     const placeholder = transcriptBody.querySelector('.transcript-placeholder');
     if (placeholder) placeholder.remove();
@@ -440,43 +440,46 @@ document.addEventListener('DOMContentLoaded', () => {
     const row = document.createElement('div');
     row.className = 'transcript-entry';
     row.innerHTML = `
-      <span class="timestamp">${escapeHtml(timeStr)}</span>
       <div class="text-block">
         <p>${escapeHtml(text)}</p>
         <span class="speaker-info">${escapeHtml(meta)}</span>
       </div>
     `;
-    transcriptBody.appendChild(row);
-    transcriptBody.scrollTop = transcriptBody.scrollHeight;
+    // Luôn hiển thị câu mới nhất ở trên cùng;
+    // câu cũ vẫn giữ lại và cuộn xuống sẽ thấy.
+    transcriptBody.prepend(row);
+    transcriptBody.scrollTop = 0;
   }
 
   // ===== START/STOP capture =====
   if (transcriptStart) {
     transcriptStart.addEventListener('click', async () => {
-      if (startInFlight) return;
       const currentlyActive = transcriptStart.classList.contains('active');
+      // Chỉ chặn spam khi đang "bắt đầu"; vẫn cho phép click để dừng.
+      if (startInFlight && !currentlyActive) return;
+      const willStart = !currentlyActive;
 
-      if (!currentlyActive) {
+      if (willStart) {
         const ok = await isAuthed();
         if (!ok) {
           openAuthOverlayFromPanel();
           if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
-          stopLiveTimer();
           return;
         }
       }
 
-      const isActive = transcriptStart.classList.toggle('active');
-
       if (hasChromeRuntime) {
-        if (isActive) {
+        if (willStart) {
+          setStartActive(true);
           startInFlight = true;
           setStartLoading(true);
+          // Chỉ chuyển sang play.gif khi OFFSCREEN báo running
+          setPlayVisual(false);
           chrome.runtime.sendMessage(
             { __cmd: '__PANEL_START__', payload: { server: getServer() } },
             (res) => {
               if (!res?.ok) {
-                transcriptStart.classList.remove('active');
+                setStartActive(false);
                 startInFlight = false;
                 setStartLoading(false);
                 setPlayVisual(false);
@@ -510,18 +513,17 @@ document.addEventListener('DOMContentLoaded', () => {
           updateTranscriptHeaderUrl();
           sendTranscriptModes();
           // timer & play visual sẽ bật khi nhận state 'running' từ OFFSCREEN_STATUS
-          setPlayVisual(true);
         } else {
+          setStartActive(false);
           startInFlight = false;
           setStartLoading(false);
-          chrome.runtime.sendMessage({ __cmd: '__PANEL_STOP__' });
-          stopLiveTimer();
           setPlayVisual(false);
+          chrome.runtime.sendMessage({ __cmd: '__PANEL_STOP__' });
         }
       }
 
       if (transcriptLiveFooter) {
-        transcriptLiveFooter.textContent = isActive ? 'Live • Đang ghi' : 'Live';
+        transcriptLiveFooter.textContent = willStart ? 'Live • Đang kết nối...' : 'Live';
       }
     });
   }
@@ -540,11 +542,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const server = (msg.payload?.server || '').trim();
         if (server) { try { localStorage.setItem(LS_KEY_SERVER, server); } catch {} }
 
-        if (typeof msg.payload?.active === 'boolean' && transcriptLiveFooter) {
-          transcriptLiveFooter.textContent = msg.payload.active ? 'Live • Đang ghi' : 'Live';
-          if (transcriptStart) transcriptStart.classList.toggle('active', msg.payload.active);
-          if (!msg.payload.active) stopLiveTimer();
-          setPlayVisual(!!msg.payload?.active);
+        if (typeof msg.payload?.active === 'boolean') {
+          const active = !!msg.payload.active;
+          const starting = !!msg.payload.starting;
+
+          if (transcriptLiveFooter) {
+            transcriptLiveFooter.textContent = active
+              ? 'Live • Đang ghi'
+              : (starting ? 'Live • Đang kết nối...' : 'Live');
+          }
+
+          setStartActive(active || starting);
+          setStartLoading(starting && !active);
+          setPlayVisual(active);
+          startInFlight = starting && !active;
         }
 
         if (msg.payload?.url && transcriptHeaderUrlEl) {
@@ -562,9 +573,8 @@ document.addEventListener('DOMContentLoaded', () => {
           showBusyModal(text || undefined);
         }
         if (level === 'error') {
-          stopLiveTimer();
           setPlayVisual(false);
-          if (transcriptStart) transcriptStart.classList.remove('active');
+          setStartActive(false);
           if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
           startInFlight = false;
           setStartLoading(false);
@@ -574,19 +584,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (msg.__cmd === '__OFFSCREEN_STATUS__') {
         const s = msg.payload?.state || '';
+        const runningUi = !!(transcriptStart && transcriptStart.classList.contains('is-playing'));
+
+        if (
+          s === 'starting' ||
+          s === 'picker' ||
+          s === 'ws-connecting' ||
+          s === 'media-ok' ||
+          s === 'audio-graph-ok' ||
+          s === 'ws-open' ||
+          s === 'ws-auth-sent'
+        ) {
+          if (!runningUi) {
+            startInFlight = true;
+            setStartActive(true);
+            setStartLoading(true);
+            setPlayVisual(false);
+            if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live • Đang kết nối...';
+          }
+          return;
+        }
+
+        // server-status có thể đến liên tục trong lúc đang chạy;
+        // không được phép kéo UI về trạng thái "connecting".
+        if (s === 'server-hello' || s === 'server-status' || s === 'server-auth-ok') {
+          if (!runningUi && startInFlight && transcriptLiveFooter) {
+            transcriptLiveFooter.textContent = 'Live • Đang kết nối...';
+          }
+          return;
+        }
         if (s === 'running') {
-          startLiveTimer();
+          setStartActive(true);
           setPlayVisual(true);
           startInFlight = false;
           setStartLoading(false);
+          if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live • Đang ghi';
         }
         if (s === 'stopped' || s === 'server-busy' || s === 'server-error' || s === 'error') {
           if (s === 'server-busy') {
             showBusyModal(msg.payload?.text || 'Hệ thống đang bận, vui lòng thử lại sau.');
           }
-          stopLiveTimer();
           setPlayVisual(false);
-          if (transcriptStart) transcriptStart.classList.remove('active');
+          setStartActive(false);
           if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
           startInFlight = false;
           setStartLoading(false);
@@ -602,10 +641,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // delay 1 sentence
         const target = Math.max(0, sents.length - 1);
         if (target > loggedSentCount) {
-          const t = nowTime();
           for (let i = loggedSentCount; i < target; i++) {
             const s = sents[i].trim();
-            if (s) addTranscriptRow(t, s, 'Speaker • en • live');
+            if (s) addTranscriptRow(s, 'Speaker • en • live');
           }
           loggedSentCount = target;
           if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live • Đang ghi';
@@ -616,17 +654,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
       try {
         chrome.runtime.sendMessage({ __cmd: '__OVERLAY_PING__' }, (res) => {
-          if (transcriptLiveFooter) {
-            transcriptLiveFooter.textContent = res?.active ? 'Live • Đang ghi' : 'Live';
-          }
           if (transcriptStart && typeof res?.active === 'boolean') {
-            transcriptStart.classList.toggle('active', res.active);
-            if (!res.active) stopLiveTimer();
-            setPlayVisual(!!res.active);
-            if (!res.active) {
-              startInFlight = false;
-              setStartLoading(false);
+            const active = !!res.active;
+            const starting = !!res.starting;
+
+            if (transcriptLiveFooter) {
+              transcriptLiveFooter.textContent = active
+                ? 'Live • Đang ghi'
+                : (starting ? 'Live • Đang kết nối...' : 'Live');
             }
+
+            setStartActive(active || starting);
+            setStartLoading(starting && !active);
+            setPlayVisual(active);
+            startInFlight = starting && !active;
           }
         });
       } catch {}
