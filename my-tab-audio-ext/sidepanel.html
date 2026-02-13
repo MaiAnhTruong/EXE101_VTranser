@@ -96,13 +96,24 @@
             <div class="history-box">
               <div class="history-header">
                 <h3>Lịch sử</h3>
-                <p class="history-sub">Màn lịch sử (đang phát triển). Hiện tại chỉ cần chuyển màn.</p>
+                <p class="history-sub">
+                <p id="historyUserIdNote" class="history-user-note"></p>
+                <div class="history-search-row">
+                  <input
+                    id="historySearchInput"
+                    class="history-search-input"
+                    type="search"
+                    placeholder="Tìm theo website hoặc nội dung..."
+                    autocomplete="off"
+                  />
+                  <button id="historyRefreshBtn" class="history-refresh-btn" type="button">Làm mới</button>
+                </div>
               </div>
 
               <div class="history-body">
-                <div class="placeholder-text">
-                  (Placeholder) — Sau này bạn sẽ render danh sách lịch sử ở đây.
-                </div>
+                <div id="historyLoading" class="history-loading hidden">Đang tải lịch sử...</div>
+                <div id="historyEmpty" class="history-empty hidden">Chưa có dữ liệu lịch sử.</div>
+                <div id="historyList" class="history-list" role="list"></div>
               </div>
             </div>
           </div>
@@ -113,8 +124,8 @@
       <!-- ✅ BOTTOM BAR: fixed for ALL features -->
       <div class="bottom-bar">
         <div class="bottom-left">
-          <span id="bottomGreeting" class="bottom-greeting">Hi</span>
-          <button class="login-btn" id="loginLink" type="button">Log in</button>
+          <span id="bottomGreeting" class="bottom-greeting">Xin chào</span>
+          <button class="login-btn" id="loginLink" type="button">Đăng nhập</button>
         </div>
 
         <div class="icon-group">
@@ -161,6 +172,22 @@
 
       <div class="toolbar-item toolbar-footer">
         <button id="btnAccount" class="icon-btn" title="Account" type="button" data-vt-account></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HISTORY DETAIL MODAL -->
+  <div id="historyDetailModal" class="history-modal hidden" aria-hidden="true">
+    <div class="history-modal-backdrop" data-history-close="1"></div>
+    <div class="history-modal-card" role="dialog" aria-modal="true" aria-label="Chi tiết transcript">
+      <button id="historyDetailClose" class="history-modal-close" type="button" aria-label="Đóng">×</button>
+      <div class="history-modal-head">
+        <h3 id="historyDetailTitle" class="history-modal-title">Chi tiết</h3>
+        <p id="historyDetailMeta" class="history-modal-meta"></p>
+      </div>
+      <pre id="historyDetailContent" class="history-modal-content">Đang tải nội dung...</pre>
+      <div class="history-modal-actions">
+        <button id="historyDownloadBtn" class="history-download-btn" type="button" disabled>Tải xuống file</button>
       </div>
     </div>
   </div>
@@ -213,35 +240,35 @@
       <div class="vt-acc-credits">
         <div class="vt-acc-credits-icon" aria-hidden="true">✨</div>
         <div class="vt-acc-credits-text">
-          <div class="vt-acc-credits-title">Complete Tasks to</div>
-          <div class="vt-acc-credits-sub"><b>Earn Credits</b></div>
+          <div class="vt-acc-credits-title">Hoàn thành nhiệm vụ để</div>
+          <div class="vt-acc-credits-sub"><b>Nhận thêm Credits</b></div>
         </div>
       </div>
 
       <div class="vt-acc-menu">
         <button class="vt-acc-item" data-vt-acc-action="whats_new" type="button">
-          <span class="vt-acc-ico">🔔</span> <span>What's new</span>
+          <span class="vt-acc-ico">🔔</span> <span>Tin tức</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="rewards" type="button">
-          <span class="vt-acc-ico">🏆</span> <span>Rewards center</span>
+          <span class="vt-acc-ico">🏆</span> <span>Trung tâm phần thưởng</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="my_account" type="button">
-          <span class="vt-acc-ico">👤</span> <span>My account</span>
+          <span class="vt-acc-ico">👤</span> <span>Tài khoản</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="my_website" type="button">
-          <span class="vt-acc-ico">🗂️</span> <span>My website</span>
+          <span class="vt-acc-ico">🗂️</span> <span>Trang</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="help" type="button">
-          <span class="vt-acc-ico">❓</span> <span>Help center</span>
+          <span class="vt-acc-ico">❓</span> <span>Trung tâm hỗ trợ</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="feedback" type="button">
-          <span class="vt-acc-ico">✉️</span> <span>Feedback</span>
+          <span class="vt-acc-ico">✉️</span> <span>Đánh giá</span>
         </button>
 
         <div class="vt-acc-sep"></div>
 
         <button id="vtAccLogout" class="vt-acc-item vt-acc-logout" type="button">
-          <span class="vt-acc-ico">↩️</span> <span>Log out</span>
+          <span class="vt-acc-ico">↩️</span> <span>Đăng xuất</span>
         </button>
       </div>
 
@@ -285,7 +312,7 @@
           </div>
         </div>
 
-        <label class="vt-profile-lbl">Ảnh đại diện (URL)</label>
+        <label class="vt-profile-lbl">Ảnh đại diện</label>
         <input id="vtProfileAvatarUrl" class="vt-profile-inp" type="text" placeholder="https://... hoặc data:image/..." />
 
         <label class="vt-profile-lbl">Email</label>
@@ -306,6 +333,7 @@
 
   <script src="auth/config.js"></script>
   <script src="auth/auth_host.js"></script>
+  <script src="sidepanel_history.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

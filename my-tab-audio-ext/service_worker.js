@@ -15,6 +15,11 @@
 // - AUTH REQUIRED: bắt buộc đăng nhập mới được dùng (START/CHAT...)
 
 import { createTranscriptPersist } from "./sw/transcript_persist.js";
+import {
+  resolveUsersTableUserId,
+  listTranscriptSessionsForUser,
+  getTranscriptSessionDetailForUser,
+} from "./sw/history_repo.js";
 "use strict";
 
 // -------------------- Global state --------------------
@@ -995,9 +1000,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const transUrlSt = await storeGet([STORAGE_KEYS.TRANS_URL]);
         const transServer = (transUrlSt[STORAGE_KEYS.TRANS_URL] || "").trim();
         const profile = authSess?.profile || authSess?.raw?.profile || authSess?.currentSession?.profile || {};
-        const pkLike = (s) => /^\d+$/.test(String(s || "").trim());
-        const userId = pkLike(profile.id) ? String(profile.id).trim() : "";
-        const userEmail = profile.email || "";
+        const userEmail = String(profile.email || "").trim();
+        let userId = "";
+        try {
+          const uid = await resolveUsersTableUserId(profile);
+          userId = uid ? String(uid) : "";
+        } catch {
+          userId = "";
+        }
         transcriptPersist = createTranscriptPersist({
           userId,
           userEmail,
@@ -1081,6 +1091,67 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       sendResponse?.({ ok: true, modes: currentModes });
+      return;
+    }
+
+    // ✅ History list from Supabase (AUTH REQUIRED)
+    if (msg.__cmd === "__HISTORY_LIST__") {
+      const tabIdForNotify = current?.tabId || null;
+      const authSess = await requireAuthOrFail({ action: "history_list", tabId: tabIdForNotify, sendResponse });
+      if (!authSess) return;
+
+      try {
+        const limitRaw = Number(msg.payload?.limit);
+        const offsetRaw = Number(msg.payload?.offset);
+        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 200;
+        const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.trunc(offsetRaw)) : 0;
+        const profile = authSess?.profile || {};
+        const userId = await resolveUsersTableUserId(profile);
+
+        const items = await listTranscriptSessionsForUser(userId, { limit, offset });
+        sendResponse?.({ ok: true, items, userId });
+      } catch (e) {
+        const msgErr = String(e?.message || e);
+        if (msgErr.includes("USER_ID_INVALID")) {
+          sendResponse?.({ ok: false, code: "USER_ID_INVALID", error: "USER_ID_INVALID" });
+          return;
+        }
+        sendResponse?.({ ok: false, error: msgErr });
+      }
+      return;
+    }
+
+    // ✅ History detail (full text) from Supabase (AUTH REQUIRED)
+    if (msg.__cmd === "__HISTORY_DETAIL__") {
+      const tabIdForNotify = current?.tabId || null;
+      const authSess = await requireAuthOrFail({ action: "history_detail", tabId: tabIdForNotify, sendResponse });
+      if (!authSess) return;
+
+      try {
+        const sessionId = Number(msg.payload?.sessionId || 0);
+        if (!Number.isFinite(sessionId) || sessionId <= 0) {
+          sendResponse?.({ ok: false, error: "INVALID_SESSION_ID" });
+          return;
+        }
+
+        const profile = authSess?.profile || {};
+        const userId = await resolveUsersTableUserId(profile);
+        const detail = await getTranscriptSessionDetailForUser(userId, sessionId);
+
+        if (!detail) {
+          sendResponse?.({ ok: false, code: "NOT_FOUND", error: "NOT_FOUND" });
+          return;
+        }
+
+        sendResponse?.({ ok: true, item: detail.session, fullText: detail.fullText, userId });
+      } catch (e) {
+        const msgErr = String(e?.message || e);
+        if (msgErr.includes("USER_ID_INVALID")) {
+          sendResponse?.({ ok: false, code: "USER_ID_INVALID", error: "USER_ID_INVALID" });
+          return;
+        }
+        sendResponse?.({ ok: false, error: msgErr });
+      }
       return;
     }
 

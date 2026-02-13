@@ -123,6 +123,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const transcriptView = document.getElementById('transcript-content');
   const historyView = document.getElementById('history-content'); // ✅ NEW
   const allViews = [chatView, transcriptView, historyView];
+  const historyController = window.__vtHistoryView || null;
 
   // busy modal
   const busyModal = document.getElementById('vtBusyModal');
@@ -214,9 +215,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // auto refresh if vtAuth changes
   if (chrome?.storage?.onChanged) {
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes.vtAuth) refreshGreeting();
+      if (area === 'local' && changes.vtAuth) {
+        refreshGreeting();
+        historyController?.onAuthChanged?.();
+      }
     });
   }
+
+  historyController?.init?.({
+    openAuthOverlay: openAuthOverlayFromPanel,
+  });
 
   // ===== Setting: config API + WS =====
   if (settingButton) {
@@ -325,6 +333,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // refresh transcript url when open transcript
     if (viewId === 'transcript-content') updateTranscriptHeaderUrl();
+    if (viewId === 'history-content') historyController?.onViewShown?.();
   }
 
   if (chatButton) chatButton.addEventListener('click', () => showView('chat-content', chatButton));
