@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chính sách quyền riêng tư - V-Transer</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --line: #dbe3ef;
+      --accent: #2563eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Roboto, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .wrap {
+      max-width: 920px;
+      margin: 28px auto;
+      padding: 0 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 24px;
+      box-shadow: 0 8px 26px rgba(15, 23, 42, 0.06);
+    }
+    h1, h2 { margin: 0 0 10px 0; line-height: 1.25; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 20px; margin-top: 22px; }
+    p { margin: 8px 0; color: var(--text); }
+    ul { margin: 8px 0 0 20px; }
+    li { margin: 6px 0; color: var(--text); }
+    .muted { color: var(--muted); }
+    .badge {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid #bfdbfe;
+      background: #eff6ff;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .footer {
+      margin-top: 26px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 1px 6px;
+      font-size: 90%;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <article class="card">
+      <h1>Chính sách quyền riêng tư</h1>
+      <p class="muted"><strong>Sản phẩm:</strong> V-Transer</p>
+      <p class="muted"><strong>Cập nhật lần cuối:</strong> 13/02/2026</p>
+      <span class="badge">Chrome Extension Privacy Policy</span>
+
+      <h2>1. Mục đích</h2>
+      <p>
+        V-Transer là tiện ích trình duyệt dùng để chuyển âm thanh từ tab đang mở thành văn bản theo thời gian thực,
+        hỗ trợ dịch phụ đề và lưu lịch sử transcript theo tài khoản người dùng.
+      </p>
+
+      <h2>2. Dữ liệu chúng tôi xử lý</h2>
+      <ul>
+        <li>Thông tin tài khoản: email và thông tin hồ sơ khi đăng nhập.</li>
+        <li>Thông tin xác thực: token/phiên đăng nhập cần thiết để duy trì trạng thái đăng nhập.</li>
+        <li>Thông tin tab: URL, domain, thời gian bắt đầu/kết thúc phiên transcript.</li>
+        <li>Nội dung người dùng: văn bản transcript, nội dung dịch, nội dung chat bạn nhập.</li>
+        <li>Âm thanh tab: luồng âm thanh của tab hiện tại khi bạn chủ động bấm bắt đầu phiên âm.</li>
+      </ul>
+
+      <h2>3. Mục đích sử dụng dữ liệu</h2>
+      <ul>
+        <li>Cung cấp tính năng phiên âm và dịch phụ đề theo thời gian thực.</li>
+        <li>Hiển thị và tìm kiếm lịch sử transcript theo từng người dùng.</li>
+        <li>Cho phép xem chi tiết và tải xuống transcript dạng <code>.txt</code>.</li>
+        <li>Quản lý đăng nhập và cấu hình hoạt động của tiện ích.</li>
+      </ul>
+
+      <h2>4. Cách lưu trữ và truyền dữ liệu</h2>
+      <ul>
+        <li>Một phần dữ liệu cấu hình được lưu cục bộ trong Chrome Extension Storage.</li>
+        <li>Dữ liệu transcript và phiên có thể được lưu trên backend/Supabase của dịch vụ.</li>
+        <li>Dữ liệu được truyền tới các endpoint API/WebSocket để xử lý STT/dịch theo cấu hình hệ thống.</li>
+      </ul>
+
+      <h2>5. Chia sẻ dữ liệu với bên thứ ba</h2>
+      <p>
+        Dữ liệu chỉ được chuyển đến các dịch vụ kỹ thuật cần thiết để vận hành tính năng
+        (ví dụ: dịch vụ xác thực, dịch vụ STT/dịch, và cơ sở dữ liệu lưu transcript).
+      </p>
+      <p><strong>Chúng tôi không bán dữ liệu người dùng.</strong></p>
+
+      <h2>6. Quyền kiểm soát của người dùng</h2>
+      <ul>
+        <li>Bạn có thể dừng phiên âm bất kỳ lúc nào trong giao diện tiện ích.</li>
+        <li>Bạn có thể đăng xuất để kết thúc trạng thái xác thực cục bộ.</li>
+        <li>Bạn có thể yêu cầu xóa dữ liệu trên hệ thống backend (nếu có cơ chế hỗ trợ).</li>
+      </ul>
+
+      <h2>7. Bảo mật</h2>
+      <p>
+        Chúng tôi áp dụng các biện pháp kỹ thuật hợp lý để bảo vệ dữ liệu trong quá trình truyền và lưu trữ.
+        Tuy nhiên, không có hệ thống nào đảm bảo an toàn tuyệt đối 100%.
+      </p>
+
+      <h2>8. Trẻ em</h2>
+      <p>
+        Dịch vụ không hướng đến trẻ em dưới 13 tuổi.
+      </p>
+
+      <h2>9. Cập nhật chính sách</h2>
+      <p>
+        Chính sách này có thể được cập nhật theo thời gian. Mọi thay đổi sẽ được công bố trên trang này kèm ngày cập nhật mới nhất.
+      </p>
+
+      <h2>10. Liên hệ</h2>
+      <p>
+        Nếu bạn có câu hỏi về quyền riêng tư, vui lòng liên hệ:
+      </p>
+      <ul>
+        <li>Email hỗ trợ: <a href="mailto:support@vtranser.com">support@vtranser.com</a></li>
+        <li>Website: <a href="https://vtranser.com" target="_blank" rel="noopener">https://vtranser.com</a></li>
+      </ul>
+
+      <div class="footer">
+        Bằng việc sử dụng V-Transer, bạn xác nhận đã đọc và đồng ý với chính sách quyền riêng tư này.
+      </div>
+    </article>
+  </main>
+</body>
+</html>
