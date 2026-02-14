@@ -22,16 +22,16 @@
             </div>
 
             <div class="action-buttons">
-              <button class="action-btn" type="button">
+              <button id="chatActionFullscreenBtn" class="action-btn" type="button">
                 <img src="icons/maximize.svg" alt="" class="action-btn-icon" /> Toàn màn hình
               </button>
-              <button class="action-btn" type="button">
+              <button id="chatActionRetrieveBtn" class="action-btn" type="button" data-rag-picker-trigger="1">
                 <img src="icons/database.svg" alt="" class="action-btn-icon" /> Truy xuất thông tin
               </button>
-              <button class="action-btn" type="button">
+              <button id="chatActionStoreBtn" class="action-btn" type="button">
                 <img src="icons/star.svg" alt="" class="action-btn-icon" /> Kho lưu trữ
               </button>
-              <button class="action-btn" type="button">
+              <button id="chatActionDocBtn" class="action-btn" type="button">
                 <img src="icons/file-text.svg" alt="" class="action-btn-icon" /> Vẽ hình tài liệu
               </button>
             </div>
@@ -47,6 +47,7 @@
                   <img src="icons/brain.svg" alt="" class="input-btn-icon" />Suy luận (R1)
                 </button>
               </div>
+              <div id="chatRagSelectionBar" class="chat-rag-selection-bar hidden"></div>
 
               <div class="textarea-wrapper">
                 <textarea placeholder="Hãy viết gì đó"></textarea>
@@ -189,6 +190,36 @@
       <div class="history-modal-actions">
         <button id="historyDownloadBtn" class="history-download-btn" type="button" disabled>Tải xuống file</button>
       </div>
+    </div>
+  </div>
+
+  <!-- CHAT RAG PICKER (small popup) -->
+  <div id="chatRagPicker" class="rag-picker hidden" aria-hidden="true">
+    <div class="rag-picker-header">
+      <div class="rag-picker-title-row">
+        <h3 class="rag-picker-title">Nguồn thông tin</h3>
+        <button id="chatRagPickerClose" class="rag-picker-close" type="button" aria-label="Đóng">×</button>
+      </div>
+      <div class="rag-picker-search-row">
+        <input id="chatRagSearch" class="rag-picker-search" type="search" placeholder="Tìm kiếm..." autocomplete="off" />
+        <button id="chatRagPinBtn" class="rag-pin-btn" type="button">Xác nhận</button>
+      </div>
+    </div>
+    <div id="chatRagPickerLoading" class="rag-picker-loading hidden">Đang tải ...</div>
+    <div id="chatRagPickerEmpty" class="rag-picker-empty hidden">Chưa có nội dung.</div>
+    <div id="chatRagPickerList" class="rag-picker-list" role="list"></div>
+  </div>
+
+  <!-- CHAT RAG DETAIL MODAL (large center) -->
+  <div id="chatRagDetailModal" class="history-modal hidden" aria-hidden="true">
+    <div class="history-modal-backdrop" data-chat-rag-close="1"></div>
+    <div class="history-modal-card" role="dialog" aria-modal="true" aria-label="Chi tiết">
+      <button id="chatRagDetailClose" class="history-modal-close" type="button" aria-label="Đóng">×</button>
+      <div class="history-modal-head">
+        <h3 id="chatRagDetailTitle" class="history-modal-title">Chi tiết</h3>
+        <p id="chatRagDetailMeta" class="history-modal-meta"></p>
+      </div>
+      <pre id="chatRagDetailContent" class="history-modal-content">Đang tải nội dung...</pre>
     </div>
   </div>
 

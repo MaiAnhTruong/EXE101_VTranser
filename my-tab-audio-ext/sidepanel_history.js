@@ -54,11 +54,32 @@
     return s;
   }
 
+  function hasTextValue(v) {
+    return typeof v === "string" && v.trim().length > 0;
+  }
+
+  function pickTranscriptText(item, detailText = "") {
+    const cands = [
+      detailText,
+      item?.preview_text,
+      item?.latest_text_en,
+      item?.latest_text_vi,
+      item?.latest_text,
+      item?.text_en,
+      item?.text_vi,
+      item?.text,
+    ];
+    for (const c of cands) {
+      if (hasTextValue(c)) return String(c);
+    }
+    return "";
+  }
+
   function normalizeTextPreview(s, maxLen = 180) {
     const clean = String(s || "").replace(/\s+/g, " ").trim();
-    if (!clean) return "Không có nội dung transcript.";
+    if (!clean) return "Đang cập nhật transcript...";
     if (clean.length <= maxLen) return clean;
-    return clean.slice(0, maxLen - 1) + "…";
+    return clean.slice(0, maxLen - 3) + "...";
   }
 
   function sortSessionsDesc(rows) {
@@ -130,10 +151,12 @@
     const state = {
       inited: false,
       loading: false,
+      prefetching: false,
       loaded: false,
       items: [],
       filtered: [],
       details: new Map(), // sessionId -> { item, fullText }
+      previewHydratedIds: new Set(),
       openAuthOverlay: null,
       activeDetailId: null,
     };
@@ -191,7 +214,7 @@
         const hay = [
           String(it?.tab_domain || ""),
           String(it?.tab_url || ""),
-          String(it?.latest_text_en || ""),
+          pickTranscriptText(it, state.details.get(Number(it?.id || 0))?.fullText || ""),
           String(it?.status || ""),
         ]
           .join(" ")
@@ -219,7 +242,10 @@
         const started = formatDateTime(item?.started_at);
         const duration = formatDurationMs(calcDurationMs(item));
         const status = statusLabel(item?.status);
-        const preview = normalizeTextPreview(item?.latest_text_en || "");
+        const detail = state.details.get(id);
+        const preview = normalizeTextPreview(
+          pickTranscriptText(item, detail?.fullText || "")
+        );
 
         const btn = document.createElement("button");
         btn.type = "button";
@@ -242,6 +268,50 @@
       refs.list.appendChild(frag);
     }
 
+    async function prefetchMissingPreviews() {
+      if (!hasChromeRuntime || state.prefetching) return;
+      const targets = state.items
+      .filter((item) => {
+        const sid = Number(item?.id || 0);
+        if (!sid) return false;
+        if (state.previewHydratedIds.has(sid)) return false;
+        return !hasTextValue(pickTranscriptText(item));
+      })
+      .slice(0, 48);
+      if (!targets.length) return;
+
+      state.prefetching = true;
+      try {
+        await Promise.all(targets.map(async (item) => {
+          const sid = Number(item?.id || 0);
+          if (!sid) return;
+
+          const cached = state.details.get(sid);
+          if (cached?.fullText) {
+            item.latest_text_en = cached.fullText;
+            state.previewHydratedIds.add(sid);
+            return;
+          }
+
+          const res = await sendRuntime({
+            __cmd: "__HISTORY_DETAIL__",
+            payload: { sessionId: sid },
+          });
+          if (res?.ok) {
+            const dItem = res.item || item;
+            const fullText = String(res.fullText || pickTranscriptText(dItem) || "");
+            state.details.set(sid, { item: dItem, fullText });
+            if (hasTextValue(fullText)) item.latest_text_en = fullText;
+          }
+          state.previewHydratedIds.add(sid);
+        }));
+      } finally {
+        state.prefetching = false;
+        applyFilter();
+        renderList();
+      }
+    }
+
     function isViewVisible() {
       return !!(refs.view && !refs.view.classList.contains("hidden"));
     }
@@ -249,7 +319,10 @@
     async function loadList(force = false) {
       if (!hasChromeRuntime || state.loading) return;
       if (state.loaded && !force) return;
-      if (force) state.details.clear();
+      if (force) {
+        state.details.clear();
+        state.previewHydratedIds.clear();
+      }
 
       setLoading(true);
       setEmpty("", false);
@@ -287,11 +360,11 @@
         state.items = sortSessionsDesc(rows);
         if (refs.userNote) {
           const uid = Number(res.userId || 0);
-          refs.userNote.textContent = uid ? `User ID hiện tại: ${uid}` : "";
         }
         state.loaded = true;
         applyFilter();
         renderList();
+        prefetchMissingPreviews();
         if (!state.items.length) {
           setEmpty("Chưa có transcript nào được lưu.", true);
         }
@@ -321,7 +394,7 @@
       refs.modalTitle.textContent = domainFrom(item);
       refs.modalMeta.textContent =
         `Website: ${item?.tab_url || domainFrom(item)} • Bắt đầu: ${formatDateTime(item?.started_at)} • Tổng thời gian: ${formatDurationMs(calcDurationMs(item))}`;
-      refs.modalText.textContent = String(fullText || "Không có nội dung transcript.");
+      refs.modalText.textContent = String(fullText || "Đang cập nhật transcript...");
       if (refs.modalDownload) refs.modalDownload.disabled = false;
     }
 
@@ -342,6 +415,7 @@
 
       const cached = state.details.get(sid);
       if (cached) {
+        if (hasTextValue(cached.fullText)) baseItem.latest_text_en = cached.fullText;
         fillModalText(cached.item, cached.fullText);
         return;
       }
@@ -369,7 +443,8 @@
       }
 
       const item = res.item || baseItem;
-      const fullText = String(res.fullText || item?.latest_text_en || "");
+      const fullText = String(res.fullText || pickTranscriptText(item) || "");
+      if (hasTextValue(fullText)) baseItem.latest_text_en = fullText;
       state.details.set(sid, { item, fullText });
       fillModalText(item, fullText);
     }
@@ -449,6 +524,7 @@
       state.items = [];
       state.filtered = [];
       state.details.clear();
+      state.previewHydratedIds.clear();
       if (refs.userNote) refs.userNote.textContent = "";
       closeModal();
       applyFilter();

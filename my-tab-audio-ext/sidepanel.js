@@ -95,6 +95,12 @@ document.addEventListener('DOMContentLoaded', () => {
       try { chrome.storage.local.remove(keys, resolve); } catch { resolve(); }
     });
   }
+  function sendRuntime(msg) {
+    return new Promise((resolve) => {
+      if (!hasChromeRuntime) return resolve(null);
+      try { chrome.runtime.sendMessage(msg, (res) => resolve(res || null)); } catch { resolve(null); }
+    });
+  }
 
   // ===== Auth checks =====
   async function getVtAuthProfile() {
@@ -148,6 +154,27 @@ document.addEventListener('DOMContentLoaded', () => {
   const chipR1 = chipButtons[1] || null;
 
   const sendBtn = document.getElementById('icon-btn-send');
+  const chatRagSelectionBar = document.getElementById('chatRagSelectionBar');
+  const chatActionRetrieveBtn = document.getElementById('chatActionRetrieveBtn');
+  const chatActionStoreBtn = document.getElementById('chatActionStoreBtn');
+  const ragPickerTriggers = [...new Set([chatActionRetrieveBtn, chipRag].filter(Boolean))];
+
+  const chatRagPicker = document.getElementById('chatRagPicker');
+  const chatRagPickerClose = document.getElementById('chatRagPickerClose');
+  const chatRagPinBtn = document.getElementById('chatRagPinBtn');
+  const chatRagSearch = document.getElementById('chatRagSearch');
+  const chatRagPickerLoading = document.getElementById('chatRagPickerLoading');
+  const chatRagPickerEmpty = document.getElementById('chatRagPickerEmpty');
+  const chatRagPickerList = document.getElementById('chatRagPickerList');
+
+  const chatRagDetailModal = document.getElementById('chatRagDetailModal');
+  const chatRagDetailClose = document.getElementById('chatRagDetailClose');
+  const chatRagDetailTitle = document.getElementById('chatRagDetailTitle');
+  const chatRagDetailMeta = document.getElementById('chatRagDetailMeta');
+  const chatRagDetailContent = document.getElementById('chatRagDetailContent');
+  let ragPickerOpenTimer = null;
+  let ragPickerRestoreOnDetailClose = false;
+  let ragPickerDetailReturnAnchor = null;
 
   // transcript view elements
   const transcriptStart = document.querySelector('.transcript-btn1.start');
@@ -218,6 +245,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (area === 'local' && changes.vtAuth) {
         refreshGreeting();
         historyController?.onAuthChanged?.();
+        resetRagPickerState();
       }
     });
   }
@@ -329,6 +357,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // reset focus-mode when leaving chat
     if (viewId !== 'chat-content') {
       chatView && chatView.classList.remove('focus-mode');
+      closeRagPicker();
+      closeChatRagDetailModal();
     }
 
     // refresh transcript url when open transcript
@@ -686,21 +716,741 @@ document.addEventListener('DOMContentLoaded', () => {
   // ✅ CHAT TOGGLES
   // ============================================================
   const chatToggles = {
-    useRag: readBoolLS(LS_CHAT_USE_RAG, true),
+    useRag: readBoolLS(LS_CHAT_USE_RAG, false),
     useR1: readBoolLS(LS_CHAT_USE_R1, false),
   };
+
+  const RAG_CONTEXT_PER_ITEM_MAX = 2400;
+  const RAG_CONTEXT_TOTAL_MAX = 9000;
+
+  const ragPickerState = {
+    loaded: false,
+    loading: false,
+    prefetching: false,
+    items: [],
+    filtered: [],
+    selectedIds: new Set(),
+    pinnedIds: new Set(),
+    previewHydratedIds: new Set(),
+    details: new Map(), // sessionId -> { ok, item, fullText }
+    detailInflight: new Map(), // sessionId -> Promise
+    anchorEl: null,
+  };
+
+  // RAG chat mode is now confirmed by pressing OK on selected history sources.
+  chatToggles.useRag = false;
+
+  function ragToDateOrNull(v) {
+    const t = Date.parse(String(v || ''));
+    return Number.isFinite(t) ? new Date(t) : null;
+  }
+
+  function ragFormatDateTime(v) {
+    const d = ragToDateOrNull(v);
+    if (!d) return 'N/A';
+    return `${pad(d.getHours())}:${pad(d.getMinutes())} ${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+  }
+
+  function ragCalcDurationMs(item) {
+    const startMs = Date.parse(String(item?.started_at || ''));
+    if (!Number.isFinite(startMs)) return 0;
+    const endRaw = item?.ended_at || item?.last_updated_at || new Date().toISOString();
+    const endMs = Date.parse(String(endRaw || ''));
+    if (!Number.isFinite(endMs)) return 0;
+    return Math.max(0, endMs - startMs);
+  }
+
+  function ragFormatDurationMs(ms) {
+    const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return `${pad(h)}:${pad(m)}:${pad(s)}`;
+  }
+
+  function ragDomainFrom(item) {
+    const domain = String(item?.tab_domain || '').trim();
+    if (domain) return domain;
+    try {
+      const u = new URL(String(item?.tab_url || ''));
+      return u.hostname || 'Unknown website';
+    } catch {
+      return 'Unknown website';
+    }
+  }
+
+  function ragStatusLabel(raw) {
+    const s = String(raw || '').toLowerCase();
+    if (s === 'running') return 'Dang chay';
+    if (s === 'stopped') return 'Da dung';
+    return s || 'N/A';
+  }
+
+  function hasTextValue(v) {
+    return typeof v === 'string' && v.trim().length > 0;
+  }
+
+  function pickTranscriptText(item, detailText = '') {
+    const cands = [
+      detailText,
+      item?.preview_text,
+      item?.latest_text_en,
+      item?.latest_text_vi,
+      item?.latest_text,
+      item?.text_en,
+      item?.text_vi,
+      item?.text,
+    ];
+    for (const c of cands) {
+      if (hasTextValue(c)) return String(c);
+    }
+    return '';
+  }
+
+  function ragNormalizePreview(s, maxLen = 180) {
+    const clean = String(s || '').replace(/\s+/g, ' ').trim();
+    if (!clean) return 'Dang cap nhat transcript...';
+    if (clean.length <= maxLen) return clean;
+    return clean.slice(0, maxLen - 3) + '...';
+  }
+
+  function ragSortSessionsDesc(rows) {
+    const ts = (r) => {
+      const t = Date.parse(String(r?.started_at || r?.last_updated_at || ''));
+      return Number.isFinite(t) ? t : 0;
+    };
+    return rows.sort((a, b) => ts(b) - ts(a) || (Number(b?.id || 0) - Number(a?.id || 0)));
+  }
+
+  function clipText(s, maxLen) {
+    const str = String(s || '');
+    if (!str) return '';
+    if (str.length <= maxLen) return str;
+    return str.slice(0, Math.max(0, maxLen - 3)) + '...';
+  }
+
+  function isRagPickerOpen() {
+    return !!(chatRagPicker && !chatRagPicker.classList.contains('hidden'));
+  }
+
+  function isElementVisible(el) {
+    if (!el || typeof el.getBoundingClientRect !== 'function') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  function resetRagPickerState() {
+    ragPickerState.loaded = false;
+    ragPickerState.loading = false;
+    ragPickerState.prefetching = false;
+    ragPickerState.items = [];
+    ragPickerState.filtered = [];
+    ragPickerState.selectedIds.clear();
+    ragPickerState.pinnedIds.clear();
+    ragPickerState.previewHydratedIds.clear();
+    ragPickerState.details.clear();
+    ragPickerState.detailInflight.clear();
+    if (chatRagSearch) chatRagSearch.value = '';
+    renderRagPickerList();
+    renderChatRagSelectionBar();
+    closeRagPicker();
+    closeChatRagDetailModal();
+  }
+
+  function setRagPickerLoading(on) {
+    ragPickerState.loading = !!on;
+    if (chatRagPickerLoading) chatRagPickerLoading.classList.toggle('hidden', !on);
+  }
+
+  function setRagPickerEmpty(text, show) {
+    if (!chatRagPickerEmpty) return;
+    chatRagPickerEmpty.textContent = String(text || 'Khong co du lieu.');
+    chatRagPickerEmpty.classList.toggle('hidden', !show);
+  }
+
+  function syncRagSelectionSets() {
+    const validIds = new Set(ragPickerState.items.map((it) => Number(it?.id || 0)).values());
+    ragPickerState.selectedIds = new Set([...ragPickerState.selectedIds].filter((id) => validIds.has(id)));
+    ragPickerState.pinnedIds = new Set([...ragPickerState.pinnedIds].filter((id) => validIds.has(id)));
+  }
+
+  function applyRagFilter() {
+    const q = String(chatRagSearch?.value || '').trim().toLowerCase();
+    if (!q) {
+      ragPickerState.filtered = ragPickerState.items.slice();
+      return;
+    }
+    ragPickerState.filtered = ragPickerState.items.filter((it) => {
+      const hay = [
+        String(it?.tab_domain || ''),
+        String(it?.tab_url || ''),
+        pickTranscriptText(it, ragPickerState.details.get(Number(it?.id || 0))?.fullText || ''),
+        String(it?.status || ''),
+      ].join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  function findRagItem(sessionId) {
+    const sid = Number(sessionId || 0);
+    if (!sid) return null;
+    return ragPickerState.items.find((x) => Number(x?.id || 0) === sid) || null;
+  }
+
+  function updateRagPickerPinUi() {
+    const selectedCount = ragPickerState.selectedIds.size;
+    const pinnedCount = ragPickerState.pinnedIds.size;
+    const ragOn = pinnedCount > 0 && !!chatToggles.useRag;
+
+    if (chatRagPinBtn) {
+      chatRagPinBtn.classList.toggle('active', ragOn || selectedCount > 0);
+      chatRagPinBtn.textContent = 'Xác nhận';
+    }
+  }
+
+  function renderChatRagSelectionBar() {
+    if (!chatRagSelectionBar) return;
+    const selectedIds = [...ragPickerState.selectedIds];
+    const pinned = ragPickerState.pinnedIds;
+    const ids = selectedIds.length ? selectedIds : [...pinned];
+
+    if (!ids.length) {
+      chatRagSelectionBar.innerHTML = '';
+      chatRagSelectionBar.classList.add('hidden');
+      return;
+    }
+
+    const chips = [];
+    const maxShow = 4;
+    for (let i = 0; i < Math.min(maxShow, ids.length); i++) {
+      const sid = ids[i];
+      const item = findRagItem(sid) || {};
+      const label = `${ragDomainFrom(item)} • ${ragFormatDateTime(item?.started_at)}`;
+      const pinnedCls = pinned.has(sid) ? ' pinned' : '';
+      chips.push(
+        `<span class="chat-rag-selection-chip${pinnedCls}" title="${escapeHtml(label)}">` +
+        `<span class="chat-rag-selection-chip-text">${escapeHtml(label)}</span>` +
+        `</span>`
+      );
+    }
+
+    const more = ids.length > maxShow
+      ? `<span class="chat-rag-selection-more">+${ids.length - maxShow}</span>`
+      : '';
+    chatRagSelectionBar.innerHTML =
+      `<span class="chat-rag-selection-label"></span>${chips.join('')}${more}`;
+    chatRagSelectionBar.classList.remove('hidden');
+  }
+
+  function renderRagPickerList() {
+    if (!chatRagPickerList) return;
+    chatRagPickerList.innerHTML = '';
+
+    if (!ragPickerState.filtered.length) {
+      setRagPickerEmpty('Khong tim thay transcript phu hop.', true);
+      updateRagPickerPinUi();
+      return;
+    }
+    setRagPickerEmpty('', false);
+
+    const frag = document.createDocumentFragment();
+    for (const item of ragPickerState.filtered) {
+      const sid = Number(item?.id || 0);
+      if (!sid) continue;
+
+      const selected = ragPickerState.selectedIds.has(sid);
+      const pinned = ragPickerState.pinnedIds.has(sid);
+      const detail = ragPickerState.details.get(sid);
+      const previewText = ragNormalizePreview(
+        pickTranscriptText(item, detail?.ok ? detail.fullText : ''),
+      );
+
+      const row = document.createElement('div');
+      row.className = `rag-item${selected ? ' selected' : ''}`;
+      row.dataset.sessionId = String(sid);
+      row.innerHTML = `
+        <label class="rag-item-check-wrap">
+          <input class="rag-item-check" type="checkbox" ${selected ? 'checked' : ''} />
+        </label>
+        <div class="rag-item-main" data-rag-open="1">
+          <div class="rag-item-top">
+            <span class="rag-item-domain">${escapeHtml(ragDomainFrom(item))}</span>
+            <span class="rag-item-time">${escapeHtml(ragFormatDateTime(item?.started_at))}</span>
+          </div>
+          <p class="rag-item-preview">${escapeHtml(previewText)}</p>
+          <div class="rag-item-meta">
+            ${escapeHtml(`Tong thoi gian: ${ragFormatDurationMs(ragCalcDurationMs(item))} - Trang thai: ${ragStatusLabel(item?.status)}${pinned ? ' - Da chot' : ''}`)}
+          </div>
+        </div>
+        <button class="rag-item-open" type="button" data-rag-open-btn="1">Chi tiết</button>
+      `;
+      frag.appendChild(row);
+    }
+    chatRagPickerList.appendChild(frag);
+    updateRagPickerPinUi();
+    renderChatRagSelectionBar();
+  }
+
+  async function loadRagPickerList(force = false) {
+    if (!hasChromeRuntime) {
+      setRagPickerEmpty('Khong co chrome.runtime.', true);
+      return;
+    }
+    if (ragPickerState.loading) return;
+    if (ragPickerState.loaded && !force) {
+      applyRagFilter();
+      renderRagPickerList();
+      return;
+    }
+    if (force) {
+      ragPickerState.details.clear();
+      ragPickerState.detailInflight.clear();
+    }
+
+    setRagPickerLoading(true);
+    setRagPickerEmpty('', false);
+    try {
+      const res = await sendRuntime({
+        __cmd: '__HISTORY_LIST__',
+        payload: { limit: 300, offset: 0 },
+      });
+
+      if (res?.code === 'AUTH_REQUIRED') {
+        ragPickerState.items = [];
+        ragPickerState.filtered = [];
+        ragPickerState.loaded = true;
+        renderRagPickerList();
+        setRagPickerEmpty('Ban can dang nhap de xem transcript history.', true);
+        openAuthOverlayFromPanel();
+        return;
+      }
+      if (res?.code === 'USER_ID_INVALID') {
+        ragPickerState.items = [];
+        ragPickerState.filtered = [];
+        ragPickerState.loaded = true;
+        renderRagPickerList();
+        setRagPickerEmpty('Khong tim thay user id hop le cho tai khoan hien tai.', true);
+        return;
+      }
+      if (!res?.ok) throw new Error(String(res?.error || 'HISTORY_LIST_FAILED'));
+
+      const rows = Array.isArray(res.items) ? res.items.slice() : [];
+      ragPickerState.items = ragSortSessionsDesc(rows);
+      ragPickerState.loaded = true;
+      syncRagSelectionSets();
+      applyRagFilter();
+      renderRagPickerList();
+      prefetchRagMissingPreviews();
+      if (!ragPickerState.items.length) {
+        setRagPickerEmpty('Chua co transcript nao duoc luu.', true);
+      }
+    } catch (e) {
+      ragPickerState.items = [];
+      ragPickerState.filtered = [];
+      ragPickerState.loaded = false;
+      renderRagPickerList();
+      setRagPickerEmpty(`Khong tai duoc transcript history: ${String(e?.message || e)}`, true);
+    } finally {
+      setRagPickerLoading(false);
+      positionRagPicker();
+    }
+  }
+
+  async function prefetchRagMissingPreviews() {
+    if (ragPickerState.prefetching) return;
+    const targets = ragPickerState.items
+      .filter((item) => {
+        const sid = Number(item?.id || 0);
+        if (!sid) return false;
+        if (ragPickerState.previewHydratedIds.has(sid)) return false;
+        return !hasTextValue(pickTranscriptText(item));
+      })
+      .slice(0, 36);
+    if (!targets.length) return;
+
+    ragPickerState.prefetching = true;
+    try {
+      await Promise.all(targets.map(async (item) => {
+        const sid = Number(item?.id || 0);
+        if (!sid) return;
+        const detail = await ensureRagDetail(sid);
+        if (detail?.ok && hasTextValue(detail.fullText)) {
+          item.latest_text_en = detail.fullText;
+        }
+        ragPickerState.previewHydratedIds.add(sid);
+      }));
+    } finally {
+      ragPickerState.prefetching = false;
+      applyRagFilter();
+      renderRagPickerList();
+    }
+  }
+
+  function positionRagPicker() {
+    if (!chatRagPicker || !isRagPickerOpen()) return;
+    const anchor = (isElementVisible(chipRag) ? chipRag : null)
+      || ragPickerState.anchorEl
+      || (isElementVisible(chatActionRetrieveBtn) ? chatActionRetrieveBtn : null)
+      || (isElementVisible(chatActionStoreBtn) ? chatActionStoreBtn : null)
+      || null;
+    if (!anchor || typeof anchor.getBoundingClientRect !== 'function') return;
+
+    const hostRect =
+      (isElementVisible(chatView) ? chatView.getBoundingClientRect() : null)
+      || (isElementVisible(panelEl) ? panelEl.getBoundingClientRect() : null);
+    const anchorRect = anchor.getBoundingClientRect();
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const hostLeft = hostRect ? Math.round(hostRect.left) : 8;
+    const hostRight = hostRect ? Math.round(hostRect.right) : Math.round(vw - 8);
+    const hostTop = hostRect ? Math.round(hostRect.top) : 8;
+    const hostBottom = hostRect ? Math.round(hostRect.bottom) : Math.round((window.innerHeight || document.documentElement.clientHeight || 0) - 8);
+    const hostWidth = Math.max(260, hostRight - hostLeft);
+
+    // larger picker width for better readability, still clamped to chat area
+    const desiredWidth = Math.round(hostWidth * 0.66);
+    const width = Math.min(
+      Math.max(360, desiredWidth),
+      Math.min(780, vw - 20, Math.max(260, hostWidth - 8))
+    );
+    chatRagPicker.style.width = `${width}px`;
+
+    const tailH = 12;
+    const anchorGap = 8; // keep arrow tip slightly above chip, never overlap
+    const safePad = 8;
+    const availableAbove = Math.max(
+      0,
+      Math.floor(anchorRect.top - hostTop - tailH - anchorGap - safePad)
+    );
+    const desiredMaxH = Math.min(680, Math.max(300, Math.round((hostBottom - hostTop) * 0.78)));
+    let maxHeight = Math.min(desiredMaxH, availableAbove);
+    if (!Number.isFinite(maxHeight) || maxHeight <= 0) maxHeight = 24;
+    chatRagPicker.style.maxHeight = `${maxHeight}px`;
+
+    const pickerRect = chatRagPicker.getBoundingClientRect();
+    const ph = Math.min(pickerRect.height || maxHeight, maxHeight);
+
+    const leftBound = hostRect ? Math.max(8, Math.round(hostRect.left + 4)) : 10;
+    const rightBound = hostRect ? Math.round(hostRect.right - width - 4) : Math.round(vw - width - 10);
+
+    let left = Math.round(anchorRect.left - width * 0.2);
+    if (left > rightBound) left = rightBound;
+    if (left < leftBound) left = leftBound;
+
+    let top = Math.round(anchorRect.top - ph - tailH - anchorGap);
+    const minTop = Math.round(hostTop + safePad);
+    if (top < minTop) top = minTop;
+
+    chatRagPicker.style.left = `${Math.round(left)}px`;
+    chatRagPicker.style.top = `${Math.round(top)}px`;
+
+    const tailX = Math.max(24, Math.min(width - 24, Math.round(anchorRect.left + (anchorRect.width / 2) - left)));
+    chatRagPicker.style.setProperty('--rag-tail-x', `${tailX}px`);
+    chatRagPicker.style.setProperty('--rag-origin-x', `${tailX}px`);
+    chatRagPicker.style.setProperty('--rag-origin-y', '100%');
+    chatRagPicker.dataset.placement = 'top';
+  }
+
+  function openRagPicker(anchorEl = null, opts = {}) {
+    if (!chatRagPicker) return;
+    ragPickerState.anchorEl = (isElementVisible(chipRag) ? chipRag : null)
+      || anchorEl
+      || (isElementVisible(chatActionRetrieveBtn) ? chatActionRetrieveBtn : null)
+      || (isElementVisible(chatActionStoreBtn) ? chatActionStoreBtn : null)
+      || null;
+    ragPickerDetailReturnAnchor = ragPickerState.anchorEl || chipRag || chatActionRetrieveBtn || null;
+    if (ragPickerOpenTimer) {
+      clearTimeout(ragPickerOpenTimer);
+      ragPickerOpenTimer = null;
+    }
+    chatRagPicker.classList.remove('is-open');
+    chatRagPicker.classList.remove('hidden');
+    chatRagPicker.setAttribute('aria-hidden', 'false');
+    positionRagPicker();
+    requestAnimationFrame(() => {
+      if (!chatRagPicker.classList.contains('hidden')) chatRagPicker.classList.add('is-open');
+    });
+    if (opts.focusSearch && chatRagSearch) chatRagSearch.focus();
+    loadRagPickerList(!!opts.forceReload);
+  }
+
+  function closeRagPicker() {
+    if (!chatRagPicker) return;
+    if (ragPickerOpenTimer) {
+      clearTimeout(ragPickerOpenTimer);
+      ragPickerOpenTimer = null;
+    }
+    chatRagPicker.classList.remove('is-open');
+    ragPickerOpenTimer = setTimeout(() => {
+      chatRagPicker.classList.add('hidden');
+      chatRagPicker.setAttribute('aria-hidden', 'true');
+      ragPickerOpenTimer = null;
+    }, 150);
+  }
+
+  function openChatRagDetailSkeleton(item) {
+    if (!chatRagDetailModal) return;
+    chatRagDetailModal.classList.remove('hidden');
+    chatRagDetailModal.setAttribute('aria-hidden', 'false');
+    if (chatRagDetailTitle) chatRagDetailTitle.textContent = ragDomainFrom(item);
+    if (chatRagDetailMeta) {
+      chatRagDetailMeta.textContent =
+        `Website: ${item?.tab_url || ragDomainFrom(item)} - Bat dau: ${ragFormatDateTime(item?.started_at)} - Tong thoi gian: ${ragFormatDurationMs(ragCalcDurationMs(item))}`;
+    }
+    if (chatRagDetailContent) chatRagDetailContent.textContent = 'Dang tai noi dung transcript...';
+    document.body.classList.add('history-modal-open');
+  }
+
+  function fillChatRagDetail(item, fullText) {
+    if (!chatRagDetailModal) return;
+    if (chatRagDetailTitle) chatRagDetailTitle.textContent = ragDomainFrom(item);
+    if (chatRagDetailMeta) {
+      chatRagDetailMeta.textContent =
+        `Website: ${item?.tab_url || ragDomainFrom(item)} - Bat dau: ${ragFormatDateTime(item?.started_at)} - Tong thoi gian: ${ragFormatDurationMs(ragCalcDurationMs(item))}`;
+    }
+    if (chatRagDetailContent) {
+      chatRagDetailContent.textContent = String(fullText || 'Dang cap nhat transcript...');
+    }
+  }
+
+  function closeChatRagDetailModal(opts = {}) {
+    const reopenPicker = !!opts.reopenPicker;
+    if (!chatRagDetailModal) {
+      ragPickerRestoreOnDetailClose = false;
+      return;
+    }
+    chatRagDetailModal.classList.add('hidden');
+    chatRagDetailModal.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('history-modal-open');
+
+    const shouldReopenPicker = reopenPicker && ragPickerRestoreOnDetailClose;
+    ragPickerRestoreOnDetailClose = false;
+    if (shouldReopenPicker) {
+      const anchor = ragPickerDetailReturnAnchor || chipRag || chatActionRetrieveBtn || null;
+      requestAnimationFrame(() => openRagPicker(anchor));
+    }
+  }
+
+  async function ensureRagDetail(sessionId) {
+    const sid = Number(sessionId || 0);
+    if (!sid) return null;
+
+    const cached = ragPickerState.details.get(sid);
+    if (cached) return cached;
+
+    const inflight = ragPickerState.detailInflight.get(sid);
+    if (inflight) return inflight;
+
+    const p = (async () => {
+      const baseItem = findRagItem(sid) || { id: sid };
+      const res = await sendRuntime({
+        __cmd: '__HISTORY_DETAIL__',
+        payload: { sessionId: sid },
+      });
+
+      if (res?.code === 'AUTH_REQUIRED') {
+        openAuthOverlayFromPanel();
+        return { ok: false, code: 'AUTH_REQUIRED', item: baseItem, fullText: '' };
+      }
+      if (res?.code === 'USER_ID_INVALID') {
+        return {
+          ok: false,
+          code: 'USER_ID_INVALID',
+          item: baseItem,
+          fullText: 'Khong tim thay user id hop le cho tai khoan hien tai.',
+        };
+      }
+      if (!res?.ok) {
+        return {
+          ok: false,
+          code: 'DETAIL_FAILED',
+          item: baseItem,
+          fullText: `Khong tai duoc transcript: ${String(res?.error || 'DETAIL_FAILED')}`,
+        };
+      }
+
+      const item = res.item || baseItem;
+      const fullText = String(res.fullText || pickTranscriptText(item) || '');
+      const out = { ok: true, item, fullText };
+      ragPickerState.details.set(sid, out);
+      return out;
+    })()
+      .catch((e) => ({
+        ok: false,
+        code: 'DETAIL_FAILED',
+        item: findRagItem(sid) || { id: sid },
+        fullText: `Khong tai duoc transcript: ${String(e?.message || e)}`,
+      }))
+      .finally(() => {
+        ragPickerState.detailInflight.delete(sid);
+      });
+
+    ragPickerState.detailInflight.set(sid, p);
+    return p;
+  }
+
+  async function openChatRagDetail(sessionId) {
+    const sid = Number(sessionId || 0);
+    if (!sid) return;
+    const baseItem = findRagItem(sid) || { id: sid };
+    ragPickerRestoreOnDetailClose = isRagPickerOpen();
+    ragPickerDetailReturnAnchor = ragPickerState.anchorEl || chipRag || chatActionRetrieveBtn || null;
+    closeRagPicker();
+    openChatRagDetailSkeleton(baseItem);
+    const detail = await ensureRagDetail(sid);
+    if (!detail) {
+      fillChatRagDetail(baseItem, 'Khong tai duoc noi dung transcript.');
+      return;
+    }
+    if (detail.code === 'AUTH_REQUIRED') {
+      closeChatRagDetailModal();
+      return;
+    }
+    fillChatRagDetail(detail.item || baseItem, detail.fullText || '');
+  }
+
+  function toggleRagSelected(sessionId, checked) {
+    const sid = Number(sessionId || 0);
+    if (!sid) return;
+    if (checked) ragPickerState.selectedIds.add(sid);
+    else ragPickerState.selectedIds.delete(sid);
+    renderRagPickerList();
+  }
+
+  function pinSelectedRagSources() {
+    ragPickerState.pinnedIds = new Set([...ragPickerState.selectedIds]);
+    chatToggles.useRag = ragPickerState.pinnedIds.size > 0;
+    applyChatTogglesUI();
+    renderRagPickerList();
+    closeRagPicker();
+  }
+
+  async function buildPinnedRagContextBlock() {
+    const ids = [...ragPickerState.pinnedIds];
+    if (!ids.length) return '';
+
+    const detailRows = await Promise.all(ids.map((sid) => ensureRagDetail(sid)));
+    const chunks = [];
+    let total = 0;
+
+    for (let i = 0; i < ids.length; i++) {
+      if (total >= RAG_CONTEXT_TOTAL_MAX) break;
+      const sid = ids[i];
+      const detail = detailRows[i];
+      const item = detail?.item || findRagItem(sid) || { id: sid };
+
+      const full = String((detail?.ok ? detail.fullText : '') || pickTranscriptText(item) || '')
+        .replace(/\r/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      if (!full) continue;
+
+      const clipped = clipText(full, RAG_CONTEXT_PER_ITEM_MAX);
+      const remain = RAG_CONTEXT_TOTAL_MAX - total;
+      const usable = clipped.length > remain ? clipText(clipped, remain) : clipped;
+      if (!usable) continue;
+
+      const header = `[Transcript ${chunks.length + 1}] ${ragDomainFrom(item)} | ${ragFormatDateTime(item?.started_at)}`;
+      chunks.push(`${header}\n${usable}`);
+      total += usable.length;
+    }
+
+    if (!chunks.length) return '';
+    return [
+      'Selected transcript context (history):',
+      chunks.join('\n\n'),
+      'Use this context as primary source before answering the user.',
+    ].join('\n\n');
+  }
+
+  function bindRagPickerEvents() {
+    ragPickerTriggers.forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault?.();
+        openRagPicker(btn);
+      });
+    });
+
+    if (chatRagPickerClose) {
+      chatRagPickerClose.addEventListener('click', () => closeRagPicker());
+    }
+
+    if (chatRagPinBtn) {
+      chatRagPinBtn.addEventListener('click', () => {
+        pinSelectedRagSources();
+      });
+    }
+
+    if (chatRagSearch) {
+      chatRagSearch.addEventListener('input', () => {
+        applyRagFilter();
+        renderRagPickerList();
+      });
+    }
+
+    if (chatRagPickerList) {
+      chatRagPickerList.addEventListener('change', (e) => {
+        const cb = e.target?.closest?.('.rag-item-check');
+        if (!cb) return;
+        const row = cb.closest('.rag-item');
+        if (!row) return;
+        const sid = Number(row.dataset.sessionId || 0);
+        toggleRagSelected(sid, !!cb.checked);
+      });
+
+      chatRagPickerList.addEventListener('click', (e) => {
+        const tgt = e.target;
+        if (!tgt) return;
+        if (tgt.closest?.('.rag-item-check-wrap') || tgt.closest?.('.rag-item-check')) return;
+        const row = tgt.closest?.('.rag-item');
+        if (!row) return;
+        const sid = Number(row.dataset.sessionId || 0);
+        if (!sid) return;
+        openChatRagDetail(sid);
+      });
+    }
+
+    if (chatRagDetailClose) {
+      chatRagDetailClose.addEventListener('click', () => closeChatRagDetailModal({ reopenPicker: true }));
+    }
+    if (chatRagDetailModal) {
+      chatRagDetailModal.addEventListener('click', (e) => {
+        const tgt = e.target;
+        if (tgt && tgt.dataset?.chatRagClose === '1') closeChatRagDetailModal({ reopenPicker: true });
+      });
+    }
+
+    window.addEventListener('resize', () => {
+      if (isRagPickerOpen()) positionRagPicker();
+    });
+
+    document.addEventListener('mousedown', (e) => {
+      if (!isRagPickerOpen()) return;
+      const tgt = e.target;
+      if (!tgt) return;
+      if (chatRagPicker && chatRagPicker.contains(tgt)) return;
+      if (tgt.closest?.('[data-rag-picker-trigger="1"]')) return;
+      if (chipRag && chipRag.contains(tgt)) return;
+      closeRagPicker();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (chatRagDetailModal && !chatRagDetailModal.classList.contains('hidden')) {
+        closeChatRagDetailModal({ reopenPicker: true });
+        return;
+      }
+      if (isRagPickerOpen()) closeRagPicker();
+    });
+  }
 
   function applyChatTogglesUI() {
     if (chipRag) chipRag.classList.toggle('active', !!chatToggles.useRag);
     if (chipR1) chipR1.classList.toggle('active', !!chatToggles.useR1);
     writeBoolLS(LS_CHAT_USE_RAG, !!chatToggles.useRag);
     writeBoolLS(LS_CHAT_USE_R1, !!chatToggles.useR1);
+    updateRagPickerPinUi();
   }
 
-  if (chipRag) chipRag.addEventListener('click', () => {
-    chatToggles.useRag = !chatToggles.useRag;
-    applyChatTogglesUI();
-  });
   if (chipR1) chipR1.addEventListener('click', () => {
     chatToggles.useR1 = !chatToggles.useR1;
     applyChatTogglesUI();
@@ -992,7 +1742,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const assistBubble = appendBubble('assistant', '…');
 
     const apiBase = getApiBase();
-    const useRag = !!chatToggles.useRag;
+    let useRag = !!chatToggles.useRag;
 
     const okBase = await probeApiBase(apiBase);
     if (!okBase) {
@@ -1001,9 +1751,21 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const metaLine = `${nowTime()}${useRag ? ' • RAG: ON' : ' • RAG: OFF'}`;
+    let pinnedContext = '';
+    try {
+      pinnedContext = await buildPinnedRagContextBlock();
+    } catch (e) {
+      dlog('buildPinnedRagContextBlock failed:', e);
+    }
+    if (pinnedContext && !useRag) useRag = true;
 
-    const q0 = buildQuestionToServer(rawUserQ, useRag, 0);
+    const pinnedCount = ragPickerState.pinnedIds.size;
+    const metaLine = `${nowTime()}${useRag ? ' • RAG: ON' : ' • RAG: OFF'}${pinnedCount ? ` • PIN: ${pinnedCount}` : ''}`;
+
+    const q0Raw = buildQuestionToServer(rawUserQ, useRag, 0);
+    const q0 = pinnedContext
+      ? `${pinnedContext}\n\nUser question:\n${q0Raw}`
+      : q0Raw;
     const body0 = { question: q0, session_id: sid, user_id: 'sidepanel', use_rag: useRag };
 
     dlog('apiBase', apiBase);
@@ -1015,7 +1777,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (useRag && looksLikeBoilerplateAnswer(out0)) {
         if (assistBubble) assistBubble.textContent = '… (retry)';
-        const q1 = buildQuestionToServer(rawUserQ, useRag, 1);
+        const q1Raw = buildQuestionToServer(rawUserQ, useRag, 1);
+        const q1 = pinnedContext
+          ? `${pinnedContext}\n\nUser question:\n${q1Raw}`
+          : q1Raw;
         const body1 = { question: q1, session_id: sid, user_id: 'sidepanel', use_rag: useRag };
         dlog('Q1 retry:', q1);
         out0 = await callChatOnce(apiBase, body1, assistBubble);
@@ -1062,5 +1827,7 @@ document.addEventListener('DOMContentLoaded', () => {
   applyModesToUI();
   sendTranscriptModes();
 
+  bindRagPickerEvents();
   applyChatTogglesUI();
+  updateRagPickerPinUi();
 });

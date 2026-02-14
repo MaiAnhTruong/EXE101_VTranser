@@ -618,6 +618,21 @@
   // Bind OAuth buttons
   const fbBtns = ["btnFbLogin", "btnFbSignup"].map($).filter(Boolean);
   const ggBtns = ["btnGgLogin", "btnGgSignup"].map($).filter(Boolean);
-  fbBtns.forEach((b) => b.addEventListener("click", facebookLogin));
-  ggBtns.forEach((b) => b.addEventListener("click", googleLogin));
+
+  const fbAppId = String(cfg.FACEBOOK_APP_ID || "").trim();
+  const fbEnabled = !!fbAppId && fbAppId !== "PASTE_FACEBOOK_APP_ID_HERE";
+  if (fbEnabled) {
+    fbBtns.forEach((b) => b.addEventListener("click", facebookLogin));
+  } else {
+    // Hide Facebook login buttons in production build when app id is not configured.
+    fbBtns.forEach((b) => (b.style.display = "none"));
+  }
+
+  const ggClientId = String(cfg.GOOGLE_CLIENT_ID || "").trim();
+  const ggEnabled = !!ggClientId;
+  if (ggEnabled) {
+    ggBtns.forEach((b) => b.addEventListener("click", googleLogin));
+  } else {
+    ggBtns.forEach((b) => (b.style.display = "none"));
+  }
 })();
