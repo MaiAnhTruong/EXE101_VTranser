@@ -3,12 +3,6 @@ import { splitSentences } from "./sentence_splitter.js";
 
 const SUPABASE_URL = "https://izziphjuznnzhcdbbptw.supabase.co";
 const SUPABASE_KEY = "sb_publishable_YNUg4THwvvBurGGn59s8Kg_OSkVpVfh";
-const SUPA_HEADERS = {
-  apikey: SUPABASE_KEY,
-  Authorization: `Bearer ${SUPABASE_KEY}`,
-  "content-type": "application/json",
-  Prefer: "return=representation",
-};
 
 function uuid() {
   if (crypto?.randomUUID) return crypto.randomUUID();
@@ -19,8 +13,15 @@ function uuid() {
   });
 }
 
-function headers() {
-  return { ...SUPA_HEADERS };
+function headers(authToken = "", extra = {}) {
+  const bearer = String(authToken || "").trim() || SUPABASE_KEY;
+  return {
+    apikey: SUPABASE_KEY,
+    Authorization: `Bearer ${bearer}`,
+    "content-type": "application/json",
+    Prefer: "return=representation",
+    ...extra,
+  };
 }
 
 function domainFromUrl(u = "") {
@@ -32,10 +33,17 @@ function domainFromUrl(u = "") {
   }
 }
 
+function normalizeDbId(v) {
+  const s = String(v ?? "").trim();
+  if (!s) return "";
+  return /^\d+$/.test(s) ? s : "";
+}
+
 export function createTranscriptPersist(opts) {
   const {
     userId = "",
     userEmail = "",
+    authToken = "",
     tabUrl = "",
     sttServer = "",
     translatorServer = "",
@@ -48,10 +56,7 @@ export function createTranscriptPersist(opts) {
     return Number.isFinite(n) ? n : null;
   };
 
-  const toSessionIdNumber = (id) => {
-    const n = numOrNull(id);
-    return n;
-  };
+  const toSessionId = (id) => normalizeDbId(id);
 
   const state = {
     sessionId: uuid(),
@@ -63,11 +68,10 @@ export function createTranscriptPersist(opts) {
     stopped: false,
   };
 
-  async function fetchUserUuid() {
-    const isNumeric = (s) => /^\d+$/.test(String(s || "").trim());
-
-    // 1) caller provided id (only accept numeric to avoid bigint cast errors)
-    if (isNumeric(userId)) return String(userId).trim();
+  async function fetchUserId() {
+    // 1) caller provided id
+    const direct = normalizeDbId(userId);
+    if (direct) return direct;
 
     // 2) lookup by email (if available)
     if (userEmail) {
@@ -75,16 +79,17 @@ export function createTranscriptPersist(opts) {
         const url = `${SUPABASE_URL}/rest/v1/users?email=eq.${encodeURIComponent(
           userEmail
         )}&select=id&limit=1`;
-        const r = await fetch(url, { headers: headers() });
+        const r = await fetch(url, { headers: headers(authToken) });
         if (r.ok) {
           const j = await r.json();
-          if (Array.isArray(j) && j[0]?.id && isNumeric(j[0].id)) return String(j[0].id);
+          const rid = normalizeDbId(j?.[0]?.id);
+          if (Array.isArray(j) && rid) return rid;
         } else {
           const txt = await r.text().catch(() => "");
-          console.warn("[persist] fetchUserUuid select failed", r.status, txt);
+          console.warn("[persist] fetchUserId select failed", r.status, txt);
         }
       } catch (e) {
-        console.warn("[persist] fetchUserUuid failed", e?.message || e);
+        console.warn("[persist] fetchUserId failed", e?.message || e);
       }
     }
 
@@ -101,12 +106,13 @@ export function createTranscriptPersist(opts) {
       try {
         const r = await fetch(`${SUPABASE_URL}/rest/v1/users`, {
           method: "POST",
-          headers: headers(),
+          headers: headers(authToken),
           body: JSON.stringify(body),
         });
         if (r.ok) {
           const j = await r.json().catch(() => []);
-          if (Array.isArray(j) && j[0]?.id && isNumeric(j[0].id)) return String(j[0].id);
+          const rid = normalizeDbId(j?.[0]?.id);
+          if (Array.isArray(j) && rid) return rid;
         }
         const txt = await r.text().catch(() => "");
         console.warn("[persist] insert user failed", r.status, txt);
@@ -120,15 +126,15 @@ export function createTranscriptPersist(opts) {
   }
 
   async function startSession() {
-    const resolvedUserId = await fetchUserUuid();
+    const resolvedUserId = await fetchUserId();
     if (!resolvedUserId) {
-      console.warn("[persist] skip: cannot resolve user uuid");
+      console.warn("[persist] skip: cannot resolve users.id");
       state.stopped = true;
       return;
     }
 
     const body = {
-      user_id: Number(resolvedUserId),
+      user_id: resolvedUserId,
       tab_url: tabUrl || null,
       tab_domain: domainFromUrl(tabUrl) || null,
       stt_server: sttServer || null,
@@ -141,7 +147,7 @@ export function createTranscriptPersist(opts) {
     try {
       const r = await fetch(`${SUPABASE_URL}/rest/v1/transcript_sessions`, {
         method: "POST",
-        headers: headers(),
+        headers: headers(authToken),
         body: JSON.stringify(body),
       });
       if (!r.ok) {
@@ -150,13 +156,13 @@ export function createTranscriptPersist(opts) {
       }
       const j = await r.json().catch(() => []);
       const sid = Array.isArray(j) && j[0]?.id ? j[0].id : null;
-      const sidNum = toSessionIdNumber(sid);
-      if (!sidNum) {
-        console.warn("[persist] startSession got non-numeric id -> stop", sid);
+      const sidNorm = toSessionId(sid);
+      if (!sidNorm) {
+        console.warn("[persist] startSession got invalid id -> stop", sid);
         state.stopped = true;
         return;
       }
-      state.trSessionId = sidNum;
+      state.trSessionId = sidNorm;
       console.log("[persist] startSession OK trSessionId=", state.trSessionId);
     } catch (e) {
       console.warn("[persist] startSession failed", e?.message || e);
@@ -174,10 +180,10 @@ export function createTranscriptPersist(opts) {
     };
     try {
       const r = await fetch(
-        `${SUPABASE_URL}/rest/v1/transcript_sessions?id=eq.${state.trSessionId}`,
+        `${SUPABASE_URL}/rest/v1/transcript_sessions?id=eq.${encodeURIComponent(String(state.trSessionId))}`,
         {
           method: "PATCH",
-          headers: SUPA_HEADERS,
+          headers: headers(authToken),
           body: JSON.stringify(body),
         }
       );
@@ -193,7 +199,7 @@ export function createTranscriptPersist(opts) {
   async function insertFullSnapshot(fullText) {
     if (!state.trSessionId || !fullText) return;
     const body = {
-      tr_session_id: Number(state.trSessionId),
+      tr_session_id: state.trSessionId,
       seq: 0,
       text_en: fullText,
       is_stable: true,
@@ -203,7 +209,7 @@ export function createTranscriptPersist(opts) {
         `${SUPABASE_URL}/rest/v1/transcript_chunks?on_conflict=tr_session_id,seq`,
         {
           method: "POST",
-          headers: { ...SUPA_HEADERS, Prefer: "resolution=merge-duplicates,return=minimal" },
+          headers: headers(authToken, { Prefer: "resolution=merge-duplicates,return=minimal" }),
           body: JSON.stringify(body),
         }
       );
@@ -243,10 +249,10 @@ export function createTranscriptPersist(opts) {
     };
     try {
       await fetch(
-        `${SUPABASE_URL}/rest/v1/transcript_sessions?id=eq.${state.trSessionId}`,
+        `${SUPABASE_URL}/rest/v1/transcript_sessions?id=eq.${encodeURIComponent(String(state.trSessionId))}`,
         {
           method: "PATCH",
-          headers: headers(),
+          headers: headers(authToken),
           body: JSON.stringify(body),
         }
       );

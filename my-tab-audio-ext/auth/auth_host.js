@@ -48,6 +48,7 @@
 
   // ========= Storage keys =========
   const KEY_SESSION = "vtAuth";
+  const KEY_EMAIL_USER_ID_MAP = "vtEmailUserIdMapV1";
 
   // ========= Guest lock =========
   const LOCK_CLASS = "vt-locked";
@@ -327,13 +328,17 @@
 
   async function setSession(sess) {
     currentSession = sess || null;
+    supaRlsWarned = false;
 
     if (currentSession?.profile) {
+      await tryBackfillSessionUserId();
       updateAuthedUI(currentSession.profile);
       renderAccount(currentSession.profile);
 
       // best-effort: DB full_name/avatar_url override session UI
-      await syncProfileFromDB().catch(() => {});
+      if (pickSupabaseAccessToken(currentSession)) {
+        await syncProfileFromDB().catch(() => {});
+      }
     } else {
       updateLoggedOutUI();
       closeAccountOverlay();
@@ -342,25 +347,68 @@
   }
 
   // ========= Supabase (ID schema) =========
-  // ✅ users.id (UUID PK), user_profiles.id (PK/FK -> users.id)
+  // ✅ users.id / user_profiles.id use bigint (int8)
   const SUPA_URL = String(cfg.SUPABASE_URL || "")
     .replace(/\/+$/, "")
     .replace(/\/rest\/v1$/i, "");
   const SUPA_KEY = String(cfg.SUPABASE_KEY || "").trim();
+  let supaRlsWarned = false;
 
   function supaReady() {
     return !!(SUPA_URL && SUPA_KEY);
   }
 
+  function decodeJwtPayloadNoVerify(token) {
+    try {
+      const parts = String(token || "").split(".");
+      if (parts.length < 2) return null;
+      const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+      const json = atob(b64 + pad);
+      const obj = JSON.parse(json);
+      return (obj && typeof obj === "object") ? obj : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function pickSupabaseAccessToken(sess = currentSession) {
+    const cands = [
+      sess?.tokens?.access_token,
+      sess?.tokens?.accessToken,
+      sess?.currentSession?.tokens?.access_token,
+      sess?.currentSession?.tokens?.accessToken,
+    ]
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+
+    for (const tk of cands) {
+      const payload = decodeJwtPayloadNoVerify(tk);
+      const iss = String(payload?.iss || "").toLowerCase();
+      const aud = payload?.aud;
+      if (iss.includes("supabase.co/auth/v1") || aud === "authenticated") {
+        return tk;
+      }
+    }
+    return "";
+  }
+
+  function parseNumericId(v) {
+    const s = String(v ?? "").trim();
+    return /^\d+$/.test(s) ? s : "";
+  }
+
   async function supaFetch(path, init = {}) {
     if (!supaReady()) throw new Error("Missing SUPABASE_URL or SUPABASE_KEY");
     const url = `${SUPA_URL}${path}`;
+    const supaToken = pickSupabaseAccessToken();
+    const bearer = supaToken || SUPA_KEY;
 
     const res = await fetch(url, {
       ...init,
       headers: {
         apikey: SUPA_KEY,
-        Authorization: `Bearer ${SUPA_KEY}`,
+        Authorization: `Bearer ${bearer}`,
         "content-type": "application/json",
         ...(init.headers || {}),
       },
@@ -368,12 +416,17 @@
 
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      console.warn("[supaFetch]", res.status, txt);
-
-      if (res.status === 401 && txt.includes("row-level security")) {
+      const denied =
+        res.status === 401 &&
+        /42501|permission denied|row-level security/i.test(String(txt || ""));
+      if (!denied) {
+        console.warn("[supaFetch]", res.status, txt);
+      }
+      if (denied && !supaRlsWarned) {
+        supaRlsWarned = true;
         toastProfile(
-          "RLS đang chặn. Hãy tạo policy SELECT/INSERT/UPDATE cho users + user_profiles (role anon).",
-          3200
+          "RLS đang chặn (authenticated). Phiên hiện tại chưa có Supabase JWT hợp lệ hoặc policy chưa đúng.",
+          4200
         );
       }
     }
@@ -388,9 +441,95 @@
     return Array.isArray(arr) && arr.length ? arr[0] : null;
   }
 
+  async function tryBackfillSessionUserId() {
+    const prof = currentSession?.profile || null;
+    if (!prof) return;
+    if (parseNumericId(prof.user_id) || parseNumericId(prof.db_user_id)) return;
+    const email = String(prof.email || "").trim().toLowerCase();
+
+    const provider = String(
+      currentSession?.provider || prof.provider || ""
+    ).trim().toLowerCase();
+    const allowProfileIdFallback = !provider || provider === "email" || provider === "local";
+    const numericProfileId = allowProfileIdFallback ? parseNumericId(prof.id) : "";
+    if (numericProfileId) {
+      const mergedProfile = {
+        ...(prof || {}),
+        user_id: numericProfileId,
+        db_user_id: numericProfileId,
+      };
+      const mergedSession = {
+        ...(currentSession || {}),
+        profile: mergedProfile,
+        updated_at: Date.now(),
+      };
+      currentSession = mergedSession;
+      const saveObj = { [KEY_SESSION]: mergedSession };
+      if (email) {
+        const stMap = await storageGet([KEY_EMAIL_USER_ID_MAP]).catch(() => ({}));
+        const rawMap = (stMap?.[KEY_EMAIL_USER_ID_MAP] && typeof stMap[KEY_EMAIL_USER_ID_MAP] === "object")
+          ? { ...stMap[KEY_EMAIL_USER_ID_MAP] }
+          : {};
+        rawMap[email] = { user_id: numericProfileId, updated_at: Date.now() };
+        saveObj[KEY_EMAIL_USER_ID_MAP] = rawMap;
+      }
+      await storageSet(saveObj);
+      return;
+    }
+    if (!email) return;
+
+    try {
+      const stMap = await storageGet([KEY_EMAIL_USER_ID_MAP]);
+      const rawMap = stMap?.[KEY_EMAIL_USER_ID_MAP];
+      const mapped = parseNumericId(rawMap?.[email]?.user_id);
+      if (mapped) {
+        const mergedProfile = {
+          ...(prof || {}),
+          user_id: mapped,
+          db_user_id: mapped,
+        };
+        const mergedSession = {
+          ...(currentSession || {}),
+          profile: mergedProfile,
+          updated_at: Date.now(),
+        };
+        currentSession = mergedSession;
+        const nextMap = (rawMap && typeof rawMap === "object") ? { ...rawMap } : {};
+        nextMap[email] = { user_id: mapped, updated_at: Date.now() };
+        await storageSet({ [KEY_SESSION]: mergedSession, [KEY_EMAIL_USER_ID_MAP]: nextMap });
+        return;
+      }
+    } catch {}
+
+    try {
+      const u = await supaSelectUserByEmail(email);
+      const uid = parseNumericId(u?.id);
+      if (!uid) return;
+
+      const mergedProfile = {
+        ...(prof || {}),
+        user_id: uid,
+        db_user_id: uid,
+      };
+      const mergedSession = {
+        ...(currentSession || {}),
+        profile: mergedProfile,
+        updated_at: Date.now(),
+      };
+      currentSession = mergedSession;
+      const stMap = await storageGet([KEY_EMAIL_USER_ID_MAP]).catch(() => ({}));
+      const rawMap = (stMap?.[KEY_EMAIL_USER_ID_MAP] && typeof stMap[KEY_EMAIL_USER_ID_MAP] === "object")
+        ? { ...stMap[KEY_EMAIL_USER_ID_MAP] }
+        : {};
+      rawMap[email] = { user_id: uid, updated_at: Date.now() };
+      await storageSet({ [KEY_SESSION]: mergedSession, [KEY_EMAIL_USER_ID_MAP]: rawMap });
+    } catch {
+      // best-effort backfill only
+    }
+  }
+
   async function supaInsertUser(email, provider) {
     const nowIso = new Date().toISOString();
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Bangkok";
 
     const body = {
       email: String(email || "").trim().toLowerCase(),
@@ -400,7 +539,6 @@
       status: "active",
       created_at: nowIso,
       last_login_at: nowIso,
-      timezone: tz,
     };
 
     let res = await supaFetch("/rest/v1/users", {
@@ -496,6 +634,10 @@
       if (!currentSession?.profile) return openAuthOverlay("#login");
       if (!supaReady()) {
         toastAccount("Thiếu SUPABASE_URL / SUPABASE_KEY (auth/config.js)");
+        return;
+      }
+      if (!pickSupabaseAccessToken(currentSession)) {
+        toastAccount("RLS đang để authenticated. Phiên hiện tại chưa có Supabase JWT.");
         return;
       }
 
@@ -756,24 +898,26 @@
 
     if (msg.type === "VT_AUTH_SUCCESS") {
       try {
-        const res = await storageGet([KEY_SESSION]);
-        const stored = normalizeSession(res?.[KEY_SESSION]);
+        // Always prioritize fresh login payload to avoid keeping stale vtAuth.
+        const u = msg.payload?.user || msg.payload?.profile || null;
+        const provider = String(
+          msg.payload?.provider || u?.provider || u?.auth_provider || ""
+        ).trim().toLowerCase();
+        const tokens = msg.payload?.tokens || {};
 
-        if (stored?.profile) {
-          await setSession(stored);
+        if (u) {
+          const sess = {
+            provider,
+            profile: u,
+            tokens,
+            updated_at: Date.now(),
+          };
+          await storageSet({ [KEY_SESSION]: sess });
+          await setSession(sess);
         } else {
-          const u = msg.payload?.user || msg.payload?.profile;
-          const provider = msg.payload?.provider || "unknown";
-          if (u) {
-            const sess = {
-              provider,
-              profile: u,
-              tokens: msg.payload?.tokens || {},
-              updated_at: Date.now(),
-            };
-            await storageSet({ [KEY_SESSION]: sess });
-            await setSession(sess);
-          }
+          const res = await storageGet([KEY_SESSION]);
+          const stored = normalizeSession(res?.[KEY_SESSION]);
+          await setSession(stored || null);
         }
       } catch {}
       closeAuthOverlay();

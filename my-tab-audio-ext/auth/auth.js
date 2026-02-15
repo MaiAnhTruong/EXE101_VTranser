@@ -6,6 +6,7 @@
 
   // ===== Storage keys =====
   const KEY_SESSION = "vtAuth";
+  const KEY_EMAIL_USER_ID_MAP = "vtEmailUserIdMapV1";
 
   // ===== Crypto params =====
   const PBKDF2_ITERS = 120000;
@@ -46,6 +47,10 @@
     if (!mustChromeStorage()) throw new Error("chrome.storage.local unavailable");
     return new Promise((resolve) => chrome.storage.local.set(obj, resolve));
   }
+  async function storageGet(keys) {
+    if (!mustChromeStorage()) throw new Error("chrome.storage.local unavailable");
+    return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+  }
 
   // ------------------------------------------------------------------
   // Supabase helpers
@@ -75,7 +80,7 @@
       console.warn("Supabase error", res.status, txt);
 
       if (res.status === 401 && txt.includes("row-level security")) {
-        toast("RLS đang chặn thao tác trên bảng users. Bạn cần tạo policy INSERT/SELECT/UPDATE cho role anon.");
+        toast("RLS đang chặn thao tác trên bảng users. Policy hiện tại yêu cầu role authenticated.");
       }
     }
     return res;
@@ -109,6 +114,45 @@
     if (!res.ok) throw new Error((await res.text()) || `insert failed (${res.status})`);
     const arr = await res.json();
     return Array.isArray(arr) && arr.length ? arr[0] : body;
+  }
+
+  async function supaEnsureOAuthUser(email, provider = "oauth") {
+    const em = String(email || "").trim().toLowerCase();
+    if (!emailLooksOk(em)) return null;
+
+    try {
+      const existed = await supaSelectUser(em);
+      if (existed?.id) {
+        await supaUpdateLastLogin(existed.id);
+        return existed;
+      }
+    } catch {}
+
+    const nowIso = new Date().toISOString();
+    const body = {
+      email: em,
+      phone: null,
+      password_hash: "oauth",
+      auth_provider: String(provider || "oauth"),
+      status: "active",
+      created_at: nowIso,
+      last_login_at: nowIso,
+    };
+    try {
+      const res = await supaFetch("/rest/v1/users", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 409) return await supaSelectUser(em);
+      if (!res.ok) return null;
+      const arr = await res.json().catch(() => []);
+      const row = Array.isArray(arr) && arr.length ? arr[0] : null;
+      if (row?.id) await supaUpdateLastLogin(row.id);
+      return row;
+    } catch {
+      return null;
+    }
   }
 
   async function supaUpdateLastLogin(id) {
@@ -199,6 +243,38 @@
   function emailLooksOk(email) {
     const e = String(email || "").trim().toLowerCase();
     return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(e);
+  }
+
+  function normalizeDbUserId(v) {
+    const s = String(v ?? "").trim();
+    if (!s) return null;
+    return /^\d+$/.test(s) ? s : null;
+  }
+
+  async function rememberEmailUserId(email, userId) {
+    const em = String(email || "").trim().toLowerCase();
+    const uid = normalizeDbUserId(userId);
+    if (!em || !uid) return;
+    try {
+      const st = await storageGet([KEY_EMAIL_USER_ID_MAP]);
+      const raw = st?.[KEY_EMAIL_USER_ID_MAP];
+      const map = (raw && typeof raw === "object") ? { ...raw } : {};
+      map[em] = { user_id: uid, updated_at: Date.now() };
+      await storageSet({ [KEY_EMAIL_USER_ID_MAP]: map });
+    } catch {}
+  }
+
+  async function readRememberedEmailUserId(email) {
+    const em = String(email || "").trim().toLowerCase();
+    if (!em) return null;
+    try {
+      const st = await storageGet([KEY_EMAIL_USER_ID_MAP]);
+      const raw = st?.[KEY_EMAIL_USER_ID_MAP];
+      const uid = normalizeDbUserId(raw?.[em]?.user_id);
+      return uid || null;
+    } catch {
+      return null;
+    }
   }
 
   // ✅ policy mới: 8 ký tự + thường + hoa + số + ký tự đặc biệt
@@ -352,10 +428,19 @@
     .forEach((el) => el.addEventListener("input", refreshButtons));
   refreshButtons();
 
-  function profileFromEmail(email) {
+  function profileFromEmail(email, userId = null) {
     const e = String(email || "").trim().toLowerCase();
     const name = e.includes("@") ? e.split("@")[0] : e;
-    return { id: e, email: e, name: name || e, provider: "email", picture: "" };
+    const uid = normalizeDbUserId(userId);
+    return {
+      id: uid || e,
+      email: e,
+      name: name || e,
+      provider: "email",
+      picture: "",
+      user_id: uid,
+      db_user_id: uid,
+    };
   }
 
   async function setSession(provider, profile, tokens) {
@@ -436,7 +521,8 @@
       await supaUpdateLastLogin(u.id);
       await supaInsertAuthLogin(u.id, "local", true, null);
 
-      const profile = profileFromEmail(email);
+      const profile = profileFromEmail(email, u?.id);
+      await rememberEmailUserId(profile.email, profile.user_id || profile.db_user_id);
       const session = await setSession("email", profile, {});
       notifySuccess({ provider: "email", user: profile, tokens: {}, session });
 
@@ -539,6 +625,25 @@
           provider: "google",
         };
 
+        const u = await supaEnsureOAuthUser(profile.email, "google");
+        if (u?.id !== undefined && u?.id !== null) {
+          const uid = normalizeDbUserId(u.id);
+          if (uid) {
+            profile.user_id = uid;
+            profile.db_user_id = uid;
+            profile.id = uid;
+          }
+        }
+        if (!profile.user_id) {
+          const remembered = await readRememberedEmailUserId(profile.email);
+          if (remembered) {
+            profile.user_id = remembered;
+            profile.db_user_id = remembered;
+            profile.id = remembered;
+          }
+        }
+        await rememberEmailUserId(profile.email, profile.user_id || profile.db_user_id);
+
         const session = await setSession("google", profile, tokenJson);
         notifySuccess({ provider: "google", user: profile, tokens: tokenJson, session });
 
@@ -603,6 +708,25 @@
           picture: me.picture?.data?.url || "",
           provider: "facebook",
         };
+
+        const u = await supaEnsureOAuthUser(profile.email, "facebook");
+        if (u?.id !== undefined && u?.id !== null) {
+          const uid = normalizeDbUserId(u.id);
+          if (uid) {
+            profile.user_id = uid;
+            profile.db_user_id = uid;
+            profile.id = uid;
+          }
+        }
+        if (!profile.user_id) {
+          const remembered = await readRememberedEmailUserId(profile.email);
+          if (remembered) {
+            profile.user_id = remembered;
+            profile.db_user_id = remembered;
+            profile.id = remembered;
+          }
+        }
+        await rememberEmailUserId(profile.email, profile.user_id || profile.db_user_id);
 
         const session = await setSession("facebook", profile, { access_token: accessToken });
         notifySuccess({ provider: "facebook", user: profile, tokens: { access_token: accessToken }, session });

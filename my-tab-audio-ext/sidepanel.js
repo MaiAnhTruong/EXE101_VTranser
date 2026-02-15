@@ -8,6 +8,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const LS_CHAT_API = 'sttChatApiBase';
   const DEFAULT_API = 'http://127.0.0.1:8000';
   const LS_CHAT_SESSION = 'sttChatSessionId';
+  const LS_CHAT_RUNTIME_MARK = 'sttChatRuntimeMarkV1';
+  const LS_CHAT_HISTORY = 'sttChatHistoryV1';
+  const LS_CHAT_DB_CURSOR = 'sttChatDbCursorV1';
+  const CHAT_HISTORY_MAX = 120;
+  const SESSION_RUN_KEY = 'vtRuntimeRunIdV1';
 
   // Persist transcript modes
   const LS_MODE_EN = 'sttModeEn';
@@ -21,9 +26,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Optional debug
   const LS_CHAT_DEBUG = 'sttChatDebug'; // set "1" to log + show sent prompt in meta
 
-  // play.gif của một số asset có thể không loop tự nhiên trên mọi môi trường;
-  // refresh định kỳ để luôn "chạy vô tận" khi đang active.
+  // play.gif can fail to loop on some environments;
+  // refresh periodically to keep it animated while active.
   const PLAY_GIF_REFRESH_MS = 1800;
+  const CHAT_SCROLLBAR_HIDE_MS = 900;
 
   const hasChromeRuntime =
     typeof chrome !== 'undefined' &&
@@ -68,6 +74,87 @@ document.addEventListener('DOMContentLoaded', () => {
     return sid;
   }
 
+  function readChatHistoryMap() {
+    try {
+      const raw = localStorage.getItem(LS_CHAT_HISTORY);
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      return (obj && typeof obj === 'object') ? obj : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeChatHistoryMap(map) {
+    try {
+      localStorage.setItem(LS_CHAT_HISTORY, JSON.stringify(map || {}));
+    } catch {}
+  }
+
+  function readJsonObjectLS(key) {
+    try {
+      const raw = localStorage.getItem(String(key || ''));
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      return (obj && typeof obj === 'object') ? obj : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeJsonObjectLS(key, obj) {
+    try {
+      localStorage.setItem(String(key || ''), JSON.stringify(obj || {}));
+    } catch {}
+  }
+
+  function normalizeDbId(v) {
+    const s = String(v ?? '').trim();
+    if (!s) return null;
+    return /^\d+$/.test(s) ? s : null;
+  }
+
+  function getChatHistoryItems(sessionId) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return [];
+    const map = readChatHistoryMap();
+    const arr = Array.isArray(map[sid]) ? map[sid] : [];
+    return arr
+      .map((x) => ({
+        who: x?.who === 'assistant' ? 'assistant' : 'user',
+        text: String(x?.text || ''),
+        meta: String(x?.meta || ''),
+      }))
+      .filter((x) => x.text.trim().length > 0);
+  }
+
+  function saveChatHistoryItems(sessionId, items) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return;
+    const map = readChatHistoryMap();
+    map[sid] = (Array.isArray(items) ? items : [])
+      .slice(-CHAT_HISTORY_MAX)
+      .map((x) => ({
+        who: x?.who === 'assistant' ? 'assistant' : 'user',
+        text: String(x?.text || ''),
+        meta: String(x?.meta || ''),
+      }));
+    writeChatHistoryMap(map);
+  }
+
+  function pushChatHistoryItem(who, text, meta = '') {
+    const msgText = String(text || '').trim();
+    if (!msgText) return;
+    const sid = getSessionId();
+    const arr = getChatHistoryItems(sid);
+    arr.push({
+      who: who === 'assistant' ? 'assistant' : 'user',
+      text: msgText,
+      meta: String(meta || ''),
+    });
+    saveChatHistoryItems(sid, arr);
+  }
+
   function readBoolLS(key, fallback) {
     const v = localStorage.getItem(key);
     if (v === null || v === undefined) return fallback;
@@ -83,6 +170,155 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const dlog = (...args) => { if (isDebug()) console.log('[sidepanel]', ...args); };
+
+  function storeSessionGet(keys) {
+    return new Promise((resolve) => {
+      try {
+        if (chrome?.storage?.session?.get) {
+          chrome.storage.session.get(keys, (v) => resolve(v || {}));
+          return;
+        }
+      } catch {}
+      resolve({});
+    });
+  }
+
+  function storeSessionSet(obj) {
+    return new Promise((resolve) => {
+      try {
+        if (chrome?.storage?.session?.set) {
+          chrome.storage.session.set(obj || {}, () => resolve());
+          return;
+        }
+      } catch {}
+      resolve();
+    });
+  }
+
+  async function getOrCreateRuntimeRunId() {
+    try {
+      const st = await storeSessionGet([SESSION_RUN_KEY]);
+      let rid = String(st?.[SESSION_RUN_KEY] || '').trim();
+      if (!rid) {
+        rid = `run_${Date.now().toString(36)}_${uid()}`;
+        await storeSessionSet({ [SESSION_RUN_KEY]: rid });
+      }
+      return rid;
+    } catch {
+      return '';
+    }
+  }
+
+  async function rotateChatSessionIfRuntimeChanged() {
+    const runtimeRunId = await getOrCreateRuntimeRunId();
+    if (!runtimeRunId) return false;
+
+    const prevRunId = String(localStorage.getItem(LS_CHAT_RUNTIME_MARK) || '').trim();
+    if (prevRunId && prevRunId === runtimeRunId) return false;
+
+    const nextSid = 'sess_' + uid();
+    try {
+      localStorage.setItem(LS_CHAT_SESSION, nextSid);
+      localStorage.setItem(LS_CHAT_RUNTIME_MARK, runtimeRunId);
+    } catch {}
+    return true;
+  }
+
+  function formatUserIdDebug(debug) {
+    if (!debug || typeof debug !== 'object') return '';
+    const parts = [];
+    const email = String(debug.email || '').trim();
+    const provider = String(debug.provider || '').trim();
+    const id = String(debug.id || '').trim();
+    const userId = String(debug.user_id || '').trim();
+    const dbUserId = String(debug.db_user_id || '').trim();
+    if (email) parts.push(`email=${email}`);
+    if (provider) parts.push(`provider=${provider}`);
+    if (id) parts.push(`id=${id}`);
+    if (userId) parts.push(`user_id=${userId}`);
+    if (dbUserId) parts.push(`db_user_id=${dbUserId}`);
+    return parts.join(' | ');
+  }
+
+  function authIdentityKeyFromProfile(profile) {
+    const email = String(profile?.email || '').trim().toLowerCase();
+    if (email) return `email:${email}`;
+    const pid = String(profile?.id || '').trim();
+    if (pid) return `id:${pid}`;
+    const name = String(profile?.name || profile?.full_name || '').trim().toLowerCase();
+    if (name) return `name:${name}`;
+    return '';
+  }
+
+  function chatDbCursorKey(identityKey, localSessionId) {
+    const a = String(identityKey || '').trim();
+    const b = String(localSessionId || '').trim();
+    if (!a || !b) return '';
+    return `${a}::${b}`;
+  }
+
+  function getChatDbCursorState(identityKey, localSessionId) {
+    const key = chatDbCursorKey(identityKey, localSessionId);
+    if (!key) return { chatSessionId: null, parentMsgId: null };
+    const map = readJsonObjectLS(LS_CHAT_DB_CURSOR);
+    const row = map[key];
+    return {
+      chatSessionId: normalizeDbId(row?.chatSessionId),
+      parentMsgId: normalizeDbId(row?.parentMsgId),
+    };
+  }
+
+  function setChatDbCursorState(identityKey, localSessionId, state) {
+    const key = chatDbCursorKey(identityKey, localSessionId);
+    if (!key) return;
+    const map = readJsonObjectLS(LS_CHAT_DB_CURSOR);
+    map[key] = {
+      chatSessionId: normalizeDbId(state?.chatSessionId),
+      parentMsgId: normalizeDbId(state?.parentMsgId),
+      updatedAt: new Date().toISOString(),
+    };
+    writeJsonObjectLS(LS_CHAT_DB_CURSOR, map);
+  }
+
+  async function persistChatMessageToDb(opts = {}) {
+    const identityKey = String(opts.identityKey || '').trim();
+    const localSessionId = String(opts.localSessionId || '').trim();
+    const roleRaw = String(opts.role || '').trim().toLowerCase();
+    const role = roleRaw === 'assistant' || roleRaw === 'system' ? roleRaw : 'user';
+    const content = String(opts.content || '').trim();
+
+    if (!identityKey || !localSessionId || !content) return null;
+
+    const cursor = getChatDbCursorState(identityKey, localSessionId);
+    const payload = {
+      chatSessionId: cursor.chatSessionId,
+      parentMsgId: cursor.parentMsgId,
+      role,
+      content,
+      titleHint: String(opts.titleHint || content).trim(),
+      source: String(opts.source || 'sidepanel'),
+      model: String(opts.model || ''),
+      language: String(opts.language || ''),
+      createdAt: String(opts.createdAt || new Date().toISOString()),
+      startedAt: String(opts.startedAt || new Date().toISOString()),
+    };
+
+    if (Number.isFinite(Number(opts.tokensIn))) payload.tokensIn = Number(opts.tokensIn);
+    if (Number.isFinite(Number(opts.tokensOut))) payload.tokensOut = Number(opts.tokensOut);
+    if (Number.isFinite(Number(opts.latencyMs))) payload.latencyMs = Number(opts.latencyMs);
+
+    const res = await sendRuntime({ __cmd: '__CHAT_DB_SAVE__', payload });
+    if (!res?.ok) {
+      dlog('chat db save failed:', res?.error || res);
+      return res || null;
+    }
+
+    setChatDbCursorState(identityKey, localSessionId, {
+      chatSessionId: res.chatSessionId,
+      parentMsgId: res.messageId,
+    });
+    return res;
+  }
 
   // ===== chrome.storage helpers =====
   function storeGet(keys) {
@@ -148,10 +384,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // chat view elements
   const chatTextArea = document.querySelector('#chat-content .textarea-wrapper textarea');
   const chatHistory = document.querySelector('.chat-history-area');
+  let chatScrollbarHideTimer = null;
 
-  const chipButtons = document.querySelectorAll('.input-header .chip-button');
-  const chipRag = chipButtons[0] || null;
-  const chipR1 = chipButtons[1] || null;
+  const chipRag = document.getElementById('chatChipRag');
+  const chipR1 = document.getElementById('chatChipR1');
 
   const sendBtn = document.getElementById('icon-btn-send');
   const chatRagSelectionBar = document.getElementById('chatRagSelectionBar');
@@ -357,8 +593,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // reset focus-mode when leaving chat
     if (viewId !== 'chat-content') {
       chatView && chatView.classList.remove('focus-mode');
+      if (chatHistory) chatHistory.classList.remove('scrollbar-visible');
+      if (chatScrollbarHideTimer) {
+        clearTimeout(chatScrollbarHideTimer);
+        chatScrollbarHideTimer = null;
+      }
       closeRagPicker();
       closeChatRagDetailModal();
+    } else {
+      syncChatFocusMode();
     }
 
     // refresh transcript url when open transcript
@@ -459,7 +702,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ===== Transcript sentence delay logging =====
   let loggedSentCount = 0;
 
-  const SENT_RE = /[^.!?…]*[.!?…]+(?:["”’']+)?(?:\s+|$)/g;
+  const SENT_RE = /[^.!?]*[.!?]+(?:["']+)?(?:\s+|$)/g;
   function splitSentencesAndTail(text) {
     const sents = [];
     let lastEnd = 0;
@@ -644,8 +887,8 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
-        // server-status có thể đến liên tục trong lúc đang chạy;
-        // không được phép kéo UI về trạng thái "connecting".
+        // server-status can arrive continuously while running;
+        // never pull UI back to "connecting" from running state.
         if (s === 'server-hello' || s === 'server-status' || s === 'server-auth-ok') {
           if (!runningUi && startInFlight && transcriptLiveFooter) {
             transcriptLiveFooter.textContent = 'Live • Đang kết nối...';
@@ -1029,7 +1272,13 @@ document.addEventListener('DOMContentLoaded', () => {
         ragPickerState.filtered = [];
         ragPickerState.loaded = true;
         renderRagPickerList();
-        setRagPickerEmpty('Khong tim thay user id hop le cho tai khoan hien tai.', true);
+        const dbg = formatUserIdDebug(res?.debug);
+        setRagPickerEmpty(
+          dbg
+            ? `Khong tim thay user id hop le cho tai khoan hien tai.\n[debug] ${dbg}`
+            : 'Khong tim thay user id hop le cho tai khoan hien tai.',
+          true
+        );
         return;
       }
       if (!res?.ok) throw new Error(String(res?.error || 'HISTORY_LIST_FAILED'));
@@ -1256,7 +1505,12 @@ document.addEventListener('DOMContentLoaded', () => {
           ok: false,
           code: 'USER_ID_INVALID',
           item: baseItem,
-          fullText: 'Khong tim thay user id hop le cho tai khoan hien tai.',
+          fullText: (() => {
+            const dbg = formatUserIdDebug(res?.debug);
+            return dbg
+              ? `Khong tim thay user id hop le cho tai khoan hien tai.\n\n[debug] ${dbg}`
+              : 'Khong tim thay user id hop le cho tai khoan hien tai.';
+          })(),
         };
       }
       if (!res?.ok) {
@@ -1355,11 +1609,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (!chunks.length) return '';
-    return [
-      'Selected transcript context (history):',
-      chunks.join('\n\n'),
-      'Use this context as primary source before answering the user.',
-    ].join('\n\n');
+    return chunks.join('\n\n');
   }
 
   function bindRagPickerEvents() {
@@ -1532,6 +1782,60 @@ document.addEventListener('DOMContentLoaded', () => {
   // ============================================================
   // ✅ Chat UI
   // ============================================================
+  function showChatScrollbarTemporarily(ms = CHAT_SCROLLBAR_HIDE_MS) {
+    if (!chatHistory) return;
+    const hasOverflow = chatHistory.scrollHeight > (chatHistory.clientHeight + 1);
+    if (!hasOverflow) {
+      chatHistory.classList.remove('scrollbar-visible');
+      return;
+    }
+    chatHistory.classList.add('scrollbar-visible');
+    if (chatScrollbarHideTimer) clearTimeout(chatScrollbarHideTimer);
+    chatScrollbarHideTimer = setTimeout(() => {
+      chatHistory.classList.remove('scrollbar-visible');
+      chatScrollbarHideTimer = null;
+    }, Math.max(180, Number(ms) || CHAT_SCROLLBAR_HIDE_MS));
+  }
+
+  function bindChatHistoryScrollbarAutoHide() {
+    if (!chatHistory) return;
+
+    chatHistory.addEventListener('wheel', () => {
+      showChatScrollbarTemporarily();
+    }, { passive: true });
+
+    chatHistory.addEventListener('touchstart', () => {
+      showChatScrollbarTemporarily();
+    }, { passive: true });
+
+    chatHistory.addEventListener('touchmove', () => {
+      showChatScrollbarTemporarily();
+    }, { passive: true });
+
+    chatHistory.addEventListener('mousedown', (e) => {
+      const rect = chatHistory.getBoundingClientRect();
+      const nearRightEdge = (rect.right - e.clientX) <= 24;
+      if (nearRightEdge) showChatScrollbarTemporarily(1200);
+    });
+  }
+
+  function syncChatFocusMode() {
+    if (!chatView || !chatHistory) return;
+    const hasMessages = chatHistory.querySelector('.msg-row') !== null;
+    chatView.classList.toggle('focus-mode', hasMessages);
+  }
+
+  function restoreChatHistory() {
+    if (!chatHistory) return;
+    const sid = getSessionId();
+    const items = getChatHistoryItems(sid);
+    chatHistory.innerHTML = '';
+    for (const it of items) {
+      appendBubble(it.who, it.text, it.meta || '');
+    }
+    syncChatFocusMode();
+  }
+
   function appendBubble(who, text, meta = '') {
     if (!chatHistory) return null;
     const row = document.createElement('div');
@@ -1542,6 +1846,7 @@ document.addEventListener('DOMContentLoaded', () => {
     row.appendChild(bubble);
     chatHistory.appendChild(row);
     chatHistory.scrollTop = chatHistory.scrollHeight;
+    syncChatFocusMode();
     return bubble;
   }
 
@@ -1728,26 +2033,65 @@ document.addEventListener('DOMContentLoaded', () => {
   async function sendChat(question) {
     if (!question || !question.trim()) return;
 
-    const ok = await isAuthed();
+    const profile = await getVtAuthProfile();
+    const ok = !!(profile && (profile.email || profile.id || profile.name || profile.full_name));
     if (!ok) {
       openAuthOverlayFromPanel();
-      appendBubble('assistant', '🔒 Bạn cần đăng nhập để dùng Chat.', nowTime());
+      const blockedText = '🔒 Bạn cần đăng nhập để dùng Chat.';
+      const blockedMeta = nowTime();
+      appendBubble('assistant', blockedText, blockedMeta);
+      pushChatHistoryItem('assistant', blockedText, blockedMeta);
       return;
     }
 
     const rawUserQ = question.trim();
     const sid = getSessionId();
+    const authIdentityKey = authIdentityKeyFromProfile(profile);
+    const modelTag = chatToggles.useR1 ? 'r1' : 'default';
+    const langTag = 'vi';
 
-    appendBubble('user', rawUserQ, nowTime());
+    const userMeta = nowTime();
+    appendBubble('user', rawUserQ, userMeta);
+    pushChatHistoryItem('user', rawUserQ, userMeta);
+
     const assistBubble = appendBubble('assistant', '…');
-
     const apiBase = getApiBase();
     let useRag = !!chatToggles.useRag;
 
+    try {
+      await persistChatMessageToDb({
+        identityKey: authIdentityKey,
+        localSessionId: sid,
+        role: 'user',
+        content: rawUserQ,
+        titleHint: rawUserQ,
+        source: 'sidepanel',
+        model: modelTag,
+        language: langTag,
+      });
+    } catch (e) {
+      dlog('persist user chat failed:', e);
+    }
+
     const okBase = await probeApiBase(apiBase);
     if (!okBase) {
-      if (assistBubble) assistBubble.textContent =
-        `⚠️ Không kết nối được API ở ${apiBase}. Mở Setting để nhập đúng base (vd: http://127.0.0.1:8000).`;
+      const errText = `⚠️ Không kết nối được API ở ${apiBase}. Mở Setting để nhập đúng base (vd: http://127.0.0.1:8000).`;
+      if (assistBubble) assistBubble.textContent = errText;
+      pushChatHistoryItem('assistant', errText, nowTime());
+      try {
+        await persistChatMessageToDb({
+          identityKey: authIdentityKey,
+          localSessionId: sid,
+          role: 'assistant',
+          content: errText,
+          titleHint: rawUserQ,
+          source: 'sidepanel',
+          model: modelTag,
+          language: langTag,
+        });
+      } catch (e) {
+        dlog('persist assistant error msg failed:', e);
+      }
       return;
     }
 
@@ -1762,14 +2106,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const pinnedCount = ragPickerState.pinnedIds.size;
     const metaLine = `${nowTime()}${useRag ? ' • RAG: ON' : ' • RAG: OFF'}${pinnedCount ? ` • PIN: ${pinnedCount}` : ''}`;
 
+    const selectedSourceIds = [...ragPickerState.pinnedIds];
     const q0Raw = buildQuestionToServer(rawUserQ, useRag, 0);
-    const q0 = pinnedContext
-      ? `${pinnedContext}\n\nUser question:\n${q0Raw}`
-      : q0Raw;
-    const body0 = { question: q0, session_id: sid, user_id: 'sidepanel', use_rag: useRag };
+    const body0 = { question: q0Raw, session_id: sid, user_id: 'sidepanel', use_rag: useRag };
+    if (pinnedContext) body0.selected_context = pinnedContext;
+    if (selectedSourceIds.length) body0.selected_source_ids = selectedSourceIds;
 
     dlog('apiBase', apiBase);
-    dlog('Q0 sent:', q0);
+    dlog('Q0 sent:', q0Raw);
+    dlog('selected_source_ids:', selectedSourceIds);
 
     let out0 = '';
     try {
@@ -1778,11 +2123,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (useRag && looksLikeBoilerplateAnswer(out0)) {
         if (assistBubble) assistBubble.textContent = '… (retry)';
         const q1Raw = buildQuestionToServer(rawUserQ, useRag, 1);
-        const q1 = pinnedContext
-          ? `${pinnedContext}\n\nUser question:\n${q1Raw}`
-          : q1Raw;
-        const body1 = { question: q1, session_id: sid, user_id: 'sidepanel', use_rag: useRag };
-        dlog('Q1 retry:', q1);
+        const body1 = { question: q1Raw, session_id: sid, user_id: 'sidepanel', use_rag: useRag };
+        if (pinnedContext) body1.selected_context = pinnedContext;
+        if (selectedSourceIds.length) body1.selected_source_ids = selectedSourceIds;
+        dlog('Q1 retry:', q1Raw);
         out0 = await callChatOnce(apiBase, body1, assistBubble);
       }
 
@@ -1794,11 +2138,41 @@ document.addEventListener('DOMContentLoaded', () => {
           escapeHtml(assistBubble.textContent + extra) +
           `<span class="meta">${escapeHtml(metaLine)}</span>`;
       }
+      pushChatHistoryItem('assistant', out0, metaLine);
+      try {
+        await persistChatMessageToDb({
+          identityKey: authIdentityKey,
+          localSessionId: sid,
+          role: 'assistant',
+          content: out0,
+          titleHint: rawUserQ,
+          source: 'sidepanel',
+          model: modelTag,
+          language: langTag,
+        });
+      } catch (e) {
+        dlog('persist assistant chat failed:', e);
+      }
     } catch (err) {
-      if (assistBubble) assistBubble.textContent = `⚠️ ${String(err)}`;
+      const errText = `⚠️ ${String(err)}`;
+      if (assistBubble) assistBubble.textContent = errText;
+      pushChatHistoryItem('assistant', errText, nowTime());
+      try {
+        await persistChatMessageToDb({
+          identityKey: authIdentityKey,
+          localSessionId: sid,
+          role: 'assistant',
+          content: errText,
+          titleHint: rawUserQ,
+          source: 'sidepanel',
+          model: modelTag,
+          language: langTag,
+        });
+      } catch (e) {
+        dlog('persist assistant catch msg failed:', e);
+      }
     }
   }
-
   // ===== Chat events =====
   if (chatTextArea) {
     chatTextArea.addEventListener('keydown', (e) => {
@@ -1807,7 +2181,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const value = chatTextArea.value;
         chatTextArea.value = '';
         sendChat(value);
-        if (chatView) chatView.classList.add('focus-mode');
       }
     });
   }
@@ -1818,7 +2191,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!value.trim()) return;
       chatTextArea.value = '';
       sendChat(value);
-      if (chatView) chatView.classList.add('focus-mode');
     });
   }
 
@@ -1828,6 +2200,11 @@ document.addEventListener('DOMContentLoaded', () => {
   sendTranscriptModes();
 
   bindRagPickerEvents();
+  bindChatHistoryScrollbarAutoHide();
   applyChatTogglesUI();
   updateRagPickerPinUi();
+  (async () => {
+    await rotateChatSessionIfRuntimeChanged();
+    restoreChatHistory();
+  })();
 });

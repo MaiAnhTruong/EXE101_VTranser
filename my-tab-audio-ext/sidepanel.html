@@ -21,37 +21,37 @@
               <p>Tôi có thể hỗ trợ gì cho bạn?</p>
             </div>
 
-            <div class="action-buttons">
-              <button id="chatActionFullscreenBtn" class="action-btn" type="button">
-                <img src="icons/maximize.svg" alt="" class="action-btn-icon" /> Toàn màn hình
-              </button>
-              <button id="chatActionRetrieveBtn" class="action-btn" type="button" data-rag-picker-trigger="1">
-                <img src="icons/database.svg" alt="" class="action-btn-icon" /> Truy xuất thông tin
-              </button>
-              <button id="chatActionStoreBtn" class="action-btn" type="button">
-                <img src="icons/star.svg" alt="" class="action-btn-icon" /> Kho lưu trữ
-              </button>
-              <button id="chatActionDocBtn" class="action-btn" type="button">
-                <img src="icons/file-text.svg" alt="" class="action-btn-icon" /> Vẽ hình tài liệu
-              </button>
-            </div>
-
             <div class="chat-history-area"></div>
 
             <div class="chat-input-area">
-              <div class="input-header">
-                <button class="chip-button" type="button">
-                  <img src="icons/database.svg" alt="" class="input-btn-icon" />Truy xuất thông tin
-                </button>
-                <button class="chip-button" type="button">
-                  <img src="icons/brain.svg" alt="" class="input-btn-icon" />Suy luận (R1)
-                </button>
-              </div>
               <div id="chatRagSelectionBar" class="chat-rag-selection-bar hidden"></div>
 
               <div class="textarea-wrapper">
                 <textarea placeholder="Hãy viết gì đó"></textarea>
-                <button id="icon-btn-send" class="icon-btn-simple" title="send" type="button"></button>
+                <div class="chat-input-controls-row">
+                  <div class="chat-input-tools-row">
+                    <button
+                      id="chatChipRag"
+                      class="chip-button"
+                      type="button"
+                      title="Truy xuất thông tin"
+                      aria-label="Truy xuất thông tin"
+                      data-rag-picker-trigger="1"
+                    >
+                      <img src="icons/database.svg" alt="" class="input-btn-icon" />
+                    </button>
+                    <button
+                      id="chatChipR1"
+                      class="chip-button"
+                      type="button"
+                      title="Suy luận (R1)"
+                      aria-label="Suy luận (R1)"
+                    >
+                      <img src="icons/brain.svg" alt="" class="input-btn-icon" />
+                    </button>
+                  </div>
+                  <button id="icon-btn-send" class="icon-btn-simple" title="send" type="button"></button>
+                </div>
               </div>
             </div>
           </div>

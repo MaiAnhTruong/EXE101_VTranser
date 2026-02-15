@@ -138,6 +138,22 @@
     });
   }
 
+  function formatUserIdDebug(debug) {
+    if (!debug || typeof debug !== "object") return "";
+    const parts = [];
+    const email = String(debug.email || "").trim();
+    const provider = String(debug.provider || "").trim();
+    const id = String(debug.id || "").trim();
+    const userId = String(debug.user_id || "").trim();
+    const dbUserId = String(debug.db_user_id || "").trim();
+    if (email) parts.push(`email=${email}`);
+    if (provider) parts.push(`provider=${provider}`);
+    if (id) parts.push(`id=${id}`);
+    if (userId) parts.push(`user_id=${userId}`);
+    if (dbUserId) parts.push(`db_user_id=${dbUserId}`);
+    return parts.join(" | ");
+  }
+
   function calcDurationMs(item) {
     const startMs = Date.parse(String(item?.started_at || ""));
     if (!Number.isFinite(startMs)) return 0;
@@ -346,8 +362,14 @@
           state.items = [];
           state.filtered = [];
           renderList();
-          setEmpty("Không tìm thấy user id hợp lệ cho tài khoản hiện tại.", true);
-          if (refs.userNote) refs.userNote.textContent = "User ID: (không xác định)";
+          const dbg = formatUserIdDebug(res?.debug);
+          setEmpty(
+            dbg
+              ? "Khong tim thay user id hop le cho tai khoan hien tai.\n[debug] " + dbg
+              : "Khong tim thay user id hop le cho tai khoan hien tai.",
+            true
+          );
+          if (refs.userNote) refs.userNote.textContent = "User ID: (khong xac dinh)";
           state.loaded = true;
           return;
         }
@@ -431,7 +453,13 @@
         return;
       }
       if (res?.code === "USER_ID_INVALID") {
-        fillModalText(baseItem, "Không tìm thấy user id hợp lệ cho tài khoản hiện tại.");
+        const dbg = formatUserIdDebug(res?.debug);
+        fillModalText(
+          baseItem,
+          dbg
+            ? "Khong tim thay user id hop le cho tai khoan hien tai.\n\n[debug] " + dbg
+            : "Khong tim thay user id hop le cho tai khoan hien tai."
+        );
         if (refs.modalDownload) refs.modalDownload.disabled = true;
         return;
       }

@@ -20,6 +20,11 @@ import {
   listTranscriptSessionsForUser,
   getTranscriptSessionDetailForUser,
 } from "./sw/history_repo.js";
+import {
+  ensureChatSessionForUser,
+  insertChatMessage,
+  touchChatSession,
+} from "./sw/chat_repo.js";
 "use strict";
 
 // -------------------- Global state --------------------
@@ -65,6 +70,7 @@ const STORAGE_KEYS = {
   VT_NEED_AUTH: "vtNeedAuth",
   TRANS_URL: "sttTranslatorWs", // optional: ws://127.0.0.1:8787
   TRANS_DEBUG: "sttTransDebug",
+  EMAIL_USER_ID_MAP: "vtEmailUserIdMapV1",
 };
 
 // -------------------- chrome.storage helpers --------------------
@@ -105,6 +111,238 @@ function isForbiddenTabUrl(url = "") {
 }
 function parseUrlOrNull(s) {
   try { return new URL(s); } catch { return null; }
+}
+function isUuidLike(v) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(v || "").trim()
+  );
+}
+function pickAuthUidFromProfile(profile = {}) {
+  const cands = [
+    profile?.auth_uid,
+    profile?.authUid,
+    profile?.supabase_uid,
+    profile?.supabaseUid,
+    profile?.owner_uid,
+    profile?.ownerUid,
+    profile?.id, // only when UUID
+  ];
+  for (const c of cands) {
+    if (isUuidLike(c)) return String(c).trim().toLowerCase();
+  }
+  return "";
+}
+function decodeJwtPayloadNoVerify(token) {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length < 2) return null;
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+    const json = atob(b64 + pad);
+    const obj = JSON.parse(json);
+    return (obj && typeof obj === "object") ? obj : null;
+  } catch {
+    return null;
+  }
+}
+function pickSupabaseAccessToken(authSess = {}) {
+  const cands = [
+    authSess?.tokens?.access_token,
+    authSess?.tokens?.accessToken,
+    authSess?.raw?.tokens?.access_token,
+    authSess?.raw?.tokens?.accessToken,
+    authSess?.raw?.currentSession?.tokens?.access_token,
+    authSess?.raw?.currentSession?.tokens?.accessToken,
+  ]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+
+  for (const tk of cands) {
+    const payload = decodeJwtPayloadNoVerify(tk);
+    const iss = String(payload?.iss || "").toLowerCase();
+    const aud = payload?.aud;
+    // Supabase access token usually has iss from project url and aud = authenticated.
+    if (iss.includes("supabase.co/auth/v1") || aud === "authenticated") return tk;
+  }
+  return "";
+}
+function parseNumericUserId(v) {
+  const s = String(v ?? "").trim();
+  return /^\d+$/.test(s) ? s : "";
+}
+function normalizeEmail(v) {
+  return String(v || "").trim().toLowerCase();
+}
+function numericUserIdFromProfile(profile = {}) {
+  const cands = [
+    profile?.user_id,
+    profile?.userId,
+    profile?.db_user_id,
+    profile?.dbUserId,
+    profile?.users_id,
+    profile?.usersId,
+  ];
+  for (const c of cands) {
+    const n = parseNumericUserId(c);
+    if (n) return n;
+  }
+  const provider = String(
+    profile?.provider ||
+    profile?.auth_provider ||
+    ""
+  ).trim().toLowerCase();
+  if (!provider || provider === "email" || provider === "local") {
+    const byId = parseNumericUserId(profile?.id);
+    if (byId) return byId;
+  }
+  return "";
+}
+function sanitizeEmailUserIdMap(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const email = normalizeEmail(k);
+    if (!email) continue;
+    const rowUid = parseNumericUserId(v?.user_id ?? v?.id ?? v);
+    if (!rowUid) continue;
+    const updatedAt = Number(v?.updated_at || v?.updatedAt || Date.now());
+    out[email] = {
+      user_id: rowUid,
+      updated_at: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+    };
+  }
+  return out;
+}
+async function getEmailUserIdMap() {
+  const st = await storeGet([STORAGE_KEYS.EMAIL_USER_ID_MAP]);
+  return sanitizeEmailUserIdMap(st?.[STORAGE_KEYS.EMAIL_USER_ID_MAP]);
+}
+async function findCachedUserIdByEmail(email) {
+  const em = normalizeEmail(email);
+  if (!em) return "";
+  const map = await getEmailUserIdMap();
+  return parseNumericUserId(map?.[em]?.user_id);
+}
+async function cacheEmailUserId(email, userId) {
+  const em = normalizeEmail(email);
+  const uid = parseNumericUserId(userId);
+  if (!em || !uid) return;
+
+  const map = await getEmailUserIdMap();
+  map[em] = { user_id: uid, updated_at: Date.now() };
+
+  const keys = Object.keys(map);
+  const MAX_KEYS = 300;
+  if (keys.length > MAX_KEYS) {
+    const sorted = keys
+      .map((k) => ({ k, at: Number(map?.[k]?.updated_at || 0) }))
+      .sort((a, b) => b.at - a.at)
+      .slice(0, MAX_KEYS);
+    const pruned = {};
+    for (const it of sorted) pruned[it.k] = map[it.k];
+    await storeSet({ [STORAGE_KEYS.EMAIL_USER_ID_MAP]: pruned });
+    return;
+  }
+
+  await storeSet({ [STORAGE_KEYS.EMAIL_USER_ID_MAP]: map });
+}
+async function patchStoredSessionUserId(userId) {
+  const uid = parseNumericUserId(userId);
+  if (!uid) return;
+
+  const st = await storeGet([STORAGE_KEYS.VT_AUTH]);
+  const raw = st?.[STORAGE_KEYS.VT_AUTH];
+  if (!raw || typeof raw !== "object") return;
+
+  let changed = false;
+  const next = { ...raw };
+  const patchProfile = (p) => {
+    if (!p || typeof p !== "object") return p;
+    const curA = parseNumericUserId(p.user_id);
+    const curB = parseNumericUserId(p.db_user_id);
+    if (curA === uid && curB === uid) return p;
+    changed = true;
+    return { ...p, user_id: uid, db_user_id: uid };
+  };
+
+  if (next.profile) next.profile = patchProfile(next.profile);
+  if (next.currentSession?.profile) {
+    next.currentSession = {
+      ...next.currentSession,
+      profile: patchProfile(next.currentSession.profile),
+    };
+  }
+
+  if (changed) {
+    await storeSet({ [STORAGE_KEYS.VT_AUTH]: next });
+  }
+}
+async function resolveUsersTableUserIdSafe(profile = {}, authToken = "") {
+  const email = normalizeEmail(profile?.email);
+
+  // 0) If profile already has users.id, keep and cache by email.
+  const direct = numericUserIdFromProfile(profile);
+  if (direct) {
+    if (email) await cacheEmailUserId(email, direct);
+    await patchStoredSessionUserId(direct);
+    return direct;
+  }
+
+  // 1) Fast local cache: email -> users.id
+  if (email) {
+    const cached = await findCachedUserIdByEmail(email);
+    if (cached) {
+      await patchStoredSessionUserId(cached);
+      return cached;
+    }
+  }
+
+  // 2) Remote resolve (email -> users.id, auth_uid -> users.id, etc.)
+  try {
+    const uid = await resolveUsersTableUserId(profile, { authToken });
+    const n = parseNumericUserId(uid);
+    if (n) {
+      if (email) await cacheEmailUserId(email, n);
+      await patchStoredSessionUserId(n);
+      return n;
+    }
+  } catch {}
+
+  // 3) Legacy fallback from profile hints.
+  const fallback = numericUserIdFromProfile(profile);
+  if (fallback) {
+    if (email) await cacheEmailUserId(email, fallback);
+    await patchStoredSessionUserId(fallback);
+    return fallback;
+  }
+  throw new Error("USER_ID_INVALID");
+}
+function normalizeAuthProfile(authSess = {}) {
+  const src = (authSess?.profile && typeof authSess.profile === "object")
+    ? authSess.profile
+    : {};
+  const provider = String(
+    src?.provider ||
+    authSess?.raw?.provider ||
+    authSess?.raw?.currentSession?.provider ||
+    src?.auth_provider ||
+    ""
+  ).trim().toLowerCase();
+
+  if (!provider) return { ...src };
+  if (String(src?.provider || "").trim().toLowerCase() === provider) return { ...src };
+  return { ...src, provider };
+}
+function buildUserIdDebug(profile = {}, authToken = "") {
+  const out = {
+    email: String(profile?.email || "").trim().toLowerCase(),
+    provider: String(profile?.provider || "").trim().toLowerCase(),
+    id: String(profile?.id || ""),
+    user_id: String(profile?.user_id || ""),
+    db_user_id: String(profile?.db_user_id || ""),
+    has_auth_token: !!String(authToken || "").trim(),
+  };
+  return out;
 }
 function isLocalHost(hostname) {
   return hostname === "localhost" || hostname === "127.0.0.1";
@@ -999,11 +1237,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         const transUrlSt = await storeGet([STORAGE_KEYS.TRANS_URL]);
         const transServer = (transUrlSt[STORAGE_KEYS.TRANS_URL] || "").trim();
-        const profile = authSess?.profile || authSess?.raw?.profile || authSess?.currentSession?.profile || {};
+        const profile = normalizeAuthProfile(authSess);
+        const supaAuthToken = pickSupabaseAccessToken(authSess);
         const userEmail = String(profile.email || "").trim();
         let userId = "";
         try {
-          const uid = await resolveUsersTableUserId(profile);
+          const uid = await resolveUsersTableUserIdSafe(profile, supaAuthToken);
           userId = uid ? String(uid) : "";
         } catch {
           userId = "";
@@ -1011,6 +1250,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         transcriptPersist = createTranscriptPersist({
           userId,
           userEmail,
+          authToken: supaAuthToken,
           tabUrl: tab.url || "",
           sttServer: server,
           translatorServer: transServer,
@@ -1105,15 +1345,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const offsetRaw = Number(msg.payload?.offset);
         const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 200;
         const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.trunc(offsetRaw)) : 0;
-        const profile = authSess?.profile || {};
-        const userId = await resolveUsersTableUserId(profile);
+        const profile = normalizeAuthProfile(authSess);
+        const supaAuthToken = pickSupabaseAccessToken(authSess);
+        const userId = await resolveUsersTableUserIdSafe(profile, supaAuthToken);
 
-        const items = await listTranscriptSessionsForUser(userId, { limit, offset });
+        const items = await listTranscriptSessionsForUser(userId, {
+          limit,
+          offset,
+          authToken: supaAuthToken,
+        });
         sendResponse?.({ ok: true, items, userId });
       } catch (e) {
         const msgErr = String(e?.message || e);
         if (msgErr.includes("USER_ID_INVALID")) {
-          sendResponse?.({ ok: false, code: "USER_ID_INVALID", error: "USER_ID_INVALID" });
+          const profile = normalizeAuthProfile(authSess);
+          const supaAuthToken = pickSupabaseAccessToken(authSess);
+          sendResponse?.({
+            ok: false,
+            code: "USER_ID_INVALID",
+            error: "USER_ID_INVALID",
+            debug: buildUserIdDebug(profile, supaAuthToken),
+          });
           return;
         }
         sendResponse?.({ ok: false, error: msgErr });
@@ -1134,9 +1386,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
 
-        const profile = authSess?.profile || {};
-        const userId = await resolveUsersTableUserId(profile);
-        const detail = await getTranscriptSessionDetailForUser(userId, sessionId);
+        const profile = normalizeAuthProfile(authSess);
+        const supaAuthToken = pickSupabaseAccessToken(authSess);
+        const userId = await resolveUsersTableUserIdSafe(profile, supaAuthToken);
+        const detail = await getTranscriptSessionDetailForUser(userId, sessionId, {
+          authToken: supaAuthToken,
+        });
 
         if (!detail) {
           sendResponse?.({ ok: false, code: "NOT_FOUND", error: "NOT_FOUND" });
@@ -1147,7 +1402,91 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch (e) {
         const msgErr = String(e?.message || e);
         if (msgErr.includes("USER_ID_INVALID")) {
-          sendResponse?.({ ok: false, code: "USER_ID_INVALID", error: "USER_ID_INVALID" });
+          const profile = normalizeAuthProfile(authSess);
+          const supaAuthToken = pickSupabaseAccessToken(authSess);
+          sendResponse?.({
+            ok: false,
+            code: "USER_ID_INVALID",
+            error: "USER_ID_INVALID",
+            debug: buildUserIdDebug(profile, supaAuthToken),
+          });
+          return;
+        }
+        sendResponse?.({ ok: false, error: msgErr });
+      }
+      return;
+    }
+
+
+    // ✅ Persist chat session/messages to Supabase (AUTH REQUIRED)
+    if (msg.__cmd === "__CHAT_DB_SAVE__") {
+      const tabIdForNotify = current?.tabId || null;
+      const authSess = await requireAuthOrFail({ action: "chat_save", tabId: tabIdForNotify, sendResponse });
+      if (!authSess) return;
+
+      try {
+        const payload = msg.payload || {};
+        const profile = normalizeAuthProfile(authSess);
+        const supaAuthToken = pickSupabaseAccessToken(authSess);
+        const userId = await resolveUsersTableUserIdSafe(profile, supaAuthToken);
+        const ownerUid = pickAuthUidFromProfile(profile);
+
+        const role = String(payload.role || "").trim().toLowerCase();
+        const content = String(payload.content || "").trim();
+        if (!content) {
+          sendResponse?.({ ok: false, error: "EMPTY_MESSAGE_CONTENT" });
+          return;
+        }
+
+        const ensured = await ensureChatSessionForUser(userId, {
+          chatSessionId: payload.chatSessionId ?? null,
+          titleHint: payload.titleHint || content,
+          source: payload.source || "sidepanel",
+          model: payload.model || "",
+          language: payload.language || "",
+          startedAt: payload.startedAt || payload.createdAt || new Date().toISOString(),
+          ownerUid,
+          authToken: supaAuthToken,
+        });
+
+        const messageId = await insertChatMessage(ensured.chatSessionId, {
+          parentMsgId: payload.parentMsgId ?? null,
+          role,
+          content,
+          createdAt: payload.createdAt || new Date().toISOString(),
+          tokensIn: payload.tokensIn ?? null,
+          tokensOut: payload.tokensOut ?? null,
+          latencyMs: payload.latencyMs ?? null,
+          authToken: supaAuthToken,
+        });
+
+        // Best-effort: keep ended_at fresh whenever assistant replies.
+        if (role === "assistant") {
+          try {
+            await touchChatSession(ensured.chatSessionId, {
+              endedAt: payload.createdAt || new Date().toISOString(),
+            }, supaAuthToken);
+          } catch {}
+        }
+
+        sendResponse?.({
+          ok: true,
+          userId,
+          chatSessionId: ensured.chatSessionId,
+          messageId,
+          createdSession: !!ensured.created,
+        });
+      } catch (e) {
+        const msgErr = String(e?.message || e);
+        if (msgErr.includes("USER_ID_INVALID")) {
+          const profile = normalizeAuthProfile(authSess);
+          const supaAuthToken = pickSupabaseAccessToken(authSess);
+          sendResponse?.({
+            ok: false,
+            code: "USER_ID_INVALID",
+            error: "USER_ID_INVALID",
+            debug: buildUserIdDebug(profile, supaAuthToken),
+          });
           return;
         }
         sendResponse?.({ ok: false, error: msgErr });
