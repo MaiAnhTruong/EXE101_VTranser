@@ -17,10 +17,30 @@
 
           <!-- CHAT VIEW -->
           <div id="chat-content" class="content-view hidden">
-            <div class="main-header">
-              <p>Tôi có thể hỗ trợ gì cho bạn?</p>
+            <div class="chat-topbar">
+              <button
+                id="chatConversationsToggle"
+                class="chat-conv-toggle-btn"
+                type="button"
+                title="Lịch sử trò chuyện"
+                aria-label="Lịch sử trò chuyện"
+                aria-expanded="false"
+                aria-controls="chatConversationsPanel"
+              >
+                <span class="chat-conv-toggle-icon" aria-hidden="true">☰</span>
+              </button>
             </div>
 
+            <div id="chatConversationsPanel" class="chat-conv-panel hidden" aria-hidden="true">
+              <div class="chat-conv-panel-head">
+                <h3 class="chat-conv-panel-title">Lịch sử trò chuyện</h3>
+                <button id="chatConversationsNewBtn" class="chat-conv-new-btn" type="button">
+                  Cuộc trò chuyện mới
+                </button>
+              </div>
+              <div id="chatConversationsEmpty" class="chat-conv-empty hidden">Chưa có cuộc trò chuyện.</div>
+              <div id="chatConversationsList" class="chat-conv-list" role="list"></div>
+            </div>
             <div class="chat-history-area"></div>
 
             <div class="chat-input-area">
@@ -269,7 +289,7 @@
       </div>
 
       <div class="vt-acc-credits">
-        <div class="vt-acc-credits-icon" aria-hidden="true">✨</div>
+        <div class="vt-acc-credits-icon" aria-hidden="true"></div>
         <div class="vt-acc-credits-text">
           <div class="vt-acc-credits-title">Hoàn thành nhiệm vụ để</div>
           <div class="vt-acc-credits-sub"><b>Nhận thêm Credits</b></div>
@@ -278,36 +298,36 @@
 
       <div class="vt-acc-menu">
         <button class="vt-acc-item" data-vt-acc-action="whats_new" type="button">
-          <span class="vt-acc-ico">🔔</span> <span>Tin tức</span>
+          <span class="vt-acc-ico vt-acc-ico-news" aria-hidden="true"></span> <span>Tin tức</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="rewards" type="button">
-          <span class="vt-acc-ico">🏆</span> <span>Trung tâm phần thưởng</span>
+          <span class="vt-acc-ico vt-acc-ico-rewards" aria-hidden="true"></span> <span>Trung tâm phần thưởng</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="my_account" type="button">
-          <span class="vt-acc-ico">👤</span> <span>Tài khoản</span>
+          <span class="vt-acc-ico vt-acc-ico-account" aria-hidden="true"></span> <span>Tài khoản</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="my_website" type="button">
-          <span class="vt-acc-ico">🗂️</span> <span>Trang</span>
+          <span class="vt-acc-ico vt-acc-ico-site" aria-hidden="true"></span> <span>Trang</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="help" type="button">
-          <span class="vt-acc-ico">❓</span> <span>Trung tâm hỗ trợ</span>
+          <span class="vt-acc-ico vt-acc-ico-help" aria-hidden="true"></span> <span>Trung tâm hỗ trợ</span>
         </button>
         <button class="vt-acc-item" data-vt-acc-action="feedback" type="button">
-          <span class="vt-acc-ico">✉️</span> <span>Đánh giá</span>
+          <span class="vt-acc-ico vt-acc-ico-feedback" aria-hidden="true"></span> <span>Đánh giá</span>
         </button>
 
         <div class="vt-acc-sep"></div>
 
         <button id="vtAccLogout" class="vt-acc-item vt-acc-logout" type="button">
-          <span class="vt-acc-ico">↩️</span> <span>Đăng xuất</span>
+          <span class="vt-acc-ico vt-acc-ico-logout" aria-hidden="true"></span> <span>Đăng xuất</span>
         </button>
       </div>
 
       <div class="vt-acc-social">
-        <button class="vt-social-btn" type="button" aria-label="X">X</button>
-        <button class="vt-social-btn" type="button" aria-label="Discord">💬</button>
-        <button class="vt-social-btn" type="button" aria-label="YouTube">▶️</button>
-        <button class="vt-social-btn" type="button" aria-label="LinkedIn">in</button>
+        <button class="vt-social-btn vt-social-btn-x" type="button" aria-label="X"></button>
+        <button class="vt-social-btn vt-social-btn-discord" type="button" aria-label="Discord"></button>
+        <button class="vt-social-btn vt-social-btn-youtube" type="button" aria-label="YouTube"></button>
+        <button class="vt-social-btn vt-social-btn-linkedin" type="button" aria-label="LinkedIn"></button>
       </div>
 
       <div id="vtAccToast" class="vt-acc-toast hidden"></div>
@@ -348,6 +368,9 @@
 
         <label class="vt-profile-lbl">Email</label>
         <input id="vtProfileEmail" class="vt-profile-inp" type="text" disabled />
+
+        <label class="vt-profile-lbl">Số điện thoại</label>
+        <input id="vtProfilePhone" class="vt-profile-inp" type="text" placeholder="Nhập số điện thoại (tuỳ chọn)" />
 
         <label class="vt-profile-lbl">Họ và tên</label>
         <input id="vtProfileFullName" class="vt-profile-inp" type="text" placeholder="Nhập tên hiển thị" />

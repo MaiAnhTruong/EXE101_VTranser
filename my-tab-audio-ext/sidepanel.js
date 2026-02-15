@@ -10,8 +10,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const LS_CHAT_SESSION = 'sttChatSessionId';
   const LS_CHAT_RUNTIME_MARK = 'sttChatRuntimeMarkV1';
   const LS_CHAT_HISTORY = 'sttChatHistoryV1';
+  const LS_CHAT_SESSION_META = 'sttChatSessionMetaV1';
   const LS_CHAT_DB_CURSOR = 'sttChatDbCursorV1';
   const CHAT_HISTORY_MAX = 120;
+  const CHAT_CONV_LIST_MAX = 80;
   const SESSION_RUN_KEY = 'vtRuntimeRunIdV1';
 
   // Persist transcript modes
@@ -91,6 +93,97 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch {}
   }
 
+  function readChatSessionMetaMap() {
+    try {
+      const raw = localStorage.getItem(LS_CHAT_SESSION_META);
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      return (obj && typeof obj === 'object') ? obj : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeChatSessionMetaMap(map) {
+    try {
+      localStorage.setItem(LS_CHAT_SESSION_META, JSON.stringify(map || {}));
+    } catch {}
+  }
+
+  function chatClipText(s, maxLen = 84) {
+    const txt = String(s || '').replace(/\s+/g, ' ').trim();
+    if (!txt) return '';
+    if (txt.length <= maxLen) return txt;
+    return txt.slice(0, Math.max(0, maxLen - 3)) + '...';
+  }
+
+  function toIsoOrNow(v) {
+    const t = Date.parse(String(v || ''));
+    if (Number.isFinite(t)) return new Date(t).toISOString();
+    return new Date().toISOString();
+  }
+
+  function parseDateMs(v) {
+    const t = Date.parse(String(v || ''));
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  function normalizeIdentityKey(k) {
+    return String(k || '').trim().toLowerCase();
+  }
+
+  function formatConversationTime(iso) {
+    const d = parseDateMs(iso);
+    if (!d) return '';
+    const dt = new Date(d);
+    return `${pad(dt.getHours())}:${pad(dt.getMinutes())} ${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}`;
+  }
+
+  function upsertChatSessionMeta(sessionId, patch = {}) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return;
+    const map = readChatSessionMetaMap();
+    const prev = (map[sid] && typeof map[sid] === 'object') ? map[sid] : {};
+    const createdAt = toIsoOrNow(prev.createdAt || patch.createdAt);
+    const next = {
+      identityKey: normalizeIdentityKey(patch.identityKey || prev.identityKey || ''),
+      title: chatClipText(patch.title || prev.title || '', 72),
+      preview: chatClipText(patch.preview || prev.preview || '', 110),
+      createdAt,
+      updatedAt: toIsoOrNow(patch.updatedAt || prev.updatedAt || createdAt),
+      messageCount: Math.max(0, Number(patch.messageCount ?? prev.messageCount ?? 0) || 0),
+    };
+    map[sid] = next;
+
+    const keys = Object.keys(map);
+    const MAX_META = 400;
+    if (keys.length > MAX_META) {
+      keys
+        .sort((a, b) => parseDateMs(map[b]?.updatedAt) - parseDateMs(map[a]?.updatedAt))
+        .slice(MAX_META)
+        .forEach((k) => { delete map[k]; });
+    }
+    writeChatSessionMetaMap(map);
+  }
+
+  function touchChatSessionMetaFromItems(sessionId, items, opts = {}) {
+    const sid = String(sessionId || '').trim();
+    const arr = Array.isArray(items) ? items : [];
+    if (!sid) return;
+
+    const firstUser = arr.find((x) => x?.who === 'user' && String(x?.text || '').trim());
+    const lastMsg = arr.length ? arr[arr.length - 1] : null;
+    const titleHint = chatClipText(opts.titleHint || firstUser?.text || lastMsg?.text || 'Cuộc trò chuyện mới', 72);
+    const preview = chatClipText(lastMsg?.text || opts.preview || '', 110);
+    upsertChatSessionMeta(sid, {
+      identityKey: opts.identityKey || '',
+      title: titleHint,
+      preview,
+      updatedAt: new Date().toISOString(),
+      messageCount: arr.length,
+    });
+  }
+
   function readJsonObjectLS(key) {
     try {
       const raw = localStorage.getItem(String(key || ''));
@@ -142,7 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
     writeChatHistoryMap(map);
   }
 
-  function pushChatHistoryItem(who, text, meta = '') {
+  function pushChatHistoryItem(who, text, meta = '', opts = {}) {
     const msgText = String(text || '').trim();
     if (!msgText) return;
     const sid = getSessionId();
@@ -153,6 +246,11 @@ document.addEventListener('DOMContentLoaded', () => {
       meta: String(meta || ''),
     });
     saveChatHistoryItems(sid, arr);
+    touchChatSessionMetaFromItems(sid, arr, {
+      identityKey: opts.identityKey || '',
+      titleHint: opts.titleHint || '',
+    });
+    syncConversationPanelAfterHistoryChange();
   }
 
   function readBoolLS(key, fallback) {
@@ -384,7 +482,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // chat view elements
   const chatTextArea = document.querySelector('#chat-content .textarea-wrapper textarea');
   const chatHistory = document.querySelector('.chat-history-area');
+  const chatConversationsToggle = document.getElementById('chatConversationsToggle');
+  const chatConversationsPanel = document.getElementById('chatConversationsPanel');
+  const chatConversationsList = document.getElementById('chatConversationsList');
+  const chatConversationsEmpty = document.getElementById('chatConversationsEmpty');
+  const chatConversationsNewBtn = document.getElementById('chatConversationsNewBtn');
   let chatScrollbarHideTimer = null;
+  const chatConversationsState = {
+    open: false,
+    identityKey: '',
+  };
 
   const chipRag = document.getElementById('chatChipRag');
   const chipR1 = document.getElementById('chatChipR1');
@@ -482,6 +589,15 @@ document.addEventListener('DOMContentLoaded', () => {
         refreshGreeting();
         historyController?.onAuthChanged?.();
         resetRagPickerState();
+        chatConversationsState.identityKey = '';
+        if (chatConversationsState.open) {
+          getCurrentChatIdentityKey()
+            .then((key) => {
+              chatConversationsState.identityKey = key;
+              renderChatConversations(key);
+            })
+            .catch(() => {});
+        }
       }
     });
   }
@@ -598,10 +714,12 @@ document.addEventListener('DOMContentLoaded', () => {
         clearTimeout(chatScrollbarHideTimer);
         chatScrollbarHideTimer = null;
       }
+      closeChatConversationsPanel();
       closeRagPicker();
       closeChatRagDetailModal();
     } else {
       syncChatFocusMode();
+      requestAnimationFrame(() => positionChatConversationAnchor());
     }
 
     // refresh transcript url when open transcript
@@ -1671,6 +1789,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.addEventListener('resize', () => {
       if (isRagPickerOpen()) positionRagPicker();
+      positionChatConversationAnchor();
     });
 
     document.addEventListener('mousedown', (e) => {
@@ -1819,10 +1938,244 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  function ensureChatEmptyHint() {
+    if (!chatHistory) return;
+    let hint = chatHistory.querySelector('.chat-empty-hint');
+    if (hint) return;
+    hint = document.createElement('div');
+    hint.className = 'chat-empty-hint';
+    hint.innerHTML = '<p class="chat-empty-hint-text">Tôi có thể giúp gì cho bạn?</p>';
+    chatHistory.prepend(hint);
+  }
+
+  function positionChatConversationAnchor() {
+    if (!chatView || !chatHistory) return;
+    if (typeof chatView.getBoundingClientRect !== 'function') return;
+    if (typeof chatHistory.getBoundingClientRect !== 'function') return;
+
+    const viewRect = chatView.getBoundingClientRect();
+    const historyRect = chatHistory.getBoundingClientRect();
+    if (viewRect.width <= 0 || viewRect.height <= 0) return;
+    if (historyRect.width <= 0 || historyRect.height <= 0) return;
+
+    const left = Math.max(8, Math.round(historyRect.left - viewRect.left + 8));
+    const top = Math.max(8, Math.round(historyRect.top - viewRect.top + 8));
+    chatView.style.setProperty('--chat-conv-anchor-left', `${left}px`);
+    chatView.style.setProperty('--chat-conv-anchor-top', `${top}px`);
+
+    if (chatConversationsPanel) {
+      const maxW = Math.max(220, Math.round(historyRect.width - 12));
+      const width = Math.min(360, maxW);
+      chatConversationsPanel.style.width = `${width}px`;
+    }
+  }
+
   function syncChatFocusMode() {
     if (!chatView || !chatHistory) return;
     const hasMessages = chatHistory.querySelector('.msg-row') !== null;
+    const hint = chatHistory.querySelector('.chat-empty-hint');
+    if (hasMessages) {
+      if (hint) hint.remove();
+    } else if (!hint) {
+      ensureChatEmptyHint();
+    }
     chatView.classList.toggle('focus-mode', hasMessages);
+    positionChatConversationAnchor();
+  }
+
+  async function getCurrentChatIdentityKey() {
+    const profile = await getVtAuthProfile();
+    const key = normalizeIdentityKey(authIdentityKeyFromProfile(profile) || 'guest');
+    return key || 'guest';
+  }
+
+  function collectConversationRowsForIdentity(identityKey) {
+    const wanted = normalizeIdentityKey(identityKey || 'guest') || 'guest';
+    const sidNow = getSessionId();
+    const histMap = readChatHistoryMap();
+    const metaMap = readChatSessionMetaMap();
+    const allSessionIds = [...new Set([...Object.keys(histMap), ...Object.keys(metaMap)])];
+    const rows = [];
+
+    for (const sid of allSessionIds) {
+      const sessionId = String(sid || '').trim();
+      if (!sessionId) continue;
+
+      const items = getChatHistoryItems(sessionId);
+      const meta = (metaMap[sessionId] && typeof metaMap[sessionId] === 'object') ? metaMap[sessionId] : {};
+      const rowIdentity = normalizeIdentityKey(meta.identityKey || '');
+
+      // Keep per-user list: strict when row has explicit identity; legacy rows (empty identity) stay visible.
+      if (wanted !== 'guest') {
+        if (rowIdentity && rowIdentity !== wanted) continue;
+      } else if (rowIdentity && rowIdentity !== 'guest') {
+        continue;
+      }
+
+      if (!items.length && !meta.title && sessionId !== sidNow) continue;
+
+      const firstUser = items.find((x) => x?.who === 'user' && String(x?.text || '').trim());
+      const lastMsg = items.length ? items[items.length - 1] : null;
+      const title = chatClipText(
+        meta.title || firstUser?.text || lastMsg?.text || 'Cuộc trò chuyện mới',
+        72
+      );
+      const preview = chatClipText(meta.preview || lastMsg?.text || '', 110);
+      const updatedAt = String(meta.updatedAt || '');
+      const createdAt = String(meta.createdAt || '');
+      const updatedMs = parseDateMs(updatedAt) || parseDateMs(createdAt) || 0;
+      const messageCount = Math.max(0, Number(meta.messageCount || items.length || 0) || 0);
+
+      rows.push({
+        sessionId,
+        title,
+        preview,
+        timeLabel: formatConversationTime(updatedAt || createdAt),
+        updatedMs,
+        messageCount,
+      });
+    }
+
+    rows.sort((a, b) => b.updatedMs - a.updatedMs || String(b.sessionId).localeCompare(String(a.sessionId)));
+    return rows.slice(0, CHAT_CONV_LIST_MAX);
+  }
+
+  function renderChatConversations(identityKey = '') {
+    if (!chatConversationsList || !chatConversationsEmpty) return;
+    const rows = collectConversationRowsForIdentity(identityKey || chatConversationsState.identityKey || 'guest');
+    const currentSid = getSessionId();
+
+    if (!rows.length) {
+      chatConversationsList.innerHTML = '';
+      chatConversationsEmpty.classList.remove('hidden');
+      return;
+    }
+
+    chatConversationsEmpty.classList.add('hidden');
+    chatConversationsList.innerHTML = rows
+      .map((row) => {
+        const activeCls = row.sessionId === currentSid ? ' active' : '';
+        const previewHtml = row.preview
+          ? `<p class="chat-conv-item-preview">${escapeHtml(row.preview)}</p>`
+          : '';
+        const timeHtml = row.timeLabel
+          ? `<div class="chat-conv-item-time">${escapeHtml(row.timeLabel)}${row.messageCount ? ` • ${row.messageCount}` : ''}</div>`
+          : '';
+        return (
+          `<button class="chat-conv-item${activeCls}" type="button" data-chat-session-id="${escapeHtml(row.sessionId)}">` +
+          `<p class="chat-conv-item-title">${escapeHtml(row.title || 'Cuộc trò chuyện')}</p>` +
+          `${previewHtml}${timeHtml}</button>`
+        );
+      })
+      .join('');
+  }
+
+  function syncConversationPanelAfterHistoryChange() {
+    if (!chatConversationsState.open) return;
+    renderChatConversations(chatConversationsState.identityKey || 'guest');
+  }
+
+  function closeChatConversationsPanel() {
+    chatConversationsState.open = false;
+    if (chatConversationsPanel) {
+      chatConversationsPanel.classList.add('hidden');
+      chatConversationsPanel.setAttribute('aria-hidden', 'true');
+    }
+    if (chatConversationsToggle) {
+      chatConversationsToggle.classList.remove('active');
+      chatConversationsToggle.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  async function openChatConversationsPanel() {
+    if (!chatConversationsPanel || !chatConversationsToggle) return;
+    positionChatConversationAnchor();
+    chatConversationsState.identityKey = await getCurrentChatIdentityKey();
+    renderChatConversations(chatConversationsState.identityKey);
+    chatConversationsState.open = true;
+    chatConversationsPanel.classList.remove('hidden');
+    chatConversationsPanel.setAttribute('aria-hidden', 'false');
+    chatConversationsToggle.classList.add('active');
+    chatConversationsToggle.setAttribute('aria-expanded', 'true');
+  }
+
+  async function toggleChatConversationsPanel() {
+    if (chatConversationsState.open) {
+      closeChatConversationsPanel();
+      return;
+    }
+    await openChatConversationsPanel();
+  }
+
+  function switchChatSession(sessionId, opts = {}) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return;
+    try {
+      localStorage.setItem(LS_CHAT_SESSION, sid);
+    } catch {}
+    restoreChatHistory();
+    renderChatConversations(chatConversationsState.identityKey || 'guest');
+    if (opts.focusInput && chatTextArea) chatTextArea.focus();
+    if (opts.closePanel !== false) closeChatConversationsPanel();
+  }
+
+  async function createNewChatConversation() {
+    const sid = 'sess_' + uid();
+    const identityKey = await getCurrentChatIdentityKey();
+    try {
+      localStorage.setItem(LS_CHAT_SESSION, sid);
+    } catch {}
+    upsertChatSessionMeta(sid, {
+      identityKey,
+      title: 'Cuộc trò chuyện mới',
+      preview: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messageCount: 0,
+    });
+    restoreChatHistory();
+    renderChatConversations(identityKey);
+    closeChatConversationsPanel();
+    if (chatTextArea) chatTextArea.focus();
+  }
+
+  function bindChatConversationsUi() {
+    if (chatConversationsToggle) {
+      chatConversationsToggle.addEventListener('click', (e) => {
+        e.preventDefault?.();
+        toggleChatConversationsPanel();
+      });
+    }
+
+    if (chatConversationsNewBtn) {
+      chatConversationsNewBtn.addEventListener('click', () => {
+        createNewChatConversation();
+      });
+    }
+
+    if (chatConversationsList) {
+      chatConversationsList.addEventListener('click', (e) => {
+        const row = e.target?.closest?.('[data-chat-session-id]');
+        if (!row) return;
+        const sid = String(row.getAttribute('data-chat-session-id') || '').trim();
+        if (!sid) return;
+        switchChatSession(sid, { focusInput: true, closePanel: true });
+      });
+    }
+
+    document.addEventListener('mousedown', (e) => {
+      if (!chatConversationsState.open) return;
+      const tgt = e.target;
+      if (!tgt) return;
+      if (chatConversationsPanel && chatConversationsPanel.contains(tgt)) return;
+      if (chatConversationsToggle && chatConversationsToggle.contains(tgt)) return;
+      closeChatConversationsPanel();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (chatConversationsState.open) closeChatConversationsPanel();
+    });
   }
 
   function restoreChatHistory() {
@@ -2040,7 +2393,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const blockedText = '🔒 Bạn cần đăng nhập để dùng Chat.';
       const blockedMeta = nowTime();
       appendBubble('assistant', blockedText, blockedMeta);
-      pushChatHistoryItem('assistant', blockedText, blockedMeta);
+      pushChatHistoryItem('assistant', blockedText, blockedMeta, {
+        identityKey: 'guest',
+        titleHint: blockedText,
+      });
       return;
     }
 
@@ -2052,7 +2408,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const userMeta = nowTime();
     appendBubble('user', rawUserQ, userMeta);
-    pushChatHistoryItem('user', rawUserQ, userMeta);
+    pushChatHistoryItem('user', rawUserQ, userMeta, {
+      identityKey: authIdentityKey,
+      titleHint: rawUserQ,
+    });
 
     const assistBubble = appendBubble('assistant', '…');
     const apiBase = getApiBase();
@@ -2077,7 +2436,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!okBase) {
       const errText = `⚠️ Không kết nối được API ở ${apiBase}. Mở Setting để nhập đúng base (vd: http://127.0.0.1:8000).`;
       if (assistBubble) assistBubble.textContent = errText;
-      pushChatHistoryItem('assistant', errText, nowTime());
+      pushChatHistoryItem('assistant', errText, nowTime(), {
+        identityKey: authIdentityKey,
+        titleHint: rawUserQ,
+      });
       try {
         await persistChatMessageToDb({
           identityKey: authIdentityKey,
@@ -2138,7 +2500,10 @@ document.addEventListener('DOMContentLoaded', () => {
           escapeHtml(assistBubble.textContent + extra) +
           `<span class="meta">${escapeHtml(metaLine)}</span>`;
       }
-      pushChatHistoryItem('assistant', out0, metaLine);
+      pushChatHistoryItem('assistant', out0, metaLine, {
+        identityKey: authIdentityKey,
+        titleHint: rawUserQ,
+      });
       try {
         await persistChatMessageToDb({
           identityKey: authIdentityKey,
@@ -2156,7 +2521,10 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (err) {
       const errText = `⚠️ ${String(err)}`;
       if (assistBubble) assistBubble.textContent = errText;
-      pushChatHistoryItem('assistant', errText, nowTime());
+      pushChatHistoryItem('assistant', errText, nowTime(), {
+        identityKey: authIdentityKey,
+        titleHint: rawUserQ,
+      });
       try {
         await persistChatMessageToDb({
           identityKey: authIdentityKey,
@@ -2200,6 +2568,7 @@ document.addEventListener('DOMContentLoaded', () => {
   sendTranscriptModes();
 
   bindRagPickerEvents();
+  bindChatConversationsUi();
   bindChatHistoryScrollbarAutoHide();
   applyChatTogglesUI();
   updateRagPickerPinUi();

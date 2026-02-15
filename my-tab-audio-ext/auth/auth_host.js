@@ -36,6 +36,7 @@
   const profRemoveBtn = document.getElementById("vtProfileRemoveAvatar");
   const profAvatarUrl = document.getElementById("vtProfileAvatarUrl");
   const profEmailInp = document.getElementById("vtProfileEmail");
+  const profPhoneInp = document.getElementById("vtProfilePhone");
   const profNameInp = document.getElementById("vtProfileFullName");
   const profCancelBtn = document.getElementById("vtProfileCancel");
   const profSaveBtn = document.getElementById("vtProfileSave");
@@ -441,6 +442,31 @@
     return Array.isArray(arr) && arr.length ? arr[0] : null;
   }
 
+  async function supaSelectUserById(id) {
+    const idEnc = encodeURIComponent(String(id));
+    const res = await supaFetch(
+      `/rest/v1/users?id=eq.${idEnc}&select=id,email,phone,status,auth_provider&limit=1`
+    );
+    if (!res.ok) return null;
+    const arr = await res.json().catch(() => []);
+    return Array.isArray(arr) && arr.length ? arr[0] : null;
+  }
+
+  async function supaPatchUserById(id, patch) {
+    const idEnc = encodeURIComponent(String(id));
+    const res = await supaFetch(`/rest/v1/users?id=eq.${idEnc}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(patch || {}),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(t || "Update users failed");
+    }
+    const arr = await res.json().catch(() => []);
+    return Array.isArray(arr) && arr.length ? arr[0] : patch;
+  }
+
   async function tryBackfillSessionUserId() {
     const prof = currentSession?.profile || null;
     if (!prof) return;
@@ -600,7 +626,9 @@
   // ========= My Account flow =========
   function profileFormValid() {
     const name = String(profNameInp?.value || "").trim();
-    return name.length >= 2;
+    const phoneRaw = String(profPhoneInp?.value || "").trim();
+    const phone = normalizePhone(phoneRaw);
+    return name.length >= 2 && phoneValueValid(phone);
   }
 
   function refreshProfileSaveBtn() {
@@ -629,15 +657,21 @@
     return false;
   }
 
+  function normalizePhone(v) {
+    return String(v || "").replace(/\D+/g, "");
+  }
+
+  function phoneValueValid(v) {
+    const s = String(v || "").trim();
+    if (!s) return true;
+    return /^\d{8,20}$/.test(s);
+  }
+
   async function openMyAccountScreen() {
     try {
       if (!currentSession?.profile) return openAuthOverlay("#login");
       if (!supaReady()) {
         toastAccount("Thiếu SUPABASE_URL / SUPABASE_KEY (auth/config.js)");
-        return;
-      }
-      if (!pickSupabaseAccessToken(currentSession)) {
-        toastAccount("RLS đang để authenticated. Phiên hiện tại chưa có Supabase JWT.");
         return;
       }
 
@@ -651,8 +685,9 @@
 
       const email = ss.email;
       const id = ss.id;
-
-      if (profEmailInp) profEmailInp.value = email;
+      const dbu = await supaSelectUserById(id);
+      if (profEmailInp) profEmailInp.value = String(dbu?.email || email || "");
+      if (profPhoneInp) profPhoneInp.value = String(dbu?.phone || currentSession.profile?.phone || "");
 
       const dbp = await supaSelectUserProfileById(id);
 
@@ -703,9 +738,21 @@
         return;
       }
 
+      const phoneRaw = String(profPhoneInp?.value || "").trim();
+      const phone = normalizePhone(phoneRaw);
+      if (!phoneValueValid(phone)) {
+        toastProfile("Số điện thoại không hợp lệ. Chỉ nhập số, độ dài 8-20 ký tự.");
+        return;
+      }
+      if (profPhoneInp) profPhoneInp.value = phone;
+
       setSaving(true);
 
       const locale = (navigator.language || "vi").toLowerCase();
+      const userRow = await supaPatchUserById(id, {
+        phone: phone || null,
+        last_login_at: new Date().toISOString(),
+      });
 
       const row = await supaUpsertUserProfile({
         id,
@@ -720,6 +767,7 @@
         ...(currentSession.profile || {}),
         name: row.full_name || full_name,
         picture: row.avatar_url || avatar_url || "",
+        phone: String(userRow?.phone || phone || ""),
       };
 
       const newSession = {
@@ -872,6 +920,8 @@
     renderProfilePreview(name, avatar);
     refreshProfileSaveBtn();
   });
+
+  profPhoneInp?.addEventListener("input", refreshProfileSaveBtn);
 
   profNameInp?.addEventListener("input", () => {
     const avatar = String(profAvatarUrl?.value || "").trim();
