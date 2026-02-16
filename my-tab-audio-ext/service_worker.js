@@ -30,7 +30,7 @@ import {
 // -------------------- Global state --------------------
 // current: { tabId, server, finalWsUrl, startedAt, panelOpen, starting }
 let current = null;
-let currentModes = { en: false, vi: false, voice: false };
+let currentModes = { en: false, vi: false, voice: false, record: false };
 let wantTranslateVI = false;
 let transcriptPersist = null;
 
@@ -601,7 +601,7 @@ function tabCaptureGetStreamId(targetTabId) {
 }
 
 // ✅ tabCapture FIRST
-async function startCaptureOnTab(tabId, wsUrl, auth = null, strictWs = true) {
+async function startCaptureOnTab(tabId, wsUrl, auth = null, strictWs = true, recording = null) {
   if (!wsUrl) throw new Error("Missing server");
 
   await ensureOffscreen();
@@ -630,13 +630,20 @@ async function startCaptureOnTab(tabId, wsUrl, auth = null, strictWs = true) {
   }
 
   if (streamId) {
-    const resp = await chrome.runtime.sendMessage({
-      __cmd: "__OFFSCREEN_START__",
-      payload: { streamId, server: wsUrl, auth, captureSource: "tab", strictWs },
-    });
-    if (!resp?.ok) throw new Error(resp?.error || "OFFSCREEN_START_FAILED");
-    maybeUpdateTranslator();
-    return;
+    let resp = null;
+    try {
+      resp = await chrome.runtime.sendMessage({
+        __cmd: "__OFFSCREEN_START__",
+        payload: { streamId, server: wsUrl, auth, captureSource: "tab", strictWs, recording },
+      });
+    } catch (e) {
+      resp = { ok: false, error: String(e?.message || e) };
+    }
+    if (resp?.ok) {
+      maybeUpdateTranslator();
+      return;
+    }
+    warn("OFFSCREEN_START tab failed -> fallback displayMedia. err=", String(resp?.error || "OFFSCREEN_START_FAILED"));
   }
 
   // 2) displayMedia fallback
@@ -649,7 +656,7 @@ async function startCaptureOnTab(tabId, wsUrl, auth = null, strictWs = true) {
   try {
     resp2 = await chrome.runtime.sendMessage({
       __cmd: "__OFFSCREEN_START__",
-      payload: { server: wsUrl, auth, captureSource: "display", strictWs },
+      payload: { server: wsUrl, auth, captureSource: "display", strictWs, recording },
     });
   } catch (e) {
     resp2 = { ok: false, error: String(e) };
@@ -665,13 +672,16 @@ async function stopCapture() {
   // Mark stopped immediately so late packets from previous run are ignored.
   setCurrentStopped();
 
-  try { await chrome.runtime.sendMessage({ __cmd: "__OFFSCREEN_STOP__" }); } catch {}
+  const offscreenStopPromise = chrome.runtime
+    .sendMessage({ __cmd: "__OFFSCREEN_STOP__" })
+    .catch(() => null);
 
   // Clear + remove overlay so next run starts from a clean visual state.
   if (tabId != null) {
     try { await safeSendTab(tabId, { __cmd: "__OVERLAY_RESET__", payload: { keepMode: false, showDots: false } }); } catch {}
     await removeOverlay(tabId);
   }
+  try { await offscreenStopPromise; } catch {}
 
   maybeUpdateTranslator(true);
   if (transcriptPersist) {
@@ -998,7 +1008,8 @@ function normalizeModes(raw) {
   const en = !!(m.en ?? m.subtitle ?? m.caption ?? m.phude);
   const vi = !!(m.vi ?? m.subtitle_vi ?? m.translate ?? m.dichphude);
   const voice = !!(m.voice ?? m.tts ?? m.giongnoi);
-  return { en, vi, voice };
+  const record = !!(m.record ?? m.rec ?? m.recording ?? m.ghi);
+  return { en, vi, voice, record };
 }
 
 // -------------------- ✅ Stop capture if user logs out while running --------------------
@@ -1061,6 +1072,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else if (s === "error") {
         // đảm bảo không giữ trạng thái running/starting giả nếu offscreen lỗi
         setCurrentStopped();
+      } else if (s === "recording-saved") {
+        log("recording saved:", p);
+      } else if (s === "recording-error") {
+        warn("recording error:", p);
+        if (current?.tabId) {
+          await notifyPanel(current.tabId, {
+            level: "info",
+            text: `Ghi video lỗi (${String(p?.stage || "unknown")}): ${String(p?.error || "unknown")}`,
+            detail: p,
+          });
+        }
       }
 
       // logs
@@ -1258,8 +1280,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           langTgt: wantTranslateVI ? "vi" : "",
         });
         try { await transcriptPersist.start(); } catch {}
+        const trSessionId = transcriptPersist?.getSessionId?.() || "";
+        const recordingEnabled = !!currentModes.record && !!userId;
+        if (currentModes.record && !recordingEnabled) {
+          await notifyPanel(tab.id, {
+            level: "info",
+            text: "Không thể bật Ghi vì chưa xác định được user id hợp lệ.",
+          });
+        }
+        const recording =
+          recordingEnabled
+            ? {
+              enabled: true,
+              userId: userId || "",
+              authToken: supaAuthToken || "",
+              trSessionId: trSessionId ? String(trSessionId) : "",
+              tabUrl: tab.url || "",
+              sttServer: server,
+            }
+            : { enabled: false };
 
-        await startCaptureOnTab(tab.id, finalWsUrl, auth, strictWs);
+        await startCaptureOnTab(tab.id, finalWsUrl, auth, strictWs, recording);
 
         current = current || {};
         current.server = server;

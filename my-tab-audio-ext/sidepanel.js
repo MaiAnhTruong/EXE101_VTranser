@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const LS_MODE_EN = 'sttModeEn';
   const LS_MODE_VI = 'sttModeVi';
   const LS_MODE_VOICE = 'sttModeVoice';
+  const LS_MODE_RECORD = 'sttModeRecord';
 
   // Persist chat toggles
   const LS_CHAT_USE_RAG = 'sttChatUseRag';
@@ -528,6 +529,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const subtitleBtn = document.getElementById('btn-subtitle');            // EN
   const subtitleTransBtn = document.getElementById('btn-subtitle-trans'); // VI translate
   const voiceBtn = document.getElementById('btn-voice');
+  const recordBtn = document.getElementById('btn-record');
 
   // ===== Auth open helper =====
   function openAuthOverlayFromPanel() {
@@ -639,7 +641,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const modes = {
     en: readBoolLS(LS_MODE_EN, true),
     vi: readBoolLS(LS_MODE_VI, false),
-    voice: readBoolLS(LS_MODE_VOICE, false)
+    voice: readBoolLS(LS_MODE_VOICE, false),
+    record: readBoolLS(LS_MODE_RECORD, false),
   };
 
   function setBtnActive(btn, on) {
@@ -654,16 +657,18 @@ document.addEventListener('DOMContentLoaded', () => {
     setBtnActive(subtitleBtn, modes.en);
     setBtnActive(subtitleTransBtn, modes.vi);
     setBtnActive(voiceBtn, modes.voice);
+    setBtnActive(recordBtn, modes.record);
 
     writeBoolLS(LS_MODE_EN, modes.en);
     writeBoolLS(LS_MODE_VI, modes.vi);
     writeBoolLS(LS_MODE_VOICE, modes.voice);
+    writeBoolLS(LS_MODE_RECORD, modes.record);
   }
 
   function sendTranscriptModes() {
     if (!hasChromeRuntime) return;
     applyModesToUI();
-    const payload = { en: !!modes.en, vi: !!modes.vi, voice: !!modes.voice };
+    const payload = { en: !!modes.en, vi: !!modes.vi, voice: !!modes.voice, record: !!modes.record };
     try {
       chrome.runtime.sendMessage({ __cmd: '__TRANSCRIPT_MODES__', payload });
     } catch {}
@@ -689,6 +694,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (voiceBtn) {
       voiceBtn.addEventListener('click', () => {
         modes.voice = !modes.voice;
+        sendTranscriptModes();
+      });
+    }
+
+    if (recordBtn) {
+      recordBtn.addEventListener('click', () => {
+        modes.record = !modes.record;
         sendTranscriptModes();
       });
     }

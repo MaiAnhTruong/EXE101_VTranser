@@ -36,6 +36,23 @@
   let bytesSent = 0;
   let chunksSent = 0;
 
+  const SUPABASE_URL = "https://izziphjuznnzhcdbbptw.supabase.co";
+  const SUPABASE_KEY = "sb_publishable_YNUg4THwvvBurGGn59s8Kg_OSkVpVfh";
+  const STORAGE_BUCKET_CANDIDATES = [
+    "video-recordings",
+    "video_recordings",
+    "recordings",
+    "videos",
+    "vtranser-recordings",
+  ];
+
+  let recordCfg = null;
+  let recordStream = null;
+  let mediaRecorder = null;
+  let recorderChunks = [];
+  let recorderMimeType = "";
+  let recorderStartedAt = 0;
+
   // ---- handshake control ----
   let handshakeResolve = null;
   let handshakeReject = null;
@@ -103,6 +120,301 @@
     connectTimer = null;
   }
 
+  function parseDbId(v) {
+    const s = String(v ?? "").trim();
+    return /^\d+$/.test(s) ? s : "";
+  }
+
+  function toIso(v) {
+    const t = Date.parse(String(v || ""));
+    if (Number.isFinite(t)) return new Date(t).toISOString();
+    return new Date().toISOString();
+  }
+
+  function supaHeaders(authToken = "", extra = {}) {
+    const bearer = String(authToken || "").trim() || SUPABASE_KEY;
+    return {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${bearer}`,
+      ...extra,
+    };
+  }
+
+  function pickRecorderMimeType() {
+    if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
+    const cands = [
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm;codecs=h264,opus",
+      "video/webm",
+    ];
+    for (const mt of cands) {
+      try {
+        if (MediaRecorder.isTypeSupported(mt)) return mt;
+      } catch {}
+    }
+    return "";
+  }
+
+  async function sha256Hex(blob) {
+    try {
+      const ab = await blob.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", ab);
+      const arr = Array.from(new Uint8Array(digest));
+      return arr.map((b) => b.toString(16).padStart(2, "0")).join("");
+    } catch {
+      return "";
+    }
+  }
+
+  function encodeStoragePath(path) {
+    return String(path || "")
+      .split("/")
+      .map((x) => encodeURIComponent(x))
+      .join("/");
+  }
+
+  async function uploadBlobToStorage(blob, cfg) {
+    const uid = parseDbId(cfg?.userId);
+    if (!uid || !blob || !blob.size) return { ok: false, error: "NO_VIDEO_BLOB" };
+
+    const trSessionId = parseDbId(cfg?.trSessionId) || "na";
+    const started = new Date(Number(cfg?.startedAt || Date.now()));
+    const ts = started.toISOString().replace(/[:.]/g, "-");
+    const ext = String(blob.type || "").includes("mp4") ? "mp4" : "webm";
+    const path = `users/${uid}/transcript/${trSessionId}/${ts}.${ext}`;
+    const encodedPath = encodeStoragePath(path);
+
+    for (const bucket of STORAGE_BUCKET_CANDIDATES) {
+      const url = `${SUPABASE_URL}/storage/v1/object/${encodeURIComponent(bucket)}/${encodedPath}`;
+      try {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: supaHeaders(cfg?.authToken || "", {
+            "content-type": blob.type || "video/webm",
+            "x-upsert": "true",
+          }),
+          body: blob,
+        });
+        if (!r.ok) continue;
+        return { ok: true, fileUri: `supabase://${bucket}/${path}`, bucket, path };
+      } catch {}
+    }
+    return { ok: false, error: "STORAGE_UPLOAD_FAILED" };
+  }
+
+  async function insertVideoRecordingFlexible(row, cfg) {
+    let body = { ...(row || {}) };
+    for (let i = 0; i < 10; i++) {
+      let r = null;
+      try {
+        r = await fetch(`${SUPABASE_URL}/rest/v1/video_recordings`, {
+          method: "POST",
+          headers: supaHeaders(cfg?.authToken || "", {
+            "content-type": "application/json",
+            Prefer: "return=representation",
+          }),
+          body: JSON.stringify(body),
+        });
+      } catch (e) {
+        return { ok: false, error: `VIDEO_RECORDINGS_INSERT_FETCH: ${String(e?.message || e)}` };
+      }
+      if (r.ok) {
+        const j = await r.json().catch(() => []);
+        return { ok: true, row: Array.isArray(j) ? (j[0] || null) : null };
+      }
+      const txt = await r.text().catch(() => "");
+      const m = String(txt).match(/Could not find the '([^']+)' column/i);
+      if (m && body[m[1]] !== undefined) {
+        delete body[m[1]];
+        continue;
+      }
+      return { ok: false, error: `VIDEO_RECORDINGS_INSERT_${r.status}: ${txt || "failed"}` };
+    }
+    return { ok: false, error: "VIDEO_RECORDINGS_INSERT_RETRY_EXCEEDED" };
+  }
+
+  async function persistRecordedBlob(blob, cfg = {}) {
+    const uid = parseDbId(cfg?.userId);
+    if (!uid) return { ok: false, error: "USER_ID_INVALID" };
+    if (!blob || !blob.size) return { ok: false, error: "EMPTY_VIDEO_BLOB" };
+
+    const startedAt = Number(cfg?.startedAt || Date.now());
+    const endedAt = Number(cfg?.endedAt || Date.now());
+    const durationMs = Math.max(0, endedAt - startedAt);
+
+    let fileUrl = "";
+    let uploadOk = false;
+    let uploadErr = "";
+    const upload = await uploadBlobToStorage(blob, cfg);
+    if (upload.ok) {
+      fileUrl = upload.fileUri;
+      uploadOk = true;
+    } else {
+      uploadErr = String(upload?.error || "STORAGE_UPLOAD_FAILED");
+      fileUrl = `recording://upload-failed/${Date.now()}`;
+    }
+
+    const trSessionId = parseDbId(cfg?.trSessionId);
+    const checksum = await sha256Hex(blob);
+    const baseRow = {
+      user_id: uid,
+      tr_session_id: trSessionId || null,
+      chat_session_id: null,
+      started_at: toIso(startedAt),
+      ended_at: toIso(endedAt),
+      duration_ms: durationMs,
+      file_url: fileUrl,
+      size_bytes: String(blob.size),
+      mime_type: String(blob.type || "video/webm"),
+      checksum: checksum || null,
+      storage_class: "hot",
+      encryption_key_id: null,
+      status: uploadOk ? "ready" : "processing",
+      constent_flag: "true",
+      consent_flag: "true",
+      purpose: "feature",
+      retention_until: toIso(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      preview_url: null,
+      caption_file_url: null,
+    };
+
+    let out = await insertVideoRecordingFlexible(baseRow, cfg);
+
+    // If FK is strict or stale id happened, fallback to nullable FK columns.
+    if (!out?.ok && /23503|foreign key/i.test(String(out.error || ""))) {
+      out = await insertVideoRecordingFlexible(
+        { ...baseRow, tr_session_id: null, chat_session_id: null },
+        cfg
+      );
+    }
+    if (!out?.ok && /23503|foreign key/i.test(String(out.error || ""))) {
+      out = await insertVideoRecordingFlexible(
+        { ...baseRow, user_id: null, tr_session_id: null, chat_session_id: null },
+        cfg
+      );
+    }
+
+    if (!out?.ok && uploadErr) {
+      return { ok: false, error: `${String(out.error || "SAVE_FAILED")} | ${uploadErr}` };
+    }
+    return out;
+  }
+
+  function clearVideoRecorderState() {
+    try {
+      if (mediaRecorder) {
+        mediaRecorder.ondataavailable = null;
+        mediaRecorder.onstop = null;
+        mediaRecorder.onerror = null;
+      }
+    } catch {}
+    mediaRecorder = null;
+    recordStream = null;
+    recorderChunks = [];
+    recorderMimeType = "";
+    recorderStartedAt = 0;
+    recordCfg = null;
+  }
+
+  async function startVideoRecorderIfNeeded(stream, cfg = {}) {
+    if (!cfg || !cfg.enabled) return;
+    if (typeof MediaRecorder === "undefined") {
+      throw new Error("MEDIA_RECORDER_UNSUPPORTED");
+    }
+    const vTracks = stream?.getVideoTracks?.() || [];
+    const aTracks = stream?.getAudioTracks?.() || [];
+    if (!vTracks.length) {
+      throw new Error("NO_VIDEO_TRACK");
+    }
+    const mimeType = pickRecorderMimeType();
+    const mixed = new MediaStream([...vTracks, ...aTracks]);
+    const rec = mimeType
+      ? new MediaRecorder(mixed, { mimeType, videoBitsPerSecond: 2_000_000 })
+      : new MediaRecorder(mixed);
+
+    recorderChunks = [];
+    recorderMimeType = rec.mimeType || mimeType || "video/webm";
+    recorderStartedAt = Date.now();
+    recordCfg = {
+      ...cfg,
+      userId: parseDbId(cfg.userId),
+      trSessionId: parseDbId(cfg.trSessionId),
+      startedAt: recorderStartedAt,
+    };
+    recordStream = mixed;
+    mediaRecorder = rec;
+
+    rec.ondataavailable = (ev) => {
+      const d = ev?.data;
+      if (d && d.size > 0) recorderChunks.push(d);
+    };
+    rec.onerror = (ev) => {
+      sendStatus({ state: "recording-error", stage: "runtime", error: String(ev?.error?.message || "RECORDER_ERROR") });
+    };
+
+    rec.start(1000);
+    sendStatus({ state: "recording-started", mimeType: recorderMimeType });
+  }
+
+  async function stopVideoRecorderAndPersist(reason = "stop") {
+    if (!mediaRecorder && !recordCfg) return;
+
+    try {
+      const rec = mediaRecorder;
+      if (rec && rec.state !== "inactive") {
+        await new Promise((resolve) => {
+          const done = () => resolve();
+          rec.onstop = done;
+          try { rec.requestData(); } catch {}
+          try { rec.stop(); } catch { resolve(); }
+          setTimeout(resolve, 3000);
+        });
+      }
+
+      const chunks = recorderChunks.slice();
+      const mimeType = recorderMimeType || "video/webm";
+      const startedAt = Number(recordCfg?.startedAt || recorderStartedAt || Date.now());
+      const endedAt = Date.now();
+      const blob = chunks.length ? new Blob(chunks, { type: mimeType }) : null;
+
+      if (!blob || !blob.size) {
+        sendStatus({ state: "recording-error", stage: "finalize", error: "EMPTY_VIDEO_BLOB", reason });
+        return;
+      }
+
+      const persistCfg = { ...(recordCfg || {}), startedAt, endedAt };
+      let out = null;
+      try {
+        out = await persistRecordedBlob(blob, persistCfg);
+      } catch (e) {
+        out = { ok: false, error: `PERSIST_THROW: ${String(e?.message || e)}` };
+      }
+      if (!out?.ok) {
+        sendStatus({ state: "recording-error", stage: "persist", error: String(out?.error || "SAVE_FAILED"), reason });
+      } else {
+        sendStatus({
+          state: "recording-saved",
+          reason,
+          size_bytes: blob.size,
+          duration_ms: Math.max(0, endedAt - startedAt),
+          tr_session_id: parseDbId(recordCfg?.trSessionId) || null,
+        });
+      }
+    } catch (e) {
+      sendStatus({ state: "recording-error", stage: "stop", error: String(e?.message || e), reason });
+    } finally {
+      try {
+        if (recordStream) {
+          for (const t of recordStream.getTracks()) {
+            try { t.stop(); } catch {}
+          }
+        }
+      } catch {}
+      clearVideoRecorderState();
+    }
+  }
+
   function safeSendText(socket, obj) {
     try {
       socket.send(JSON.stringify(obj));
@@ -162,6 +474,8 @@
     try { if (silentGain) silentGain.disconnect(); } catch {}
     try { if (monitorGain) monitorGain.disconnect(); } catch {}
 
+    await stopVideoRecorderAndPersist(reason);
+
     srcNode = null;
     workletNode = null;
     silentGain = null;
@@ -190,24 +504,28 @@
     sendStatus({ state: "stopped", reason });
   }
 
-  async function getTabCaptureStream(streamId) {
+  async function getTabCaptureStream(streamId, keepVideo = false) {
     const constraints = {
       audio: { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId } },
-      video: false
+      video: keepVideo
+        ? { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId, maxFrameRate: 30 } }
+        : false
     };
-    return await navigator.mediaDevices.getUserMedia(constraints);
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    if (!keepVideo) {
+      try { for (const vt of stream.getVideoTracks()) { try { vt.stop(); } catch {} } } catch {}
+      return new MediaStream(stream.getAudioTracks());
+    }
+    return stream;
   }
 
-  async function getDisplayMediaStream() {
+  async function getDisplayMediaStream(keepVideo = false) {
     sendStatus({ state: "picker", stage: "getDisplayMedia", note: "Chọn TAB và bật 'Share audio'." });
 
     const stream = await navigator.mediaDevices.getDisplayMedia({
       audio: true,
       video: true
     });
-
-    // stop video tracks (we only need audio)
-    try { for (const vt of stream.getVideoTracks()) { try { vt.stop(); } catch {} } } catch {}
 
     const aTracks = stream.getAudioTracks();
     if (!aTracks.length) {
@@ -222,7 +540,11 @@
       });
     } catch {}
 
-    return new MediaStream(aTracks);
+    if (!keepVideo) {
+      try { for (const vt of stream.getVideoTracks()) { try { vt.stop(); } catch {} } } catch {}
+      return new MediaStream(aTracks);
+    }
+    return stream;
   }
 
   async function handleServerTextMessage(text) {
@@ -409,6 +731,7 @@
       server,
       captureSource,
       auth,
+      recording,
       strictWs: strictFlag,
       connectTimeoutMs,
       handshakeTimeoutMs,
@@ -417,6 +740,8 @@
     if (!server) throw new Error("Missing server");
 
     strictWs = !!strictFlag;
+    const recCfg = (recording && typeof recording === "object") ? recording : { enabled: false };
+    const wantRecordVideo = !!recCfg.enabled;
 
     await stopAll("restart");
 
@@ -426,18 +751,19 @@
       streamId: streamId ? String(streamId).slice(0, 10) + "..." : null,
       strictWs,
       connectTimeoutMs,
-      handshakeTimeoutMs
+      handshakeTimeoutMs,
+      wantRecordVideo,
     });
 
-    sendStatus({ state: "starting", captureSource, strictWs });
+    sendStatus({ state: "starting", captureSource, strictWs, wantRecordVideo });
 
     // 1) get media stream
     try {
       if (captureSource === "display") {
-        mediaStream = await getDisplayMediaStream();
+        mediaStream = await getDisplayMediaStream(wantRecordVideo);
       } else {
         if (!streamId) throw new Error("Missing streamId");
-        mediaStream = await getTabCaptureStream(streamId);
+        mediaStream = await getTabCaptureStream(streamId, wantRecordVideo);
       }
     } catch (e) {
       log("get media failed:", e?.name, e?.message);
@@ -456,6 +782,15 @@
     if (!aTracks.length) {
       sendStatus({ state: "error", stage: "no-audio", error: "NO_AUDIO_TRACK" });
       throw new Error("NO_AUDIO_TRACK");
+    }
+
+    if (wantRecordVideo) {
+      try {
+        await startVideoRecorderIfNeeded(mediaStream, recCfg);
+      } catch (e) {
+        sendStatus({ state: "recording-error", stage: "init", error: String(e?.message || e) });
+        throw e;
+      }
     }
 
     // 2) audio graph + worklet
