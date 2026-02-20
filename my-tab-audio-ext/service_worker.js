@@ -11,7 +11,7 @@
 // - Ưu tiên tabCapture trước, fallback getDisplayMedia sau.
 // - Không nuốt lỗi inject overlay (log rõ và ném lỗi để panel thấy).
 // - __OVERLAY_PING__ không spam warning nếu chưa có receiver.
-// - Default bật EN mode khi start nếu chưa có mode.
+// - Mode EN/VI độc lập: bật cái nào thì hiện cái đó, không auto-force.
 // - AUTH REQUIRED: bắt buộc đăng nhập mới được dùng (START/CHAT...)
 
 import { createTranscriptPersist } from "./sw/transcript_persist.js";
@@ -806,6 +806,8 @@ let trDbg = {
   lastTxStableSeq: -1,
   lastRxViSeq: -1,
 };
+let lastTranslatorNotifyAt = 0;
+let lastTranslatorNotifyText = "";
 
 function maybeLogTranslatorRate() {
   if (!TRANS_DEBUG) return;
@@ -858,6 +860,8 @@ function disconnectTranslator(hard = false) {
   if (hard) {
     transBackoffMs = 500;
     lastSentStableSeq = -1;
+    lastTranslatorNotifyAt = 0;
+    lastTranslatorNotifyText = "";
 
     // ✅ CRITICAL: clear cached stable from previous session
     lastEnStable = { full: "", seq: 0, t_ms: 0 };
@@ -1009,7 +1013,22 @@ async function connectTranslator() {
 
       if (typ === "error") {
         trDbg.rxError++;
-        twarn("Translator error:", obj.error || obj);
+        const trErrText = String(obj.error || obj.message || obj.detail || "Translator error");
+        twarn("Translator error:", trErrText);
+        if (current?.tabId) {
+          const now = Date.now();
+          if (
+            trErrText !== lastTranslatorNotifyText ||
+            (now - lastTranslatorNotifyAt) >= 8000
+          ) {
+            lastTranslatorNotifyAt = now;
+            lastTranslatorNotifyText = trErrText;
+            await notifyPanel(current.tabId, {
+              level: "info",
+              text: `Phiên dịch tạm thời không khả dụng: ${trErrText}`,
+            });
+          }
+        }
         maybeLogTranslatorRate();
         return;
       }
@@ -1234,14 +1253,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       const authSess = await requireAuthOrFail({ action: "start", tabId: tab.id, sendResponse });
       if (!authSess) return;
-
-      // default mode: bật EN để dễ thấy overlay
-      if (!currentModes.en && !currentModes.vi && !currentModes.voice) {
-        currentModes.en = true;
-        currentModes.vi = false;
-        currentModes.voice = false;
-        wantTranslateVI = false;
-      }
 
       // nếu đang chạy ở tab khác -> stop
       if (current?.startedAt && current.tabId !== tab.id) {

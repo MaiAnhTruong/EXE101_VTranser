@@ -144,25 +144,32 @@ SEG_MIN_WORDS = int(os.getenv("SEG_MIN_WORDS", "3"))
 SEG_MAX_WORDS = int(os.getenv("SEG_MAX_WORDS", "12"))
 SEG_MAX_CHARS = int(os.getenv("SEG_MAX_CHARS", "140"))
 
-DRAFT_MIN_WORDS = _int_env("DRAFT_MIN_WORDS", max(4, SEG_MIN_WORDS + 1))
+DRAFT_MIN_WORDS = _int_env("DRAFT_MIN_WORDS", max(3, SEG_MIN_WORDS))
 DRAFT_MAX_CHARS = _int_env("DRAFT_MAX_CHARS", SEG_MAX_CHARS)
-DRAFT_SEND_EVERY_MS = _int_env("DRAFT_SEND_EVERY_MS", 220)
+DRAFT_SEND_EVERY_MS = _int_env("DRAFT_SEND_EVERY_MS", 180)
 
 # ===== translate on stable text but lag by N words =====
 TR_DELAY_WORDS = _int_env("TR_DELAY_WORDS", 2)
 TR_DELAY_RELEASE_MS = _int_env("TR_DELAY_RELEASE_MS", int(max(900, SEG_PAUSE_MS * 1.4)))
+TR_DELAY_ADAPTIVE = _bool_env("TR_DELAY_ADAPTIVE", True)
+TR_DELAY_WORDS_MIN = _int_env("TR_DELAY_WORDS_MIN", 0)
+TR_DELAY_WORDS_MAX = _int_env("TR_DELAY_WORDS_MAX", max(4, TR_DELAY_WORDS + 1))
+TR_DELAY_PUNCT_DISCOUNT = _int_env("TR_DELAY_PUNCT_DISCOUNT", 2)
+TR_DELAY_STOPWORD_BONUS = _int_env("TR_DELAY_STOPWORD_BONUS", 1)
+TR_RELEASE_FAST_MS = _int_env("TR_RELEASE_FAST_MS", max(320, int(SEG_PAUSE_MS * 0.75)))
+TR_RELEASE_SLOW_MS = _int_env("TR_RELEASE_SLOW_MS", int(max(TR_DELAY_RELEASE_MS, SEG_PAUSE_MS * 1.6)))
 
 ENABLE_BEAT_COMMIT = _bool_env("ENABLE_BEAT_COMMIT", True)
 BEAT_STABLE_COUNT = _int_env("BEAT_STABLE_COUNT", 2)
-BEAT_COMMIT_MIN_WORDS = _int_env("BEAT_COMMIT_MIN_WORDS", max(7, SEG_MIN_WORDS + 4))
-BEAT_COMMIT_MIN_CHARS = _int_env("BEAT_COMMIT_MIN_CHARS", 28)
+BEAT_COMMIT_MIN_WORDS = _int_env("BEAT_COMMIT_MIN_WORDS", max(5, SEG_MIN_WORDS + 2))
+BEAT_COMMIT_MIN_CHARS = _int_env("BEAT_COMMIT_MIN_CHARS", 20)
 
 STABLE_NONPREFIX_LOG_EVERY_MS = int(os.getenv("STABLE_NONPREFIX_LOG_EVERY_MS", "1200"))
 STABLE_OVERLAP_MAX_CHARS = int(os.getenv("STABLE_OVERLAP_MAX_CHARS", "220"))
 STABLE_OVERLAP_MIN_CHARS = int(os.getenv("STABLE_OVERLAP_MIN_CHARS", "10"))
 
 HARD_REWRITE_TAIL_CHARS = _int_env("HARD_REWRITE_TAIL_CHARS", STABLE_OVERLAP_MAX_CHARS)
-PUNCT_STABLE_COUNT = _int_env("PUNCT_STABLE_COUNT", BEAT_STABLE_COUNT if ENABLE_BEAT_COMMIT else 1)
+PUNCT_STABLE_COUNT = _int_env("PUNCT_STABLE_COUNT", 1)
 PUNCT_MAX_WAIT_MS = _int_env("PUNCT_MAX_WAIT_MS", int(SEG_PAUSE_MS))
 
 AUTO_BASELINE_ON_TRUNC = _bool_env("AUTO_BASELINE_ON_TRUNC", True)
@@ -175,6 +182,13 @@ REANCHOR_MIN_COMMITTED = _int_env("REANCHOR_MIN_COMMITTED", 60)
 REANCHOR_MAX_TAIL_CHARS = _int_env("REANCHOR_MAX_TAIL_CHARS", 160)
 REANCHOR_MIN_TAIL_CHARS = _int_env("REANCHOR_MIN_TAIL_CHARS", 40)
 REANCHOR_ADVANCE_MAX = _int_env("REANCHOR_ADVANCE_MAX", 64)
+
+TR_DELAY_WORDS_MIN = max(0, int(TR_DELAY_WORDS_MIN))
+TR_DELAY_WORDS_MAX = max(TR_DELAY_WORDS_MIN, int(TR_DELAY_WORDS_MAX))
+TR_DELAY_PUNCT_DISCOUNT = max(0, int(TR_DELAY_PUNCT_DISCOUNT))
+TR_DELAY_STOPWORD_BONUS = max(0, int(TR_DELAY_STOPWORD_BONUS))
+TR_RELEASE_FAST_MS = max(120, int(TR_RELEASE_FAST_MS))
+TR_RELEASE_SLOW_MS = max(TR_RELEASE_FAST_MS, int(TR_RELEASE_SLOW_MS))
 
 
 # ---------- Lazy MT init (with backoff + lock) ----------
@@ -459,13 +473,80 @@ def _drop_last_n_word_tokens(text: str, n_words: int) -> Tuple[str, str]:
     return kept, tail
 
 
+def _tail_last_lexeme(text: str) -> str:
+    toks = re.findall(r"\S+", text or "")
+    if not toks:
+        return ""
+    return toks[-1].strip(_STRIP_PUNCT).lower()
+
+
+def _adaptive_delay_words(full_norm: str, base_delay_words: int) -> int:
+    t = (full_norm or "").strip()
+    if not t:
+        return 0
+
+    base = max(0, int(base_delay_words))
+    if not TR_DELAY_ADAPTIVE:
+        return base
+
+    wc = _word_count(t)
+    if wc <= 1:
+        return 0
+
+    hold = base
+    end_ch = t[-1]
+
+    if end_ch in _PUNCT_END:
+        hold = max(0, hold - TR_DELAY_PUNCT_DISCOUNT)
+    elif end_ch in ",;:":
+        hold = max(0, hold - 1)
+    else:
+        hold += 1
+        tail = _tail_last_lexeme(t)
+        if tail and tail in _DRAFT_TRAIL_STOPWORDS:
+            hold += TR_DELAY_STOPWORD_BONUS
+        if wc <= max(3, SEG_MIN_WORDS):
+            hold = min(hold, 2)
+
+    hold = max(TR_DELAY_WORDS_MIN, min(TR_DELAY_WORDS_MAX, hold))
+
+    keep_min = 0 if end_ch in _PUNCT_END else 1
+    hold = min(hold, max(0, wc - keep_min))
+    return hold
+
+
+def _compute_release_wait_ms(full_norm: str) -> int:
+    base = max(120, int(TR_DELAY_RELEASE_MS))
+    if not TR_DELAY_ADAPTIVE:
+        return base
+
+    t = (full_norm or "").strip()
+    if not t:
+        return min(base, TR_RELEASE_FAST_MS)
+
+    end_ch = t[-1]
+    if end_ch in _PUNCT_END:
+        return min(base, TR_RELEASE_FAST_MS)
+
+    tail = _tail_last_lexeme(t)
+    if tail and tail in _DRAFT_TRAIL_STOPWORDS:
+        return max(base, TR_RELEASE_SLOW_MS)
+
+    return base
+
+
 def _apply_delay_words(full_norm: str, delay_words: int, force_release: bool = False) -> str:
     t = (full_norm or "").strip()
     if not t:
         return ""
-    if force_release or delay_words <= 0:
+    if force_release:
         return t
-    kept, _ = _drop_last_n_word_tokens(t, delay_words)
+
+    hold_words = _adaptive_delay_words(t, delay_words)
+    if hold_words <= 0:
+        return t
+
+    kept, _ = _drop_last_n_word_tokens(t, hold_words)
     return kept.strip()
 
 
@@ -1698,6 +1779,13 @@ async def handler(websocket, *args):
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("[%s][WS] send failed: %r", tag, e)
 
+    mt_unavailable_reason = ""
+    try:
+        _lazy_init_mt()
+    except Exception as e:
+        mt_unavailable_reason = str(e)
+        logger.warning("[%s][MT] unavailable: %s", tag, mt_unavailable_reason)
+
     async def send_draft_clear(en_seq: Optional[int] = None, req_id: Optional[int] = None):
         state.vi_draft = ""
         state.vi_draft_seq += 1
@@ -1750,6 +1838,9 @@ async def handler(websocket, *args):
                 pairs.append((int(en_seq_i) if en_seq_i is not None else state.last_en_seq, seg2))
 
             if not pairs:
+                continue
+
+            if mt_unavailable_reason:
                 continue
 
             src_list = [s for _, s in pairs]
@@ -1809,6 +1900,11 @@ async def handler(websocket, *args):
             draft_en = (draft_en or "").strip()
 
             if req_id is not None and int(req_id) != int(state.draft_req_id):
+                continue
+
+            if mt_unavailable_reason:
+                if req_id is None or int(req_id) == int(state.draft_req_id):
+                    await send_draft_clear(en_seq=en_seq_i, req_id=req_id)
                 continue
 
             if not draft_en:
@@ -1874,7 +1970,8 @@ async def handler(websocket, *args):
 
         async def _job():
             try:
-                await asyncio.sleep(max(0, TR_DELAY_RELEASE_MS) / 1000.0)
+                wait_ms = _compute_release_wait_ms(raw_snapshot)
+                await asyncio.sleep(max(0, wait_ms) / 1000.0)
                 if tok != state.release_token:
                     return
                 if state.last_rx_mono != rx_mark:
@@ -1991,11 +2088,27 @@ async def handler(websocket, *args):
             "draft_epoch": True,
             "delay_words": int(TR_DELAY_WORDS),
             "delay_release_ms": int(TR_DELAY_RELEASE_MS),
+            "delay_adaptive": bool(TR_DELAY_ADAPTIVE),
+            "delay_words_min": int(TR_DELAY_WORDS_MIN),
+            "delay_words_max": int(TR_DELAY_WORDS_MAX),
+            "delay_punct_discount": int(TR_DELAY_PUNCT_DISCOUNT),
+            "delay_stopword_bonus": int(TR_DELAY_STOPWORD_BONUS),
+            "release_fast_ms": int(TR_RELEASE_FAST_MS),
+            "release_slow_ms": int(TR_RELEASE_SLOW_MS),
+            "mt_ready": (not bool(mt_unavailable_reason)),
+            "mt_unavailable_reason": (mt_unavailable_reason or ""),
             "beam_commit": int(BEAM_COMMIT),
             "beam_draft": int(BEAM_DRAFT),
             "draft_garbage_filter": bool(DRAFT_GARBAGE_FILTER),
         }
     })
+
+    if mt_unavailable_reason:
+        await send_obj({
+            "type": "error",
+            "code": "MT_UNAVAILABLE",
+            "error": f"Translator unavailable: {mt_unavailable_reason}",
+        })
 
     try:
         async for raw in websocket:
@@ -2121,6 +2234,13 @@ async def handler(websocket, *args):
                         "draft_req_id": int(state.draft_req_id),
                         "delay_words": int(TR_DELAY_WORDS),
                         "delay_release_ms": int(TR_DELAY_RELEASE_MS),
+                        "delay_adaptive": bool(TR_DELAY_ADAPTIVE),
+                        "delay_words_min": int(TR_DELAY_WORDS_MIN),
+                        "delay_words_max": int(TR_DELAY_WORDS_MAX),
+                        "release_fast_ms": int(TR_RELEASE_FAST_MS),
+                        "release_slow_ms": int(TR_RELEASE_SLOW_MS),
+                        "mt_ready": (not bool(mt_unavailable_reason)),
+                        "mt_unavailable_reason": (mt_unavailable_reason or ""),
                         "beam_commit": int(BEAM_COMMIT),
                         "beam_draft": int(BEAM_DRAFT),
                     }
@@ -2179,6 +2299,7 @@ async def main():
         "[reanchor=%s min_committed=%d max_tail=%d] "
         "[beam_commit=%d beam_draft=%d] "
         "[delay_words=%d delay_release_ms=%d] "
+        "[delay_adaptive=%s dw_min=%d dw_max=%d punct_discount=%d stopword_bonus=%d fast_release=%d slow_release=%d] "
         "[draft_garbage_filter=%s] "
         "[rx_log_every_ms=%d mt_log_every_ms=%d status_every_s=%.2f] "
         "[send_vi_delta_compat=%s] "
@@ -2195,6 +2316,9 @@ async def main():
         str(REANCHOR_ENABLE), int(REANCHOR_MIN_COMMITTED), int(REANCHOR_MAX_TAIL_CHARS),
         int(BEAM_COMMIT), int(BEAM_DRAFT),
         int(TR_DELAY_WORDS), int(TR_DELAY_RELEASE_MS),
+        str(TR_DELAY_ADAPTIVE), int(TR_DELAY_WORDS_MIN), int(TR_DELAY_WORDS_MAX),
+        int(TR_DELAY_PUNCT_DISCOUNT), int(TR_DELAY_STOPWORD_BONUS),
+        int(TR_RELEASE_FAST_MS), int(TR_RELEASE_SLOW_MS),
         str(DRAFT_GARBAGE_FILTER),
         LOG_RX_EVERY_MS, LOG_MT_EVERY_MS, LOG_STATUS_EVERY_S,
         str(SEND_VI_DELTA_COMPAT),

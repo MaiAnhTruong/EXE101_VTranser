@@ -639,7 +639,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ✅ TRANSCRIPT MODES
   // ============================================================
   const modes = {
-    en: readBoolLS(LS_MODE_EN, true),
+    en: readBoolLS(LS_MODE_EN, false),
     vi: readBoolLS(LS_MODE_VI, false),
     voice: readBoolLS(LS_MODE_VOICE, false),
     record: readBoolLS(LS_MODE_RECORD, false),
@@ -651,9 +651,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function applyModesToUI() {
-    if (modes.vi) modes.en = true;
-    if (!modes.en && !modes.vi) modes.en = true;
-
     setBtnActive(subtitleBtn, modes.en);
     setBtnActive(subtitleTransBtn, modes.vi);
     setBtnActive(voiceBtn, modes.voice);
@@ -678,7 +675,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (subtitleBtn) {
       subtitleBtn.addEventListener('click', () => {
         modes.en = !modes.en;
-        if (!modes.en && modes.vi) modes.vi = false;
         sendTranscriptModes();
       });
     }
@@ -686,7 +682,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (subtitleTransBtn) {
       subtitleTransBtn.addEventListener('click', () => {
         modes.vi = !modes.vi;
-        if (modes.vi) modes.en = true;
         sendTranscriptModes();
       });
     }
@@ -917,7 +912,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (transcriptBody) {
             transcriptBody.innerHTML = `
               <div class="placeholder-text transcript-placeholder">
-                Đang ghi phụ đề...
+                Đang xử lý realtime...
               </div>`;
           }
 
@@ -981,6 +976,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (msg.__cmd === '__PANEL_NOTIFY__') {
         const level = msg.payload?.level || '';
         const text = msg.payload?.text || '';
+        if (level === 'info' && text) {
+          addTranscriptRow(text, 'System • info');
+        }
         if (level === 'error' && /bận|busy/i.test(text || '')) {
           showBusyModal(text || undefined);
         }
