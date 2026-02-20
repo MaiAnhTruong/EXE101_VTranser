@@ -58,6 +58,10 @@
   window.__sttOverlayTrace = TRACE;
 
   const MAX_SENTENCES_PER_LINE = Number(localStorage.getItem("sttMaxSentPerLine") || 2);
+  const EN_LAYOUT_WINDOW_CHARS = Number(localStorage.getItem("sttEnLayoutWindowChars") || 2400);
+  const VI_LAYOUT_WINDOW_CHARS = Number(localStorage.getItem("sttViLayoutWindowChars") || 1800);
+  const EN_STATE_MAX_CHARS = Number(localStorage.getItem("sttEnStateMaxChars") || 5200);
+  const VI_STATE_MAX_CHARS = Number(localStorage.getItem("sttViStateMaxChars") || 4200);
 
   // VI render throttling: “ra chữ theo word/cụm” cho ổn định
   const VI_MIN_RENDER_MS = Number(localStorage.getItem("sttViMinRenderMs") || 120);
@@ -194,6 +198,24 @@
     return { sents, tail };
   }
 
+  function tailForLayout(text, maxChars) {
+    const s = String(text || "");
+    const n = Number(maxChars) | 0;
+    if (n <= 0 || s.length <= n) return s;
+
+    let from = s.length - n;
+    const head = s.slice(from, Math.min(s.length, from + 180));
+    const m = head.match(/[.!?…]\s+/);
+    if (m && Number.isFinite(m.index)) {
+      from += m.index + m[0].length;
+      return s.slice(from);
+    }
+
+    const ws = s.indexOf(" ", from);
+    if (ws > from && ws - from < 100) from = ws + 1;
+    return s.slice(from);
+  }
+
   function fitPrefixByWidth(sentence, remPx, widthFn) {
     if (remPx <= 0) return { fit: "", rest: sentence };
     const tokens = String(sentence).split(/(\s+)/);
@@ -277,8 +299,9 @@
     return lines;
   }
 
-  function renderTwoLines(text, bubbleEl, $l1, $l2, widthFn) {
-    const lines = buildLines(text, bubbleEl, widthFn);
+  function renderTwoLines(text, bubbleEl, $l1, $l2, widthFn, maxChars = 0) {
+    const layoutText = tailForLayout(text, maxChars);
+    const lines = buildLines(layoutText, bubbleEl, widthFn);
     let line1 = "", line2 = "";
 
     if (lines.length === 0) {
@@ -365,8 +388,11 @@
           fullTextEN = applyOneOp(fullTextEN, opsEN[i]);
         }
         opsEN.length = 0;
+        if (EN_STATE_MAX_CHARS > 0 && fullTextEN.length > EN_STATE_MAX_CHARS) {
+          fullTextEN = tailForLayout(fullTextEN, EN_STATE_MAX_CHARS);
+        }
 
-        if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
+        if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN, EN_LAYOUT_WINDOW_CHARS);
       }
     } finally {
       DBG.opsInFrameEN = 0;
@@ -377,6 +403,10 @@
   function applyStableEN(full, seq = null) {
     if (typeof full !== "string") return;
     DBG.enStable++;
+    let stable = full;
+    if (EN_STATE_MAX_CHARS > 0 && stable.length > EN_STATE_MAX_CHARS) {
+      stable = tailForLayout(stable, EN_STATE_MAX_CHARS);
+    }
 
     if (seq != null) {
       const s = Number(seq);
@@ -391,24 +421,24 @@
     }
 
     if (scheduledEN) flushEN();
-    if (full === fullTextEN) return;
+    if (stable === fullTextEN) return;
 
-    if (full.length >= fullTextEN.length) {
-      fullTextEN = full;
-      if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
+    if (stable.length >= fullTextEN.length) {
+      fullTextEN = stable;
+      if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN, EN_LAYOUT_WINDOW_CHARS);
       return;
     }
 
-    if (fullTextEN.startsWith(full)) {
-      fullTextEN = full;
-      if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
+    if (fullTextEN.startsWith(stable)) {
+      fullTextEN = stable;
+      if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN, EN_LAYOUT_WINDOW_CHARS);
       return;
     }
 
-    const diff = Math.abs(full.length - fullTextEN.length);
+    const diff = Math.abs(stable.length - fullTextEN.length);
     if (diff > 24) {
-      fullTextEN = full;
-      if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
+      fullTextEN = stable;
+      if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN, EN_LAYOUT_WINDOW_CHARS);
       return;
     }
 
@@ -566,7 +596,7 @@
 
     DBG.viLastRenderAt = t;
     DBG.viLastRenderedLen = text.length;
-    renderTwoLines(text, bubbleVI, l1VI, l2VI, textWidthVI);
+    renderTwoLines(text, bubbleVI, l1VI, l2VI, textWidthVI, VI_LAYOUT_WINDOW_CHARS);
   }
 
   function flushVI() {
@@ -586,6 +616,9 @@
         viCommitText = applyOneOp(viCommitText, opsVI[i]);
       }
       opsVI.length = 0;
+      if (VI_STATE_MAX_CHARS > 0 && viCommitText.length > VI_STATE_MAX_CHARS) {
+        viCommitText = tailForLayout(viCommitText, VI_STATE_MAX_CHARS);
+      }
 
       // nếu draft không còn extends commit => bỏ draft (tránh draft cũ đè commit mới)
       if (viDraftText && !viDraftText.startsWith(viCommitText)) {
@@ -606,19 +639,23 @@
   function applyStableVI(full, meta) {
     if (typeof full !== "string") return;
     DBG.viStable++;
+    let stable = full;
+    if (VI_STATE_MAX_CHARS > 0 && stable.length > VI_STATE_MAX_CHARS) {
+      stable = tailForLayout(stable, VI_STATE_MAX_CHARS);
+    }
 
     if (!viGuardAndUpdate(meta || {}, "vi-stable")) return;
 
     if (scheduledVI) flushVI();
-    if (full === viCommitText) return;
+    if (stable === viCommitText) return;
 
     // policy: accept grow / prefix shrink / big diff resync
     if (
-      full.length >= viCommitText.length ||
-      viCommitText.startsWith(full) ||
-      Math.abs(full.length - viCommitText.length) > 24
+      stable.length >= viCommitText.length ||
+      viCommitText.startsWith(stable) ||
+      Math.abs(stable.length - viCommitText.length) > 24
     ) {
-      viCommitText = full;
+      viCommitText = stable;
 
       // draft chỉ được giữ nếu nó extends commit
       if (viDraftText && !viDraftText.startsWith(viCommitText)) viDraftText = "";
@@ -626,8 +663,8 @@
       doRenderVI(true);
     } else {
       // shorter but not prefix => skip (tránh giật)
-      if (DEBUG) dlog(`[VI stable] SKIP (shorter but not prefix, diff=${Math.abs(full.length - viCommitText.length)})`);
-      tracePush("vi-stable-skip", { diff: Math.abs(full.length - viCommitText.length) });
+      if (DEBUG) dlog(`[VI stable] SKIP (shorter but not prefix, diff=${Math.abs(stable.length - viCommitText.length)})`);
+      tracePush("vi-stable-skip", { diff: Math.abs(stable.length - viCommitText.length) });
     }
   }
 
@@ -841,7 +878,7 @@
 
   window.addEventListener("resize", () => {
     syncMeasureStyle();
-    if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN);
+    if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN, EN_LAYOUT_WINDOW_CHARS);
     if (showVI) doRenderVI(true);
   });
 

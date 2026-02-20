@@ -35,6 +35,15 @@
 
   let bytesSent = 0;
   let chunksSent = 0;
+  let bytesDropped = 0;
+  let chunksDropped = 0;
+  let wsBackpressureActive = false;
+  let wsBufferedAmount = 0;
+  let lastBackpressureLogAt = 0;
+
+  // Keep websocket send buffer bounded to avoid long "audio backlog" latency.
+  const WS_BUFFER_HIGH_WATERMARK = 256 * 1024;
+  const WS_BUFFER_RESUME_WATERMARK = 64 * 1024;
 
   const SUPABASE_URL = "https://izziphjuznnzhcdbbptw.supabase.co";
   const SUPABASE_KEY = "sb_publishable_YNUg4THwvvBurGGn59s8Kg_OSkVpVfh";
@@ -118,6 +127,38 @@
       try { clearTimeout(connectTimer); } catch {}
     }
     connectTimer = null;
+  }
+
+  function shouldDropPcmByBackpressure() {
+    if (!(wsOpen && wsReadyToStream && ws && ws.readyState === WebSocket.OPEN)) return false;
+
+    wsBufferedAmount = Number(ws.bufferedAmount || 0);
+    if (wsBufferedAmount >= WS_BUFFER_HIGH_WATERMARK) wsBackpressureActive = true;
+
+    if (wsBackpressureActive && wsBufferedAmount > WS_BUFFER_RESUME_WATERMARK) {
+      const now = Date.now();
+      if (now - lastBackpressureLogAt >= 900) {
+        lastBackpressureLogAt = now;
+        sendStatus({
+          state: "audio-backpressure",
+          bufferedAmount: wsBufferedAmount,
+          chunksDropped,
+          bytesDropped,
+        });
+      }
+      return true;
+    }
+
+    if (wsBackpressureActive && wsBufferedAmount <= WS_BUFFER_RESUME_WATERMARK) {
+      wsBackpressureActive = false;
+      sendStatus({
+        state: "audio-backpressure-clear",
+        bufferedAmount: wsBufferedAmount,
+        chunksDropped,
+        bytesDropped,
+      });
+    }
+    return false;
   }
 
   function parseDbId(v) {
@@ -460,6 +501,8 @@
     ws = null;
     clearHandshake();
     clearConnectTimer();
+    wsBufferedAmount = 0;
+    wsBackpressureActive = false;
   }
 
   async function stopAll(reason = "stop") {
@@ -498,6 +541,11 @@
 
     bytesSent = 0;
     chunksSent = 0;
+    bytesDropped = 0;
+    chunksDropped = 0;
+    wsBufferedAmount = 0;
+    wsBackpressureActive = false;
+    lastBackpressureLogAt = 0;
     lastAudioAt = 0;
     handshakeOk = false;
 
@@ -834,6 +882,9 @@
       if (msg.type === "meter") {
         const now = Date.now();
         lastAudioAt = now;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          wsBufferedAmount = Number(ws.bufferedAmount || 0);
+        }
 
         if (now - lastMeterLogAt > 1000) {
           lastMeterLogAt = now;
@@ -844,7 +895,11 @@
             wsOpen: !!wsOpen,
             wsReadyToStream: !!wsReadyToStream,
             bytesSent,
-            chunksSent
+            chunksSent,
+            bytesDropped,
+            chunksDropped,
+            wsBufferedAmount,
+            wsBackpressureActive,
           });
         }
         return;
@@ -854,14 +909,18 @@
         const buf = msg.payload;
         if (!(buf instanceof ArrayBuffer)) return;
 
-        // stats
-        chunksSent++;
-        bytesSent += buf.byteLength;
-
         // send PCM only when ws is fully ready (after start event)
         if (wsOpen && wsReadyToStream && ws && ws.readyState === WebSocket.OPEN) {
+          if (shouldDropPcmByBackpressure()) {
+            chunksDropped++;
+            bytesDropped += buf.byteLength;
+            return;
+          }
           try {
             ws.send(buf);
+            chunksSent++;
+            bytesSent += buf.byteLength;
+            wsBufferedAmount = Number(ws.bufferedAmount || 0);
 
             // handshake can succeed on first sent audio chunk too
             if (!firstAudioChunkSent) {

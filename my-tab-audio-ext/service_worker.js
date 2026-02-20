@@ -73,6 +73,39 @@ const STORAGE_KEYS = {
   EMAIL_USER_ID_MAP: "vtEmailUserIdMapV1",
 };
 
+// Keep overlay payload bounded so long sessions stay visually realtime.
+const OVERLAY_EN_STABLE_MAX_CHARS = 3200;
+
+function trimTailForOverlay(text, maxChars = OVERLAY_EN_STABLE_MAX_CHARS) {
+  const s = String(text || "");
+  const n = Number(maxChars) | 0;
+  if (n <= 0 || s.length <= n) return s;
+
+  let from = s.length - n;
+  const head = s.slice(from, Math.min(s.length, from + 180));
+  const sentBoundary = head.match(/[.!?…]\s+/);
+  if (sentBoundary && Number.isFinite(sentBoundary.index)) {
+    from += sentBoundary.index + sentBoundary[0].length;
+    return s.slice(from);
+  }
+
+  const ws = s.indexOf(" ", from);
+  if (ws > from && ws - from < 100) from = ws + 1;
+  return s.slice(from);
+}
+
+function buildOverlayStableRelayMsg(msg, fullText) {
+  const trimmed = trimTailForOverlay(fullText, OVERLAY_EN_STABLE_MAX_CHARS);
+  const out = { ...msg, full: trimmed };
+  if (msg?.payload && typeof msg.payload === "object") {
+    out.payload = { ...msg.payload, full: trimmed };
+  }
+  if (msg?.detail && typeof msg.detail === "object") {
+    out.detail = { ...msg.detail, full: trimmed };
+  }
+  return out;
+}
+
 // -------------------- chrome.storage helpers --------------------
 function storeGet(keys) {
   return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
@@ -1090,7 +1123,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         log("OFFSCREEN media-ok audioTracks=", p.audioTracks, "label=", p.audioLabel);
       } else if (s === "meter") {
         log("AUDIO meter rms=", p.rms?.toFixed?.(4), "peak=", p.peak?.toFixed?.(4),
-          "wsOpen=", p.wsOpen, "bytesSent=", p.bytesSent, "chunksSent=", p.chunksSent);
+          "wsOpen=", p.wsOpen, "bytesSent=", p.bytesSent, "chunksSent=", p.chunksSent,
+          "bytesDropped=", p.bytesDropped, "chunksDropped=", p.chunksDropped,
+          "wsBufferedAmount=", p.wsBufferedAmount, "backpressure=", p.wsBackpressureActive);
       } else if (
         s === "ws-open" || s === "ws-auth-sent" || s === "ws-error" || s === "ws-close" ||
         s === "server-hello" || s === "server-status" || s === "server-auth-ok" ||
@@ -1125,13 +1160,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       else if (msg.__cmd === "__TRANSCRIPT_DELTA__") maybeLogTranscriptRate("delta");
       else if (msg.__cmd === "__TRANSCRIPT_STABLE__") maybeLogTranscriptRate("stable");
 
-      // relay to overlay
-      if (current?.tabId) await safeSendTab(current.tabId, msg);
+      const isStable = msg.__cmd === "__TRANSCRIPT_STABLE__";
+      let stableFull = "";
+      let stableSeq = null;
+      let stableTms = null;
 
-      // ✅ STABLE-ONLY translation: chỉ feed stable.full sang translator
-      if (msg.__cmd === "__TRANSCRIPT_STABLE__") {
+      if (isStable) {
         const p = msg.payload || msg.detail || {};
-        const full = (
+        stableFull = (
           p.full ??
           msg.full ??
           p.text ??
@@ -1140,18 +1176,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           p.detail?.text ??
           ""
         ).toString();
-        const seq = (p.seq ?? msg.seq ?? p.stable_seq ?? null);
-        const t_ms = (p.t_ms ?? msg.t_ms ?? null);
+        stableSeq = p.seq ?? msg.seq ?? p.stable_seq ?? null;
+        stableTms = p.t_ms ?? msg.t_ms ?? null;
+      }
 
+      // relay to overlay (trim heavy stable payload for long-running sessions)
+      if (current?.tabId) {
+        const relayMsg = isStable ? buildOverlayStableRelayMsg(msg, stableFull) : msg;
+        await safeSendTab(current.tabId, relayMsg);
+      }
+
+      // ✅ STABLE-ONLY translation: chỉ feed stable.full sang translator
+      if (isStable) {
         // cache for baseline on connect
-        lastEnStable = { full, seq: Number(seq || 0), t_ms: Number(t_ms || 0) };
+        lastEnStable = { full: stableFull, seq: Number(stableSeq || 0), t_ms: Number(stableTms || 0) };
 
         // feed stable if translator online
-        feedTranslatorStable(full, seq, t_ms);
+        feedTranslatorStable(stableFull, stableSeq, stableTms);
 
         // persist to Supabase (delay 1 sentence)
         if (transcriptPersist) {
-          try { transcriptPersist.handleStable(full, seq); } catch {}
+          try { transcriptPersist.handleStable(stableFull, stableSeq); } catch {}
         }
       }
 
