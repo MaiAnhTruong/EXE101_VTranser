@@ -53,6 +53,43 @@ async function fetchJson(url, init = {}) {
   return json;
 }
 
+function buildSupabaseError(status, txt = "") {
+  const parsed = txt
+    ? (() => {
+      try { return JSON.parse(txt); } catch { return null; }
+    })()
+    : null;
+  const detail = (parsed && (parsed.message || parsed.error || parsed.hint)) || txt || `HTTP ${status}`;
+  const e = new Error(`SUPABASE_${status}: ${String(detail)}`);
+  e.status = Number(status) || 0;
+  e.detail = String(detail || "");
+  return e;
+}
+
+async function fetchDelete(url, authToken = "") {
+  const token = String(authToken || "").trim();
+
+  async function run(withToken) {
+    const r = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        ...authHeaders(withToken),
+        Prefer: "return=minimal",
+      },
+    });
+    if (r.ok) return true;
+    const txt = await r.text().catch(() => "");
+    throw buildSupabaseError(r.status, txt);
+  }
+
+  try {
+    return await run(token);
+  } catch (e) {
+    if (!token) throw e;
+    return await run("");
+  }
+}
+
 async function fetchJsonWithAuthFallback(url, authToken = "") {
   const token = String(authToken || "").trim();
   try {
@@ -387,4 +424,54 @@ export async function getTranscriptSessionDetailForUser(
     session,
     fullText: String(fullText || ""),
   };
+}
+
+export async function deleteTranscriptSessionForUser(
+  userId,
+  sessionId,
+  opts = {}
+) {
+  const uid = normalizeUserIdOrThrow(userId);
+  const authToken = String(opts?.authToken || "").trim();
+
+  const sid = toInt(sessionId, 0);
+  if (!sid) throw new Error("INVALID_SESSION_ID");
+
+  // Validate ownership first: only allow delete when session belongs to this user.
+  const pSession = new URLSearchParams({
+    select: "id",
+    id: `eq.${sid}`,
+    user_id: `eq.${uid}`,
+    limit: "1",
+  });
+  const sessionUrl = `${SUPABASE_URL}/rest/v1/transcript_sessions?${pSession.toString()}`;
+  const sessionRows = await fetchJsonWithAuthFallback(sessionUrl, authToken);
+  if (!Array.isArray(sessionRows) || !sessionRows[0]) {
+    return { deleted: false, notFound: true, sessionId: sid };
+  }
+
+  const deleteSessionUrl =
+    `${SUPABASE_URL}/rest/v1/transcript_sessions?` +
+    `id=eq.${encodeURIComponent(String(sid))}&user_id=eq.${encodeURIComponent(uid)}`;
+
+  try {
+    await fetchDelete(deleteSessionUrl, authToken);
+  } catch (e) {
+    const detail = String(e?.detail || e?.message || "").toLowerCase();
+    const likelyFkConflict =
+      Number(e?.status || 0) === 409 ||
+      detail.includes("foreign key") ||
+      detail.includes("violates") ||
+      detail.includes("constraint");
+
+    if (!likelyFkConflict) throw e;
+
+    // Fallback for schemas without ON DELETE CASCADE from transcript_sessions -> transcript_chunks.
+    const deleteChunksUrl =
+      `${SUPABASE_URL}/rest/v1/transcript_chunks?tr_session_id=eq.${encodeURIComponent(String(sid))}`;
+    await fetchDelete(deleteChunksUrl, authToken);
+    await fetchDelete(deleteSessionUrl, authToken);
+  }
+
+  return { deleted: true, notFound: false, sessionId: sid };
 }

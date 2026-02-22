@@ -80,7 +80,51 @@
           <div id="transcript-content" class="content-view">
             <div class="transcript-box">
               <div class="transcript-header">
-                <h3>Nội dung chi tiết</h3>
+                <div class="transcript-header-top">
+                  <h3>Nội dung chi tiết</h3>
+                  <div class="transcript-lang-route" aria-label="Tuy chon ngon ngu STT">
+                    <select id="sttSourceLang" class="transcript-lang-select" aria-label="Ngon ngu nguon">
+                      <option value="en" selected>English</option>
+                      <option value="af" disabled>Afrikaans</option>
+                      <option value="ar" disabled>Arabic</option>
+                      <option value="bn" disabled>Bengali</option>
+                      <option value="bg" disabled>Bulgarian</option>
+                      <option value="ca" disabled>Catalan</option>
+                      <option value="zh" disabled>Chinese</option>
+                      <option value="hr" disabled>Croatian</option>
+                      <option value="cs" disabled>Czech</option>
+                      <option value="da" disabled>Danish</option>
+                      <option value="nl" disabled>Dutch</option>
+                      <option value="fi" disabled>Finnish</option>
+                      <option value="fr" disabled>French</option>
+                      <option value="de" disabled>German</option>
+                      <option value="el" disabled>Greek</option>
+                      <option value="he" disabled>Hebrew</option>
+                      <option value="hi" disabled>Hindi</option>
+                      <option value="hu" disabled>Hungarian</option>
+                      <option value="id" disabled>Indonesian</option>
+                      <option value="it" disabled>Italian</option>
+                      <option value="ja" disabled>Japanese</option>
+                      <option value="ko" disabled>Korean</option>
+                      <option value="ms" disabled>Malay</option>
+                      <option value="no" disabled>Norwegian</option>
+                      <option value="fa" disabled>Persian</option>
+                      <option value="pl" disabled>Polish</option>
+                      <option value="pt" disabled>Portuguese</option>
+                      <option value="ro" disabled>Romanian</option>
+                      <option value="ru" disabled>Russian</option>
+                      <option value="es" disabled>Spanish</option>
+                      <option value="sv" disabled>Swedish</option>
+                      <option value="th" disabled>Thai</option>
+                      <option value="tr" disabled>Turkish</option>
+                      <option value="uk" disabled>Ukrainian</option>
+                      <option value="ur" disabled>Urdu</option>
+                      <option value="vi" disabled>Vietnamese</option>
+                    </select>
+                    <span class="transcript-lang-arrow" aria-hidden="true">-&gt;</span>
+                    <span class="transcript-lang-target">Vietnamese</span>
+                  </div>
+                </div>
                 <p class="transcript-url">Website: (chưa bắt đầu)</p>
               </div>
 
@@ -212,6 +256,106 @@
       <pre id="historyDetailContent" class="history-modal-content">Đang tải nội dung...</pre>
       <div class="history-modal-actions">
         <button id="historyDownloadBtn" class="history-download-btn" type="button" disabled>Tải xuống file</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HISTORY DELETE CONFIRM MODAL -->
+  <div id="historyDeleteModal" class="history-modal hidden" aria-hidden="true">
+    <div class="history-modal-backdrop" data-history-delete-close="1"></div>
+    <div class="history-modal-card history-confirm-card" role="dialog" aria-modal="true" aria-label="Xác nhận xóa">
+      <button id="historyDeleteClose" class="history-modal-close" type="button" aria-label="Đóng">×</button>
+      <div class="history-modal-head">
+        <h3 class="history-modal-title">Xác nhận xóa</h3>
+        <p id="historyDeleteMeta" class="history-modal-meta"></p>
+      </div>
+      <div id="historyDeleteText" class="history-confirm-text">
+        Bạn có chắc chắn muốn xóa bản ghi này không? Hành động này không thể hoàn tác.
+      </div>
+      <div class="history-modal-actions">
+        <button id="historyDeleteCancelBtn" class="history-confirm-cancel-btn" type="button">Hủy</button>
+        <button id="historyDeleteConfirmBtn" class="history-confirm-delete-btn" type="button">Xóa</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div id="settingsModal" class="history-modal hidden" aria-hidden="true">
+    <div class="history-modal-backdrop" data-settings-close="1"></div>
+    <div class="history-modal-card settings-modal-card" role="dialog" aria-modal="true" aria-label="Cài đặt cơ bản">
+      <button id="settingsClose" class="history-modal-close" type="button" aria-label="Đóng">×</button>
+      <div class="history-modal-head">
+        <h3 class="history-modal-title">Cài đặt cơ bản</h3>
+        <p class="history-modal-meta">Thiết lập nhanh cho kết nối STT, API chat và chế độ mặc định.</p>
+      </div>
+
+      <div class="settings-modal-body">
+        <div class="settings-section">
+          <h4 class="settings-section-title">Kết nối</h4>
+
+          <label class="settings-field">
+            <span class="settings-label">STT WebSocket Server</span>
+            <input
+              id="settingsWsInput"
+              class="settings-input"
+              type="text"
+              spellcheck="false"
+              placeholder="ws://localhost:8765"
+            />
+          </label>
+
+          <label class="settings-field">
+            <span class="settings-label">Chat API Base</span>
+            <input
+              id="settingsApiInput"
+              class="settings-input"
+              type="text"
+              spellcheck="false"
+              placeholder="http://127.0.0.1:8000"
+            />
+          </label>
+        </div>
+
+        <div class="settings-section">
+          <h4 class="settings-section-title">Mặc định khi mở panel</h4>
+          <div class="settings-check-grid">
+            <label class="settings-check-item">
+              <input id="settingsModeEn" type="checkbox" />
+              <span>Phụ đề (EN)</span>
+            </label>
+            <label class="settings-check-item">
+              <input id="settingsModeVi" type="checkbox" />
+              <span>Phiên dịch (VI)</span>
+            </label>
+            <label class="settings-check-item">
+              <input id="settingsModeVoice" type="checkbox" />
+              <span>Giọng nói</span>
+            </label>
+            <label class="settings-check-item">
+              <input id="settingsModeRecord" type="checkbox" />
+              <span>Ghi</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h4 class="settings-section-title">Khác</h4>
+          <div class="settings-readonly-row">
+            <span class="settings-label">Nguồn - đích STT</span>
+            <span class="settings-pill">English -> Vietnamese</span>
+          </div>
+          <label class="settings-check-item settings-check-single">
+            <input id="settingsDebugChat" type="checkbox" />
+            <span>Bật debug chat (log console)</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="history-modal-actions settings-actions">
+        <div id="settingsStatus" class="settings-status" aria-live="polite"></div>
+        <button id="settingsResetBtn" class="settings-secondary-btn" type="button">Khôi phục mặc định</button>
+        <button id="settingsCancelBtn" class="history-confirm-cancel-btn" type="button">Hủy</button>
+        <button id="settingsSaveBtn" class="history-download-btn" type="button">Lưu cài đặt</button>
       </div>
     </div>
   </div>

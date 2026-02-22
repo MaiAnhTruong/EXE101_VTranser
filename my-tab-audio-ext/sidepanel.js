@@ -21,6 +21,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const LS_MODE_VI = 'sttModeVi';
   const LS_MODE_VOICE = 'sttModeVoice';
   const LS_MODE_RECORD = 'sttModeRecord';
+  const LS_STT_SOURCE_LANG = 'sttSourceLang';
+  const STT_SOURCE_LANG_ONLY = 'en';
 
   // Persist chat toggles
   const LS_CHAT_USE_RAG = 'sttChatUseRag';
@@ -476,6 +478,21 @@ document.addEventListener('DOMContentLoaded', () => {
   const errorClose = document.getElementById('vtErrorClose');
   const errorText = document.querySelector('#vtErrorModal .vt-modal-text');
 
+  // settings modal
+  const settingsModal = document.getElementById('settingsModal');
+  const settingsClose = document.getElementById('settingsClose');
+  const settingsCancelBtn = document.getElementById('settingsCancelBtn');
+  const settingsSaveBtn = document.getElementById('settingsSaveBtn');
+  const settingsResetBtn = document.getElementById('settingsResetBtn');
+  const settingsStatus = document.getElementById('settingsStatus');
+  const settingsWsInput = document.getElementById('settingsWsInput');
+  const settingsApiInput = document.getElementById('settingsApiInput');
+  const settingsModeEn = document.getElementById('settingsModeEn');
+  const settingsModeVi = document.getElementById('settingsModeVi');
+  const settingsModeVoice = document.getElementById('settingsModeVoice');
+  const settingsModeRecord = document.getElementById('settingsModeRecord');
+  const settingsDebugChat = document.getElementById('settingsDebugChat');
+
   // bottom bar
   const bottomGreetingEl = document.getElementById('bottomGreeting');
   const loginBtns = document.querySelectorAll('.login-btn');
@@ -525,6 +542,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const transcriptBody = document.querySelector('.transcript-body');
   const transcriptLiveFooter = document.querySelector('.transcript-live-footer span');
   const transcriptHeaderUrlEl = document.querySelector('.transcript-header .transcript-url');
+  const transcriptSourceLangSelect = document.getElementById('sttSourceLang');
 
   const subtitleBtn = document.getElementById('btn-subtitle');            // EN
   const subtitleTransBtn = document.getElementById('btn-subtitle-trans'); // VI translate
@@ -608,19 +626,155 @@ document.addEventListener('DOMContentLoaded', () => {
     openAuthOverlay: openAuthOverlayFromPanel,
   });
 
-  // ===== Setting: config API + WS =====
+  // ===== Settings modal =====
+  function isSettingsOpen() {
+    return !!(settingsModal && !settingsModal.classList.contains('hidden'));
+  }
+
+  function setSettingsStatus(text = '', tone = '') {
+    if (!settingsStatus) return;
+    settingsStatus.textContent = String(text || '');
+    settingsStatus.classList.remove('error', 'success');
+    if (tone === 'error') settingsStatus.classList.add('error');
+    if (tone === 'success') settingsStatus.classList.add('success');
+  }
+
+  function normalizeApiBaseInput(v) {
+    return String(v || '').trim().replace(/\/+$/, '');
+  }
+
+  function normalizeWsServerInput(v) {
+    return String(v || '').trim().replace(/\s+/g, '');
+  }
+
+  function isValidHttpUrl(v) {
+    try {
+      const u = new URL(String(v || ''));
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  function isValidWsUrl(v) {
+    try {
+      const u = new URL(String(v || ''));
+      return u.protocol === 'ws:' || u.protocol === 'wss:';
+    } catch {
+      return false;
+    }
+  }
+
+  function fillSettingsFormFromStorage() {
+    if (!settingsModal) return;
+    if (settingsApiInput) settingsApiInput.value = getApiBase();
+    if (settingsWsInput) settingsWsInput.value = getServer();
+    if (settingsModeEn) settingsModeEn.checked = readBoolLS(LS_MODE_EN, false);
+    if (settingsModeVi) settingsModeVi.checked = readBoolLS(LS_MODE_VI, false);
+    if (settingsModeVoice) settingsModeVoice.checked = readBoolLS(LS_MODE_VOICE, false);
+    if (settingsModeRecord) settingsModeRecord.checked = readBoolLS(LS_MODE_RECORD, false);
+    if (settingsDebugChat) settingsDebugChat.checked = isDebug();
+    setSettingsStatus('');
+  }
+
+  function fillSettingsFormDefault() {
+    if (settingsApiInput) settingsApiInput.value = DEFAULT_API;
+    if (settingsWsInput) settingsWsInput.value = DEFAULT_WS;
+    if (settingsModeEn) settingsModeEn.checked = false;
+    if (settingsModeVi) settingsModeVi.checked = false;
+    if (settingsModeVoice) settingsModeVoice.checked = false;
+    if (settingsModeRecord) settingsModeRecord.checked = false;
+    if (settingsDebugChat) settingsDebugChat.checked = false;
+    setSettingsStatus('Đã đưa về bộ mặc định. Nhấn "Lưu cài đặt" để áp dụng.', 'success');
+  }
+
+  function closeSettingsModal() {
+    if (!settingsModal) return;
+    settingsModal.classList.add('hidden');
+    settingsModal.setAttribute('aria-hidden', 'true');
+  }
+
+  function openSettingsModal() {
+    if (!settingsModal) return;
+    fillSettingsFormFromStorage();
+    settingsModal.classList.remove('hidden');
+    settingsModal.setAttribute('aria-hidden', 'false');
+    settingsApiInput?.focus?.();
+  }
+
+  function applySettingsFromForm() {
+    const apiVal = normalizeApiBaseInput(settingsApiInput?.value || '');
+    const wsVal = normalizeWsServerInput(settingsWsInput?.value || '');
+
+    if (!isValidHttpUrl(apiVal)) {
+      setSettingsStatus('Chat API Base phải là URL http/https hợp lệ.', 'error');
+      settingsApiInput?.focus?.();
+      return false;
+    }
+    if (!isValidWsUrl(wsVal)) {
+      setSettingsStatus('STT WebSocket Server phải là URL ws/wss hợp lệ.', 'error');
+      settingsWsInput?.focus?.();
+      return false;
+    }
+
+    try {
+      localStorage.setItem(LS_CHAT_API, apiVal);
+      localStorage.setItem(LS_KEY_SERVER, wsVal);
+      localStorage.setItem(LS_CHAT_DEBUG, settingsDebugChat?.checked ? '1' : '0');
+      localStorage.setItem(LS_STT_SOURCE_LANG, STT_SOURCE_LANG_ONLY);
+    } catch {}
+
+    modes.en = !!settingsModeEn?.checked;
+    modes.vi = !!settingsModeVi?.checked;
+    modes.voice = !!settingsModeVoice?.checked;
+    modes.record = !!settingsModeRecord?.checked;
+    sendTranscriptModes();
+
+    if (transcriptSourceLangSelect) transcriptSourceLangSelect.value = STT_SOURCE_LANG_ONLY;
+    setSettingsStatus('Đã lưu cài đặt.', 'success');
+    return true;
+  }
+
   if (settingButton) {
-    settingButton.addEventListener('click', () => {
-      const apiCur = localStorage.getItem(LS_CHAT_API) || DEFAULT_API;
-      const wsCur = localStorage.getItem(LS_KEY_SERVER) || DEFAULT_WS;
-
-      const apiNext = prompt('Nhập Chat API base (vd: http://127.0.0.1:8000)', apiCur);
-      if (apiNext && apiNext.trim()) localStorage.setItem(LS_CHAT_API, apiNext.trim());
-
-      const wsNext = prompt('Nhập STT WS server (vd: ws://localhost:8765)', wsCur);
-      if (wsNext && wsNext.trim()) localStorage.setItem(LS_KEY_SERVER, wsNext.trim());
+    settingButton.addEventListener('click', (e) => {
+      e.preventDefault?.();
+      openSettingsModal();
     });
   }
+
+  if (settingsModal) {
+    settingsModal.addEventListener('click', (e) => {
+      if (e.target?.closest?.('[data-settings-close]')) closeSettingsModal();
+    });
+  }
+  if (settingsClose) settingsClose.addEventListener('click', closeSettingsModal);
+  if (settingsCancelBtn) settingsCancelBtn.addEventListener('click', closeSettingsModal);
+  if (settingsResetBtn) settingsResetBtn.addEventListener('click', fillSettingsFormDefault);
+  if (settingsSaveBtn) {
+    settingsSaveBtn.addEventListener('click', () => {
+      applySettingsFromForm();
+    });
+  }
+
+  [settingsApiInput, settingsWsInput, settingsModeEn, settingsModeVi, settingsModeVoice, settingsModeRecord, settingsDebugChat]
+    .filter(Boolean)
+    .forEach((el) => {
+      const evt = (el.tagName === 'INPUT' && el.type === 'checkbox') ? 'change' : 'input';
+      el.addEventListener(evt, () => setSettingsStatus(''));
+    });
+
+  if (settingsModal) {
+    settingsModal.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.target === settingsApiInput || e.target === settingsWsInput)) {
+        e.preventDefault?.();
+        applySettingsFromForm();
+      }
+    });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isSettingsOpen()) closeSettingsModal();
+  });
 
   // ===== Transcript header URL =====
   async function updateTranscriptHeaderUrl() {
@@ -699,6 +853,21 @@ document.addEventListener('DOMContentLoaded', () => {
         sendTranscriptModes();
       });
     }
+  }
+
+  function initTranscriptLanguagePicker() {
+    if (!transcriptSourceLangSelect) return;
+    const selected = STT_SOURCE_LANG_ONLY;
+    transcriptSourceLangSelect.value = selected;
+    try { localStorage.setItem(LS_STT_SOURCE_LANG, selected); } catch {}
+
+    transcriptSourceLangSelect.addEventListener('change', () => {
+      const next = String(transcriptSourceLangSelect.value || '').toLowerCase();
+      if (next !== STT_SOURCE_LANG_ONLY) {
+        transcriptSourceLangSelect.value = STT_SOURCE_LANG_ONLY;
+      }
+      try { localStorage.setItem(LS_STT_SOURCE_LANG, STT_SOURCE_LANG_ONLY); } catch {}
+    });
   }
 
   // ============================================================
@@ -1299,8 +1468,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const label = `${ragDomainFrom(item)} • ${ragFormatDateTime(item?.started_at)}`;
       const pinnedCls = pinned.has(sid) ? ' pinned' : '';
       chips.push(
-        `<span class="chat-rag-selection-chip${pinnedCls}" title="${escapeHtml(label)}">` +
+        `<span class="chat-rag-selection-chip${pinnedCls}" data-rag-open-id="${sid}" title="${escapeHtml(label)}">` +
         `<span class="chat-rag-selection-chip-text">${escapeHtml(label)}</span>` +
+        `<button class="chat-rag-selection-remove" type="button" data-rag-remove-id="${sid}" ` +
+        `aria-label="Xoa nguon nay" title="Xoa nguon">x</button>` +
         `</span>`
       );
     }
@@ -1311,6 +1482,19 @@ document.addEventListener('DOMContentLoaded', () => {
     chatRagSelectionBar.innerHTML =
       `<span class="chat-rag-selection-label"></span>${chips.join('')}${more}`;
     chatRagSelectionBar.classList.remove('hidden');
+  }
+
+  function removeRagSource(sessionId) {
+    const sid = Number(sessionId || 0);
+    if (!sid) return;
+
+    ragPickerState.selectedIds.delete(sid);
+    ragPickerState.pinnedIds.delete(sid);
+    chatToggles.useRag = ragPickerState.pinnedIds.size > 0;
+    applyChatTogglesUI();
+
+    if (isRagPickerOpen()) renderRagPickerList();
+    else renderChatRagSelectionBar();
   }
 
   function renderRagPickerList() {
@@ -1762,6 +1946,28 @@ document.addEventListener('DOMContentLoaded', () => {
       chatRagSearch.addEventListener('input', () => {
         applyRagFilter();
         renderRagPickerList();
+      });
+    }
+
+    if (chatRagSelectionBar) {
+      chatRagSelectionBar.addEventListener('click', (e) => {
+        const btn = e.target?.closest?.('[data-rag-remove-id]');
+        if (!btn) return;
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        const sid = Number(btn.getAttribute('data-rag-remove-id') || 0);
+        if (!sid) return;
+        removeRagSource(sid);
+      });
+
+      chatRagSelectionBar.addEventListener('click', (e) => {
+        const chip = e.target?.closest?.('[data-rag-open-id]');
+        if (!chip) return;
+        if (e.target?.closest?.('[data-rag-remove-id]')) return;
+        e.preventDefault?.();
+        const sid = Number(chip.getAttribute('data-rag-open-id') || 0);
+        if (!sid) return;
+        openChatRagDetail(sid);
       });
     }
 
@@ -2573,6 +2779,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ===== Init =====
+  initTranscriptLanguagePicker();
   bindModeButtons();
   applyModesToUI();
   sendTranscriptModes();

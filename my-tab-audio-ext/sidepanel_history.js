@@ -1,4 +1,4 @@
-// History view controller for sidepanel: list/search/detail/download transcript sessions.
+// History view controller for sidepanel: list/search/detail/download/delete transcript sessions.
 (() => {
   const hasChromeRuntime =
     typeof chrome !== "undefined" &&
@@ -10,7 +10,7 @@
       "&": "&amp;",
       "<": "&lt;",
       ">": "&gt;",
-      "\"": "&quot;",
+      '"': "&quot;",
       "'": "&#39;",
     }[m]));
 
@@ -40,9 +40,9 @@
     if (d) return d;
     try {
       const u = new URL(String(item?.tab_url || ""));
-      return u.hostname || "Unknown website";
+      return u.hostname || "Trang web không xác định";
     } catch {
-      return "Unknown website";
+      return "Trang web không xác định";
     }
   }
 
@@ -175,6 +175,8 @@
       previewHydratedIds: new Set(),
       openAuthOverlay: null,
       activeDetailId: null,
+      deletePendingId: null,
+      deletingIds: new Set(),
     };
 
     const refs = {
@@ -191,6 +193,12 @@
       modalMeta: null,
       modalText: null,
       modalDownload: null,
+      deleteModal: null,
+      deleteModalClose: null,
+      deleteMeta: null,
+      deleteText: null,
+      deleteCancelBtn: null,
+      deleteConfirmBtn: null,
     };
 
     function bindRefs() {
@@ -201,12 +209,29 @@
       refs.empty = document.getElementById("historyEmpty");
       refs.loading = document.getElementById("historyLoading");
       refs.userNote = document.getElementById("historyUserIdNote");
+
       refs.modal = document.getElementById("historyDetailModal");
       refs.modalClose = document.getElementById("historyDetailClose");
       refs.modalTitle = document.getElementById("historyDetailTitle");
       refs.modalMeta = document.getElementById("historyDetailMeta");
       refs.modalText = document.getElementById("historyDetailContent");
       refs.modalDownload = document.getElementById("historyDownloadBtn");
+
+      refs.deleteModal = document.getElementById("historyDeleteModal");
+      refs.deleteModalClose = document.getElementById("historyDeleteClose");
+      refs.deleteMeta = document.getElementById("historyDeleteMeta");
+      refs.deleteText = document.getElementById("historyDeleteText");
+      refs.deleteCancelBtn = document.getElementById("historyDeleteCancelBtn");
+      refs.deleteConfirmBtn = document.getElementById("historyDeleteConfirmBtn");
+    }
+
+    function isModalVisible(el) {
+      return !!(el && !el.classList.contains("hidden"));
+    }
+
+    function syncModalBodyLock() {
+      const anyOpen = isModalVisible(refs.modal) || isModalVisible(refs.deleteModal);
+      document.body.classList.toggle("history-modal-open", anyOpen);
     }
 
     function setLoading(on) {
@@ -244,7 +269,12 @@
       refs.list.innerHTML = "";
 
       if (!state.filtered.length) {
-        setEmpty("Không tìm thấy lịch sử phù hợp.", true);
+        const noQuery = String(refs.search?.value || "").trim().length === 0;
+        if (!state.items.length && noQuery) {
+          setEmpty("Chưa có dữ liệu lịch sử.", true);
+        } else {
+          setEmpty("Không tìm thấy lịch sử phù hợp.", true);
+        }
         return;
       }
       setEmpty("", false);
@@ -262,15 +292,28 @@
         const preview = normalizeTextPreview(
           pickTranscriptText(item, detail?.fullText || "")
         );
+        const deleting = state.deletingIds.has(id);
 
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "history-item";
-        btn.dataset.sessionId = String(id);
-        btn.innerHTML = `
+        const card = document.createElement("div");
+        card.className = "history-item" + (deleting ? " history-item-deleting" : "");
+        card.dataset.sessionId = String(id);
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("aria-label", `Mở chi tiết bản ghi ${domain}`);
+        card.innerHTML = `
           <div class="history-item-top">
             <span class="history-item-domain">${escapeHtml(domain)}</span>
-            <span class="history-item-time">${escapeHtml(started)}</span>
+            <div class="history-item-right">
+              <span class="history-item-time">${escapeHtml(started)}</span>
+              <button
+                type="button"
+                class="history-item-delete-btn"
+                data-history-delete="1"
+                data-session-id="${id}"
+                aria-label="Xóa bản ghi này"
+                ${deleting ? "disabled" : ""}
+              >${deleting ? "Đang xóa..." : "Xóa"}</button>
+            </div>
           </div>
           <div class="history-item-meta">
             <span>Tổng thời gian: ${escapeHtml(duration)}</span>
@@ -278,7 +321,7 @@
           </div>
           <p class="history-item-preview">${escapeHtml(preview)}</p>
         `;
-        frag.appendChild(btn);
+        frag.appendChild(card);
       }
 
       refs.list.appendChild(frag);
@@ -287,40 +330,42 @@
     async function prefetchMissingPreviews() {
       if (!hasChromeRuntime || state.prefetching) return;
       const targets = state.items
-      .filter((item) => {
-        const sid = Number(item?.id || 0);
-        if (!sid) return false;
-        if (state.previewHydratedIds.has(sid)) return false;
-        return !hasTextValue(pickTranscriptText(item));
-      })
-      .slice(0, 48);
+        .filter((item) => {
+          const sid = Number(item?.id || 0);
+          if (!sid) return false;
+          if (state.previewHydratedIds.has(sid)) return false;
+          return !hasTextValue(pickTranscriptText(item));
+        })
+        .slice(0, 48);
       if (!targets.length) return;
 
       state.prefetching = true;
       try {
-        await Promise.all(targets.map(async (item) => {
-          const sid = Number(item?.id || 0);
-          if (!sid) return;
+        await Promise.all(
+          targets.map(async (item) => {
+            const sid = Number(item?.id || 0);
+            if (!sid) return;
 
-          const cached = state.details.get(sid);
-          if (cached?.fullText) {
-            item.latest_text_en = cached.fullText;
+            const cached = state.details.get(sid);
+            if (cached?.fullText) {
+              item.latest_text_en = cached.fullText;
+              state.previewHydratedIds.add(sid);
+              return;
+            }
+
+            const res = await sendRuntime({
+              __cmd: "__HISTORY_DETAIL__",
+              payload: { sessionId: sid },
+            });
+            if (res?.ok) {
+              const dItem = res.item || item;
+              const fullText = String(res.fullText || pickTranscriptText(dItem) || "");
+              state.details.set(sid, { item: dItem, fullText });
+              if (hasTextValue(fullText)) item.latest_text_en = fullText;
+            }
             state.previewHydratedIds.add(sid);
-            return;
-          }
-
-          const res = await sendRuntime({
-            __cmd: "__HISTORY_DETAIL__",
-            payload: { sessionId: sid },
-          });
-          if (res?.ok) {
-            const dItem = res.item || item;
-            const fullText = String(res.fullText || pickTranscriptText(dItem) || "");
-            state.details.set(sid, { item: dItem, fullText });
-            if (hasTextValue(fullText)) item.latest_text_en = fullText;
-          }
-          state.previewHydratedIds.add(sid);
-        }));
+          })
+        );
       } finally {
         state.prefetching = false;
         applyFilter();
@@ -330,6 +375,20 @@
 
     function isViewVisible() {
       return !!(refs.view && !refs.view.classList.contains("hidden"));
+    }
+
+    function removeSessionLocal(sessionId) {
+      const sid = Number(sessionId || 0);
+      if (!sid) return;
+
+      state.items = state.items.filter((x) => Number(x?.id || 0) !== sid);
+      state.filtered = state.filtered.filter((x) => Number(x?.id || 0) !== sid);
+      state.details.delete(sid);
+      state.previewHydratedIds.delete(sid);
+      state.deletingIds.delete(sid);
+
+      if (state.activeDetailId === sid) closeModal();
+      if (state.deletePendingId === sid) closeDeleteModal();
     }
 
     async function loadList(force = false) {
@@ -358,6 +417,7 @@
           state.loaded = true;
           return;
         }
+
         if (res?.code === "USER_ID_INVALID") {
           state.items = [];
           state.filtered = [];
@@ -365,11 +425,11 @@
           const dbg = formatUserIdDebug(res?.debug);
           setEmpty(
             dbg
-              ? "Khong tim thay user id hop le cho tai khoan hien tai.\n[debug] " + dbg
-              : "Khong tim thay user id hop le cho tai khoan hien tai.",
+              ? "Không tìm thấy user id hợp lệ cho tài khoản hiện tại.\n[debug] " + dbg
+              : "Không tìm thấy user id hợp lệ cho tài khoản hiện tại.",
             true
           );
-          if (refs.userNote) refs.userNote.textContent = "User ID: (khong xac dinh)";
+          if (refs.userNote) refs.userNote.textContent = "User ID: (không xác định)";
           state.loaded = true;
           return;
         }
@@ -380,16 +440,10 @@
 
         const rows = Array.isArray(res.items) ? res.items.slice() : [];
         state.items = sortSessionsDesc(rows);
-        if (refs.userNote) {
-          const uid = Number(res.userId || 0);
-        }
         state.loaded = true;
         applyFilter();
         renderList();
         prefetchMissingPreviews();
-        if (!state.items.length) {
-          setEmpty("Chưa có transcript nào được lưu.", true);
-        }
       } catch (e) {
         state.items = [];
         state.filtered = [];
@@ -408,7 +462,7 @@
       refs.modalText.textContent = "Đang tải nội dung transcript...";
       if (refs.modalDownload) refs.modalDownload.disabled = true;
       state.activeDetailId = Number(item?.id || 0) || null;
-      document.body.classList.add("history-modal-open");
+      syncModalBodyLock();
     }
 
     function fillModalText(item, fullText) {
@@ -424,12 +478,114 @@
       if (!refs.modal) return;
       refs.modal.classList.add("hidden");
       state.activeDetailId = null;
-      document.body.classList.remove("history-modal-open");
+      syncModalBodyLock();
+    }
+
+    function openDeleteModal(sessionId) {
+      const sid = Number(sessionId || 0);
+      if (!sid || !refs.deleteModal) return;
+
+      const item = state.items.find((x) => Number(x?.id || 0) === sid);
+      if (!item) return;
+
+      state.deletePendingId = sid;
+      if (refs.deleteMeta) {
+        refs.deleteMeta.textContent = `${domainFrom(item)} • Bắt đầu: ${formatDateTime(item?.started_at)}`;
+      }
+      if (refs.deleteText) {
+        refs.deleteText.textContent =
+          "Bạn có chắc chắn muốn xóa bản ghi này không? Hành động này không thể hoàn tác.";
+      }
+      if (refs.deleteConfirmBtn) {
+        refs.deleteConfirmBtn.disabled = false;
+        refs.deleteConfirmBtn.textContent = "Xóa";
+      }
+
+      refs.deleteModal.classList.remove("hidden");
+      syncModalBodyLock();
+    }
+
+    function closeDeleteModal() {
+      if (!refs.deleteModal) return;
+      refs.deleteModal.classList.add("hidden");
+      state.deletePendingId = null;
+      if (refs.deleteConfirmBtn) {
+        refs.deleteConfirmBtn.disabled = false;
+        refs.deleteConfirmBtn.textContent = "Xóa";
+      }
+      syncModalBodyLock();
+    }
+
+    async function deleteSessionOnServer(sessionId) {
+      const sid = Number(sessionId || 0);
+      if (!sid) throw new Error("INVALID_SESSION_ID");
+
+      const res = await sendRuntime({
+        __cmd: "__HISTORY_DELETE__",
+        payload: { sessionId: sid },
+      });
+
+      if (res?.code === "AUTH_REQUIRED") {
+        if (typeof state.openAuthOverlay === "function") state.openAuthOverlay();
+        throw new Error("Bạn cần đăng nhập để xóa lịch sử.");
+      }
+
+      if (res?.code === "USER_ID_INVALID") {
+        const dbg = formatUserIdDebug(res?.debug);
+        throw new Error(
+          dbg
+            ? "Không xác định được user id hợp lệ.\n[debug] " + dbg
+            : "Không xác định được user id hợp lệ."
+        );
+      }
+
+      if (res?.code === "NOT_FOUND") {
+        return { ok: true, notFound: true };
+      }
+
+      if (!res?.ok) {
+        throw new Error(String(res?.error || "HISTORY_DELETE_FAILED"));
+      }
+
+      return { ok: true, notFound: false };
+    }
+
+    async function confirmDeletePending() {
+      const sid = Number(state.deletePendingId || 0);
+      if (!sid) return;
+      if (state.deletingIds.has(sid)) return;
+
+      state.deletingIds.add(sid);
+      if (refs.deleteConfirmBtn) {
+        refs.deleteConfirmBtn.disabled = true;
+        refs.deleteConfirmBtn.textContent = "Đang xóa...";
+      }
+      renderList();
+
+      try {
+        await deleteSessionOnServer(sid);
+        removeSessionLocal(sid);
+        applyFilter();
+        renderList();
+        closeDeleteModal();
+      } catch (e) {
+        state.deletingIds.delete(sid);
+        renderList();
+        if (refs.deleteText) {
+          refs.deleteText.textContent = `Xóa thất bại: ${String(e?.message || e)}`;
+        }
+        if (refs.deleteConfirmBtn) {
+          refs.deleteConfirmBtn.disabled = false;
+          refs.deleteConfirmBtn.textContent = "Thử xóa lại";
+        }
+      }
     }
 
     async function openSessionDetail(sessionId) {
       const sid = Number(sessionId || 0);
       if (!sid) return;
+      if (state.deletingIds.has(sid)) return;
+
       const baseItem = state.items.find((x) => Number(x?.id || 0) === sid);
       if (!baseItem) return;
 
@@ -452,13 +608,14 @@
         if (typeof state.openAuthOverlay === "function") state.openAuthOverlay();
         return;
       }
+
       if (res?.code === "USER_ID_INVALID") {
         const dbg = formatUserIdDebug(res?.debug);
         fillModalText(
           baseItem,
           dbg
-            ? "Khong tim thay user id hop le cho tai khoan hien tai.\n\n[debug] " + dbg
-            : "Khong tim thay user id hop le cho tai khoan hien tai."
+            ? "Không tìm thấy user id hợp lệ cho tài khoản hiện tại.\n\n[debug] " + dbg
+            : "Không tìm thấy user id hợp lệ cho tài khoản hiện tại."
         );
         if (refs.modalDownload) refs.modalDownload.disabled = true;
         return;
@@ -493,18 +650,38 @@
 
       if (refs.list) {
         refs.list.addEventListener("click", (e) => {
-          const btn = e.target?.closest?.(".history-item");
-          if (!btn) return;
-          const sid = Number(btn.dataset.sessionId || 0);
+          const deleteBtn = e.target?.closest?.("[data-history-delete='1']");
+          if (deleteBtn) {
+            const sid = Number(deleteBtn.dataset.sessionId || 0);
+            if (!sid) return;
+            openDeleteModal(sid);
+            return;
+          }
+
+          const row = e.target?.closest?.(".history-item");
+          if (!row) return;
+          const sid = Number(row.dataset.sessionId || 0);
           if (!sid) return;
           openSessionDetail(sid);
+        });
+
+        refs.list.addEventListener("keydown", (e) => {
+          if (e.target?.closest?.("[data-history-delete='1']")) return;
+          const row = e.target?.closest?.(".history-item");
+          if (!row) return;
+          const sid = Number(row.dataset.sessionId || 0);
+          if (!sid) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openSessionDetail(sid);
+          }
         });
       }
 
       if (refs.modal) {
         refs.modal.addEventListener("click", (e) => {
           const tgt = e.target;
-          if (tgt && (tgt.dataset?.historyClose === "1")) closeModal();
+          if (tgt && tgt.dataset?.historyClose === "1") closeModal();
         });
       }
 
@@ -526,10 +703,24 @@
         });
       }
 
+      if (refs.deleteModal) {
+        refs.deleteModal.addEventListener("click", (e) => {
+          const tgt = e.target;
+          if (tgt && tgt.dataset?.historyDeleteClose === "1") closeDeleteModal();
+        });
+      }
+
+      if (refs.deleteModalClose) refs.deleteModalClose.addEventListener("click", closeDeleteModal);
+      if (refs.deleteCancelBtn) refs.deleteCancelBtn.addEventListener("click", closeDeleteModal);
+      if (refs.deleteConfirmBtn) refs.deleteConfirmBtn.addEventListener("click", confirmDeletePending);
+
       document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && refs.modal && !refs.modal.classList.contains("hidden")) {
-          closeModal();
+        if (e.key !== "Escape") return;
+        if (isModalVisible(refs.deleteModal)) {
+          closeDeleteModal();
+          return;
         }
+        if (isModalVisible(refs.modal)) closeModal();
       });
     }
 
@@ -553,7 +744,10 @@
       state.filtered = [];
       state.details.clear();
       state.previewHydratedIds.clear();
+      state.deletePendingId = null;
+      state.deletingIds.clear();
       if (refs.userNote) refs.userNote.textContent = "";
+      closeDeleteModal();
       closeModal();
       applyFilter();
       renderList();

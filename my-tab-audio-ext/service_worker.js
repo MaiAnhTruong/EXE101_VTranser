@@ -19,6 +19,7 @@ import {
   resolveUsersTableUserId,
   listTranscriptSessionsForUser,
   getTranscriptSessionDetailForUser,
+  deleteTranscriptSessionForUser,
 } from "./sw/history_repo.js";
 import {
   ensureChatSessionForUser,
@@ -1574,9 +1575,60 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       return;
     }
+    // Delete one history session from Supabase (AUTH REQUIRED)
+    if (msg.__cmd === "__HISTORY_DELETE__") {
+      const tabIdForNotify = current?.tabId || null;
+      const authSess = await requireAuthOrFail({ action: "history_delete", tabId: tabIdForNotify, sendResponse });
+      if (!authSess) return;
 
+      try {
+        const sessionId = Number(msg.payload?.sessionId || 0);
+        if (!Number.isFinite(sessionId) || sessionId <= 0) {
+          sendResponse?.({ ok: false, error: "INVALID_SESSION_ID" });
+          return;
+        }
 
-    // ✅ Persist chat session/messages to Supabase (AUTH REQUIRED)
+        const profile = normalizeAuthProfile(authSess);
+        const supaAuthToken = pickSupabaseAccessToken(authSess);
+        const userId = await resolveUsersTableUserIdSafe(profile, supaAuthToken);
+        const deleted = await deleteTranscriptSessionForUser(userId, sessionId, {
+          authToken: supaAuthToken,
+        });
+
+        if (!deleted?.deleted) {
+          sendResponse?.({
+            ok: false,
+            code: "NOT_FOUND",
+            error: "NOT_FOUND",
+            sessionId,
+          });
+          return;
+        }
+
+        sendResponse?.({
+          ok: true,
+          deleted: true,
+          sessionId: Number(deleted.sessionId || sessionId),
+          userId,
+        });
+      } catch (e) {
+        const msgErr = String(e?.message || e);
+        if (msgErr.includes("USER_ID_INVALID")) {
+          const profile = normalizeAuthProfile(authSess);
+          const supaAuthToken = pickSupabaseAccessToken(authSess);
+          sendResponse?.({
+            ok: false,
+            code: "USER_ID_INVALID",
+            error: "USER_ID_INVALID",
+            debug: buildUserIdDebug(profile, supaAuthToken),
+          });
+          return;
+        }
+        sendResponse?.({ ok: false, error: msgErr });
+      }
+      return;
+    }
+    // Persist chat session/messages to Supabase (AUTH REQUIRED)
     if (msg.__cmd === "__CHAT_DB_SAVE__") {
       const tabIdForNotify = current?.tabId || null;
       const authSess = await requireAuthOrFail({ action: "chat_save", tabId: tabIdForNotify, sendResponse });
