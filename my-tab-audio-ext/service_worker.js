@@ -800,6 +800,8 @@ let trDbg = {
   rxHello: 0,
   rxStatus: 0,
   rxDelta: 0,
+  rxCommit: 0,
+  rxDraft: 0,
   rxStable: 0,
   rxError: 0,
   lastLogAt: 0,
@@ -817,7 +819,7 @@ function maybeLogTranslatorRate() {
     tlog("rate/2s", { ...trDbg });
     // reset moving counters only (giữ lastTxStableSeq/lastRxViSeq)
     trDbg.txReset = trDbg.txBaseline = trDbg.txStable = trDbg.dropStable = 0;
-    trDbg.rxHello = trDbg.rxStatus = trDbg.rxDelta = trDbg.rxStable = trDbg.rxError = 0;
+    trDbg.rxHello = trDbg.rxStatus = trDbg.rxDelta = trDbg.rxCommit = trDbg.rxDraft = trDbg.rxStable = trDbg.rxError = 0;
     trDbg.lastLogAt = now;
   }
 }
@@ -838,6 +840,7 @@ let lastEnStable = { full: "", seq: 0, t_ms: 0 };
 let transNeedHardResetOnOpen = false;
 // guard stable gửi theo seq
 let lastSentStableSeq = -1;
+let lastRxViCommitSeq = -1;
 
 async function loadTranslatorUrlFromStorage() {
   const st = await storeGet([STORAGE_KEYS.TRANS_URL]);
@@ -860,6 +863,7 @@ function disconnectTranslator(hard = false) {
   if (hard) {
     transBackoffMs = 500;
     lastSentStableSeq = -1;
+    lastRxViCommitSeq = -1;
     lastTranslatorNotifyAt = 0;
     lastTranslatorNotifyText = "";
 
@@ -955,7 +959,13 @@ async function connectTranslator() {
 
     ws.onopen = () => {
       transBackoffMs = 500;
+      lastRxViCommitSeq = -1;
       tlog("WS open");
+
+      // Reset VI overlay guard/state on every translator (re)connect so seq/epoch restarts stay stable.
+      if (current?.tabId != null) {
+        safeSendTab(current.tabId, { __cmd: "__TRANS_VI_RESET__" }).catch(() => {});
+      }
 
       if (transNeedHardResetOnOpen) {
         tlog("hard reset on open");
@@ -980,13 +990,64 @@ async function connectTranslator() {
 
       const typ = String(obj.type || "").toLowerCase();
 
-      if (typ === "hello") { trDbg.rxHello++; tlog("<- hello", obj.detail || obj); }
+      if (typ === "hello") {
+        trDbg.rxHello++;
+        tlog("<- hello", obj.detail || obj);
+        const d = obj.detail || {};
+        await safeSendTab(current.tabId, {
+          __cmd: "__TRANS_VI_CFG__",
+          payload: {
+            draftEnabled: !!d.vi_draft_enabled,
+            sentenceLag: Number.isFinite(Number(d.sentence_lag)) ? Number(d.sentence_lag) : null,
+          },
+        });
+      }
       if (typ === "status") { trDbg.rxStatus++; tlog("<- status", obj.detail || obj); }
+
+      if (typ === "vi-commit") {
+        trDbg.rxCommit++;
+        const viSeq = Number(obj.seq ?? 0);
+        if (Number.isFinite(viSeq) && viSeq > 0) {
+          trDbg.lastRxViSeq = viSeq;
+          lastRxViCommitSeq = Math.max(lastRxViCommitSeq, viSeq);
+        }
+        tlog("<- vi-commit", {
+          seq: obj.seq ?? null,
+          en_seq: obj.en_seq ?? null,
+          appendLen: (obj.append || "").length,
+          tail: String(obj.append || "").slice(-60),
+        });
+        maybeLogTranslatorRate();
+
+        await safeSendTab(current.tabId, { __cmd: "__TRANS_VI_COMMIT__", payload: obj });
+        return;
+      }
+
+      if (typ === "vi-draft") {
+        trDbg.rxDraft++;
+        tlog("<- vi-draft", {
+          seq: obj.seq ?? null,
+          en_seq: obj.en_seq ?? null,
+          req_id: obj.req_id ?? null,
+          textLen: String(obj.text || obj.full || "").length,
+        });
+        maybeLogTranslatorRate();
+
+        await safeSendTab(current.tabId, { __cmd: "__TRANS_VI_DRAFT__", payload: obj });
+        return;
+      }
 
       if (typ === "vi-delta") {
         trDbg.rxDelta++;
         const viSeq = Number(obj.seq ?? 0);
-        if (Number.isFinite(viSeq) && viSeq > 0) trDbg.lastRxViSeq = viSeq;
+        if (Number.isFinite(viSeq) && viSeq > 0) {
+          trDbg.lastRxViSeq = viSeq;
+          // If commit channel is available, drop compatible delta duplicates.
+          if (viSeq <= lastRxViCommitSeq) {
+            maybeLogTranslatorRate();
+            return;
+          }
+        }
 
         tlog("<- vi-delta", {
           seq: obj.seq ?? null,

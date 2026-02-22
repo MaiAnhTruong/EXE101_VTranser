@@ -147,6 +147,7 @@ SEG_MAX_CHARS = int(os.getenv("SEG_MAX_CHARS", "140"))
 DRAFT_MIN_WORDS = _int_env("DRAFT_MIN_WORDS", max(3, SEG_MIN_WORDS))
 DRAFT_MAX_CHARS = _int_env("DRAFT_MAX_CHARS", SEG_MAX_CHARS)
 DRAFT_SEND_EVERY_MS = _int_env("DRAFT_SEND_EVERY_MS", 180)
+ENABLE_VI_DRAFT = _bool_env("ENABLE_VI_DRAFT", False)
 
 # ===== translate on stable text but lag by N words =====
 TR_DELAY_WORDS = _int_env("TR_DELAY_WORDS", 2)
@@ -158,6 +159,13 @@ TR_DELAY_PUNCT_DISCOUNT = _int_env("TR_DELAY_PUNCT_DISCOUNT", 2)
 TR_DELAY_STOPWORD_BONUS = _int_env("TR_DELAY_STOPWORD_BONUS", 1)
 TR_RELEASE_FAST_MS = _int_env("TR_RELEASE_FAST_MS", max(320, int(SEG_PAUSE_MS * 0.75)))
 TR_RELEASE_SLOW_MS = _int_env("TR_RELEASE_SLOW_MS", int(max(TR_DELAY_RELEASE_MS, SEG_PAUSE_MS * 1.6)))
+TR_SENTENCE_LAG = _int_env("TR_SENTENCE_LAG", 0)
+TR_LAG_RELEASE_ON_DRAFT = _bool_env("TR_LAG_RELEASE_ON_DRAFT", False)
+TR_LAG_DRAFT_MIN_WORDS = _int_env("TR_LAG_DRAFT_MIN_WORDS", 2)
+TR_LAG_FLUSH_ON_FORCE = _bool_env("TR_LAG_FLUSH_ON_FORCE", False)
+STRICT_STABLE_SENTENCE_ONLY = _bool_env("STRICT_STABLE_SENTENCE_ONLY", True)
+STRICT_SENT_STABLE_COUNT = _int_env("STRICT_SENT_STABLE_COUNT", 2)
+STRICT_RELEASE_FLUSH_ALL = _bool_env("STRICT_RELEASE_FLUSH_ALL", False)
 
 ENABLE_BEAT_COMMIT = _bool_env("ENABLE_BEAT_COMMIT", True)
 BEAT_STABLE_COUNT = _int_env("BEAT_STABLE_COUNT", 2)
@@ -189,6 +197,13 @@ TR_DELAY_PUNCT_DISCOUNT = max(0, int(TR_DELAY_PUNCT_DISCOUNT))
 TR_DELAY_STOPWORD_BONUS = max(0, int(TR_DELAY_STOPWORD_BONUS))
 TR_RELEASE_FAST_MS = max(120, int(TR_RELEASE_FAST_MS))
 TR_RELEASE_SLOW_MS = max(TR_RELEASE_FAST_MS, int(TR_RELEASE_SLOW_MS))
+TR_SENTENCE_LAG = max(0, int(TR_SENTENCE_LAG))
+TR_LAG_DRAFT_MIN_WORDS = max(1, int(TR_LAG_DRAFT_MIN_WORDS))
+STRICT_SENT_STABLE_COUNT = max(1, int(STRICT_SENT_STABLE_COUNT))
+if STRICT_STABLE_SENTENCE_ONLY and TR_SENTENCE_LAG < 1:
+    TR_SENTENCE_LAG = 1
+SENTENCE_END_RE = re.compile(r"(?:[.!?]|\u2026)(?:[\"')\]]+)?$")
+SENTENCE_SPLIT_RE = re.compile(r"(.+?(?:[.!?]|\u2026)+(?:[\"')\]]+)?)($|\s+)")
 
 
 # ---------- Lazy MT init (with backoff + lock) ----------
@@ -926,6 +941,59 @@ def _join_vi(prev_vi: str, new_vi: str) -> str:
     if prev_last in _PUNCT_CHARS:
         return " " + new_vi + tail_space
     return " " + new_vi + tail_space
+
+
+def _join_text_parts(base: str, piece: str) -> str:
+    b = (base or "").strip()
+    p = (piece or "").strip()
+    if not b:
+        return p
+    if not p:
+        return b
+    if p[0] in ".,!?;:)]\"'":
+        return b + p
+    return b + " " + p
+
+
+def _looks_like_sentence_end(text: str) -> bool:
+    s = (text or "").strip()
+    if not s:
+        return False
+    return bool(SENTENCE_END_RE.search(s))
+
+
+def _draft_has_lookahead(text: str) -> bool:
+    d = _norm_spaces(text)
+    if not d:
+        return False
+    if _is_punct_only(d) or (not _has_alnum(d)):
+        return False
+    return _word_count(d) >= max(1, TR_LAG_DRAFT_MIN_WORDS)
+
+
+def _split_complete_sentences_text(text: str) -> Tuple[List[str], str]:
+    t = _norm_spaces(text)
+    if not t:
+        return [], ""
+    out: List[str] = []
+    last_end = 0
+    for m in SENTENCE_SPLIT_RE.finditer(t):
+        seg = _norm_spaces(m.group(1))
+        if seg:
+            out.append(seg)
+        last_end = m.end(1)
+    tail = _norm_spaces(t[last_end:])
+    return out, tail
+
+
+def _lcp_sentence_prefix_len(a: List[str], b: List[str]) -> int:
+    n = min(len(a), len(b))
+    i = 0
+    while i < n:
+        if _norm_spaces(a[i]) != _norm_spaces(b[i]):
+            break
+        i += 1
+    return i
 
 
 # ---------- Robust message parsing ----------
@@ -1700,6 +1768,15 @@ class StreamState:
         self.raw_eff_seq: int = -1
         self.last_rx_mono: float = time.monotonic()
         self.release_token: int = 0
+        self.pending_commits: List[Tuple[int, str]] = []
+        self.pending_sentence: str = ""
+        self.pending_sentence_seq: int = -1
+        self.strict_seen_sentences: List[str] = []
+        self.strict_seen_counts: List[int] = []
+        self.strict_committed_sentences: List[str] = []
+        self.strict_tail: str = ""
+        self.strict_confirmed_n: int = 0
+        self.strict_target_n: int = 0
 
         self.last_status_t: float = time.monotonic()
 
@@ -1727,6 +1804,15 @@ class StreamState:
         self.raw_eff_seq = -1
         self.last_rx_mono = time.monotonic()
         self.release_token = 0
+        self.pending_commits = []
+        self.pending_sentence = ""
+        self.pending_sentence_seq = -1
+        self.strict_seen_sentences = []
+        self.strict_seen_counts = []
+        self.strict_committed_sentences = []
+        self.strict_tail = ""
+        self.strict_confirmed_n = 0
+        self.strict_target_n = 0
 
         self.last_status_t = time.monotonic()
         self.rx_cnt = 0
@@ -1787,6 +1873,9 @@ async def handler(websocket, *args):
         logger.warning("[%s][MT] unavailable: %s", tag, mt_unavailable_reason)
 
     async def send_draft_clear(en_seq: Optional[int] = None, req_id: Optional[int] = None):
+        if not ENABLE_VI_DRAFT:
+            state.vi_draft = ""
+            return
         state.vi_draft = ""
         state.vi_draft_seq += 1
         await send_obj({"type": "vi-draft", "text": "", "seq": state.vi_draft_seq, "en_seq": en_seq, "req_id": req_id})
@@ -1808,6 +1897,151 @@ async def handler(websocket, *args):
         await _drain_draft_queue()
         await send_draft_clear(en_seq=en_seq, req_id=rid)
 
+    def _lag_reset_buffers() -> None:
+        state.pending_commits.clear()
+        state.pending_sentence = ""
+        state.pending_sentence_seq = -1
+
+    def _enqueue_commit_segment(en_seq_i: int, seg: str) -> None:
+        if not seg or _is_punct_only(seg):
+            return
+        try:
+            commit_queue.put_nowait((en_seq_i, seg))
+            state.seg.dbg["enqueue_segs"] += 1
+        except asyncio.QueueFull:
+            state.q_drop += 1
+            try:
+                dropped = commit_queue.get_nowait()
+                if dropped is None:
+                    commit_queue.put_nowait(None)
+                commit_queue.put_nowait((en_seq_i, seg))
+            except Exception:
+                pass
+            if _rl_ok(f"{tag}:qdrop", LOG_Q_DROP_EVERY_MS):
+                logger.warning(
+                    "[%s][Q] COMMIT FULL -> drop+replace | q=%d dropped_cnt=%d | seg='%s'",
+                    tag, commit_queue.qsize(), state.q_drop, _preview(seg, LOG_SEG_PREVIEW_CHARS)
+                )
+
+    def _lag_collect_commit(seg: str, eff_seq: int) -> None:
+        s = _norm_spaces(seg)
+        if not s or _is_punct_only(s):
+            return
+
+        has_pending = bool(state.pending_sentence)
+        first_seq = state.pending_sentence_seq if (has_pending and state.pending_sentence_seq >= 0) else eff_seq
+        merged = _join_text_parts(state.pending_sentence, s) if has_pending else s
+        complete_sents, tail = _split_complete_sentences_text(merged)
+
+        if not complete_sents:
+            state.pending_sentence = merged
+            if state.pending_sentence_seq < 0:
+                state.pending_sentence_seq = eff_seq
+            return
+
+        for idx, sent in enumerate(complete_sents):
+            if not sent or _is_punct_only(sent):
+                continue
+            seq_for_sentence = first_seq if idx == 0 else eff_seq
+            state.pending_commits.append((seq_for_sentence, sent))
+
+        state.pending_sentence = tail
+        state.pending_sentence_seq = (eff_seq if tail else -1)
+
+    def _lag_dispatch_ready(draft_en: str, eff_seq: int, force_release: bool) -> int:
+        if force_release and TR_LAG_FLUSH_ON_FORCE:
+            tail = _norm_spaces(state.pending_sentence)
+            if tail and (not _is_punct_only(tail)):
+                seq_for_tail = state.pending_sentence_seq if state.pending_sentence_seq >= 0 else eff_seq
+                state.pending_commits.append((seq_for_tail, tail))
+            state.pending_sentence = ""
+            state.pending_sentence_seq = -1
+
+        if STRICT_STABLE_SENTENCE_ONLY:
+            release_count = len(state.pending_commits)
+            released = 0
+            while released < release_count and state.pending_commits:
+                en_seq_i, seg = state.pending_commits.pop(0)
+                _enqueue_commit_segment(en_seq_i, seg)
+                released += 1
+            return released
+
+        release_count = 0
+        if force_release:
+            release_count = len(state.pending_commits)
+        else:
+            lag_keep = max(0, TR_SENTENCE_LAG)
+            release_count = max(0, len(state.pending_commits) - lag_keep)
+
+            if (
+                release_count <= 0
+                and TR_SENTENCE_LAG > 0
+                and TR_LAG_RELEASE_ON_DRAFT
+                and len(state.pending_commits) >= max(1, TR_SENTENCE_LAG)
+                and _draft_has_lookahead(draft_en)
+            ):
+                release_count = 1
+
+        released = 0
+        while released < release_count and state.pending_commits:
+            en_seq_i, seg = state.pending_commits.pop(0)
+            _enqueue_commit_segment(en_seq_i, seg)
+            released += 1
+        return released
+
+    def _strict_collect_and_dispatch(full_norm: str, eff_seq: int, force_release: bool) -> int:
+        sents, tail = _split_complete_sentences_text(full_norm)
+        old_sents = state.strict_seen_sentences
+        old_counts = state.strict_seen_counts
+
+        new_counts: List[int] = []
+        for i, s in enumerate(sents):
+            if i < len(old_sents) and _norm_spaces(old_sents[i]) == _norm_spaces(s):
+                prev = old_counts[i] if i < len(old_counts) else 0
+                new_counts.append(int(prev) + 1)
+            else:
+                new_counts.append(1)
+
+        state.strict_seen_sentences = sents
+        state.strict_seen_counts = new_counts
+        state.strict_tail = tail
+
+        confirmed_n = 0
+        for c in new_counts:
+            if c >= STRICT_SENT_STABLE_COUNT:
+                confirmed_n += 1
+            else:
+                break
+        state.strict_confirmed_n = confirmed_n
+
+        lag_keep = max(1, TR_SENTENCE_LAG)
+        target_n = max(0, confirmed_n - lag_keep)
+        if force_release and STRICT_RELEASE_FLUSH_ALL:
+            target_n = confirmed_n
+        state.strict_target_n = target_n
+
+        committed = state.strict_committed_sentences
+        # Keep an append-only commit timeline: once a sentence is committed, we do not
+        # rewrite it even if upstream ASR later tweaks older text. This prevents strict
+        # mode from getting stuck on non-prefix rewrites and keeps one-sentence feed.
+        if len(sents) < len(committed):
+            if _rl_ok(f"{tag}:strict-rewind", LOG_RX_EVERY_MS):
+                logger.debug(
+                    "[%s][STRICT] seen sentences rewound | committed=%d seen=%d confirmed=%d target=%d",
+                    tag, len(committed), len(sents), confirmed_n, target_n
+                )
+
+        released = 0
+        upper = min(target_n, len(sents))
+        for i in range(len(committed), upper):
+            s = _norm_spaces(sents[i])
+            if not s or _is_punct_only(s):
+                continue
+            _enqueue_commit_segment(eff_seq, s)
+            committed.append(s)
+            released += 1
+        return released
+
     async def commit_worker():
         last_send_err_ms = 0
         while True:
@@ -1816,15 +2050,16 @@ async def handler(websocket, *args):
                 break
 
             batch = [item]
-            try:
-                while len(batch) < 4:
-                    nxt = commit_queue.get_nowait()
-                    if nxt is None:
-                        await commit_queue.put(None)
-                        break
-                    batch.append(nxt)
-            except asyncio.QueueEmpty:
-                pass
+            if not STRICT_STABLE_SENTENCE_ONLY:
+                try:
+                    while len(batch) < 4:
+                        nxt = commit_queue.get_nowait()
+                        if nxt is None:
+                            await commit_queue.put(None)
+                            break
+                        batch.append(nxt)
+                except asyncio.QueueEmpty:
+                    pass
 
             pairs: List[Tuple[int, str]] = []
             for it in batch:
@@ -1997,6 +2232,29 @@ async def handler(websocket, *args):
         force_release: bool,
         schedule_release: bool,
     ):
+        if STRICT_STABLE_SENTENCE_ONLY:
+            released = _strict_collect_and_dispatch(full_norm=full_norm, eff_seq=eff_seq, force_release=force_release)
+            if released > 0 and logger.isEnabledFor(logging.DEBUG) and _rl_ok(f"{tag}:strict-release", LOG_RX_EVERY_MS):
+                logger.debug(
+                    "[%s][STRICT] release=%d confirmed=%d target=%d committed=%d tail_len=%d stable_n=%d lag=%d force=%s",
+                    tag,
+                    released,
+                    state.strict_confirmed_n,
+                    state.strict_target_n,
+                    len(state.strict_committed_sentences),
+                    len(state.strict_tail),
+                    int(STRICT_SENT_STABLE_COUNT),
+                    int(TR_SENTENCE_LAG),
+                    str(force_release),
+                )
+
+            if ENABLE_VI_DRAFT:
+                await invalidate_and_clear_draft(en_seq=eff_seq)
+
+            if schedule_release:
+                await _schedule_tail_release(full_norm, eff_seq)
+            return
+
         src_full = _apply_delay_words(full_norm, TR_DELAY_WORDS, force_release=force_release)
         commit_segs, draft_en = state.seg.update_stable(src_full, t_ms=t_ms)
 
@@ -2004,42 +2262,50 @@ async def handler(websocket, *args):
             await invalidate_and_clear_draft(en_seq=eff_seq)
 
         for s in commit_segs:
-            if not s or _is_punct_only(s):
-                continue
-            try:
-                commit_queue.put_nowait((eff_seq, s))
-                state.seg.dbg["enqueue_segs"] += 1
-            except asyncio.QueueFull:
-                state.q_drop += 1
-                try:
-                    dropped = commit_queue.get_nowait()
-                    if dropped is None:
-                        commit_queue.put_nowait(None)
-                    commit_queue.put_nowait((eff_seq, s))
-                except Exception:
-                    pass
-                if _rl_ok(f"{tag}:qdrop", LOG_Q_DROP_EVERY_MS):
-                    logger.warning("[%s][Q] COMMIT FULL -> drop+replace | q=%d dropped_cnt=%d | seg='%s'",
-                                   tag, commit_queue.qsize(), state.q_drop, _preview(s, LOG_SEG_PREVIEW_CHARS))
+            _lag_collect_commit(s, eff_seq)
+
+        released = _lag_dispatch_ready(draft_en=draft_en, eff_seq=eff_seq, force_release=force_release)
+        if released > 0 and logger.isEnabledFor(logging.DEBUG) and _rl_ok(f"{tag}:lag-release", LOG_RX_EVERY_MS):
+            logger.debug(
+                "[%s][LAG] release=%d keep=%d lookahead=%s pending=%d tail_len=%d force=%s",
+                tag,
+                released,
+                int(TR_SENTENCE_LAG),
+                str(_draft_has_lookahead(draft_en)),
+                len(state.pending_commits),
+                len(state.pending_sentence),
+                str(force_release),
+            )
 
         draft_en = (draft_en or "").strip()
         now_ms = _now_ms_wall()
 
-        if draft_en != state.last_draft_en:
-            if (now_ms - state.last_draft_send_ms) >= max(0, DRAFT_SEND_EVERY_MS):
-                state.last_draft_en = draft_en
-                state.last_draft_send_ms = now_ms
+        if ENABLE_VI_DRAFT:
+            if draft_en != state.last_draft_en:
+                if (now_ms - state.last_draft_send_ms) >= max(0, DRAFT_SEND_EVERY_MS):
+                    state.last_draft_en = draft_en
+                    state.last_draft_send_ms = now_ms
 
-                payload = draft_en if (_draft_ok_for_translate(draft_en) and (not _is_punct_only(draft_en))) else ""
-                rid = state.bump_draft_req()
+                    payload = draft_en if (_draft_ok_for_translate(draft_en) and (not _is_punct_only(draft_en))) else ""
+                    rid = state.bump_draft_req()
 
-                try:
-                    await _drain_draft_queue()
-                    draft_queue.put_nowait((eff_seq, payload, rid))
-                except asyncio.QueueFull:
-                    state.draft_drop += 1
+                    try:
+                        await _drain_draft_queue()
+                        draft_queue.put_nowait((eff_seq, payload, rid))
+                    except asyncio.QueueFull:
+                        state.draft_drop += 1
+            else:
+                if (not draft_en) and state.vi_draft and (now_ms - state.last_draft_send_ms) >= max(250, DRAFT_SEND_EVERY_MS):
+                    state.last_draft_send_ms = now_ms
+                    rid = state.bump_draft_req()
+                    try:
+                        await _drain_draft_queue()
+                        draft_queue.put_nowait((eff_seq, "", rid))
+                    except asyncio.QueueFull:
+                        state.draft_drop += 1
         else:
-            if (not draft_en) and state.vi_draft and (now_ms - state.last_draft_send_ms) >= max(250, DRAFT_SEND_EVERY_MS):
+            state.last_draft_en = ""
+            if state.vi_draft and (now_ms - state.last_draft_send_ms) >= max(250, DRAFT_SEND_EVERY_MS):
                 state.last_draft_send_ms = now_ms
                 rid = state.bump_draft_req()
                 try:
@@ -2054,11 +2320,11 @@ async def handler(websocket, *args):
     await send_obj({
         "type": "hello",
         "detail": {
-            "mode": "stable->draft+commit",
+            "mode": "stable->sentence-lag-commit",
             "lang_src": "en",
             "lang_tgt": "vi",
             "commit_append_only": True,
-            "draft_replace": True,
+            "draft_replace": bool(ENABLE_VI_DRAFT),
             "seg_pause_ms": int(SEG_PAUSE_MS),
             "seg_beat_ms": int(SEG_BEAT_MS),
             "min_words": int(SEG_MIN_WORDS),
@@ -2095,6 +2361,14 @@ async def handler(websocket, *args):
             "delay_stopword_bonus": int(TR_DELAY_STOPWORD_BONUS),
             "release_fast_ms": int(TR_RELEASE_FAST_MS),
             "release_slow_ms": int(TR_RELEASE_SLOW_MS),
+            "sentence_lag": int(TR_SENTENCE_LAG),
+            "lag_release_on_draft": bool(TR_LAG_RELEASE_ON_DRAFT),
+            "lag_draft_min_words": int(TR_LAG_DRAFT_MIN_WORDS),
+            "lag_flush_on_force": bool(TR_LAG_FLUSH_ON_FORCE),
+            "strict_stable_sentence_only": bool(STRICT_STABLE_SENTENCE_ONLY),
+            "strict_sent_stable_count": int(STRICT_SENT_STABLE_COUNT),
+            "strict_release_flush_all": bool(STRICT_RELEASE_FLUSH_ALL),
+            "vi_draft_enabled": bool(ENABLE_VI_DRAFT),
             "mt_ready": (not bool(mt_unavailable_reason)),
             "mt_unavailable_reason": (mt_unavailable_reason or ""),
             "beam_commit": int(BEAM_COMMIT),
@@ -2172,6 +2446,13 @@ async def handler(websocket, *args):
 
                 base_src = _apply_delay_words(full_n, TR_DELAY_WORDS, force_release=False)
                 state.seg.baseline(base_src)
+                _lag_reset_buffers()
+                state.strict_seen_sentences = []
+                state.strict_seen_counts = []
+                state.strict_committed_sentences = []
+                state.strict_tail = ""
+                state.strict_confirmed_n = 0
+                state.strict_target_n = 0
 
                 await invalidate_and_clear_draft(en_seq=eff_seq)
                 await _schedule_tail_release(full_n, eff_seq)
@@ -2232,6 +2513,19 @@ async def handler(websocket, *args):
                         "draft_drop": int(state.draft_drop),
                         "drop_punct_only": int(state.seg.dbg["drop_punct_only"]),
                         "draft_req_id": int(state.draft_req_id),
+                        "pending_sentences": int(len(state.pending_commits)),
+                        "pending_sentence_tail_len": int(len(state.pending_sentence)),
+                        "sentence_lag": int(TR_SENTENCE_LAG),
+                        "lag_flush_on_force": bool(TR_LAG_FLUSH_ON_FORCE),
+                        "strict_stable_sentence_only": bool(STRICT_STABLE_SENTENCE_ONLY),
+                        "strict_sent_stable_count": int(STRICT_SENT_STABLE_COUNT),
+                        "strict_release_flush_all": bool(STRICT_RELEASE_FLUSH_ALL),
+                        "strict_seen_sentences": int(len(state.strict_seen_sentences)),
+                        "strict_confirmed_sentences": int(state.strict_confirmed_n),
+                        "strict_target_sentences": int(state.strict_target_n),
+                        "strict_committed_sentences": int(len(state.strict_committed_sentences)),
+                        "strict_tail_len": int(len(state.strict_tail)),
+                        "vi_draft_enabled": bool(ENABLE_VI_DRAFT),
                         "delay_words": int(TR_DELAY_WORDS),
                         "delay_release_ms": int(TR_DELAY_RELEASE_MS),
                         "delay_adaptive": bool(TR_DELAY_ADAPTIVE),
@@ -2300,6 +2594,9 @@ async def main():
         "[beam_commit=%d beam_draft=%d] "
         "[delay_words=%d delay_release_ms=%d] "
         "[delay_adaptive=%s dw_min=%d dw_max=%d punct_discount=%d stopword_bonus=%d fast_release=%d slow_release=%d] "
+        "[sentence_lag=%d release_on_draft=%s lag_draft_min_words=%d lag_flush_on_force=%s] "
+        "[strict_stable_sentence_only=%s stable_n=%d release_flush_all=%s] "
+        "[vi_draft_enabled=%s] "
         "[draft_garbage_filter=%s] "
         "[rx_log_every_ms=%d mt_log_every_ms=%d status_every_s=%.2f] "
         "[send_vi_delta_compat=%s] "
@@ -2319,6 +2616,9 @@ async def main():
         str(TR_DELAY_ADAPTIVE), int(TR_DELAY_WORDS_MIN), int(TR_DELAY_WORDS_MAX),
         int(TR_DELAY_PUNCT_DISCOUNT), int(TR_DELAY_STOPWORD_BONUS),
         int(TR_RELEASE_FAST_MS), int(TR_RELEASE_SLOW_MS),
+        int(TR_SENTENCE_LAG), str(TR_LAG_RELEASE_ON_DRAFT), int(TR_LAG_DRAFT_MIN_WORDS), str(TR_LAG_FLUSH_ON_FORCE),
+        str(STRICT_STABLE_SENTENCE_ONLY), int(STRICT_SENT_STABLE_COUNT), str(STRICT_RELEASE_FLUSH_ALL),
+        str(ENABLE_VI_DRAFT),
         str(DRAFT_GARBAGE_FILTER),
         LOG_RX_EVERY_MS, LOG_MT_EVERY_MS, LOG_STATUS_EVERY_S,
         str(SEND_VI_DELTA_COMPAT),

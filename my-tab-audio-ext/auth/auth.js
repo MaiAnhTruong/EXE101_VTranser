@@ -29,19 +29,19 @@
 
   function mustChromeStorage() {
     if (!window.chrome || !chrome.storage || !chrome.storage.local) {
-      toast('chrome.storage.local khong san sang. Kiem tra permission "storage" roi reload extension.');
+      toast('chrome.storage.local chưa sẵn sàng. Hãy kiểm tra quyền "storage" rồi tải lại extension.');
       return false;
     }
     return true;
   }
 
   async function storageSet(obj) {
-    if (!mustChromeStorage()) throw new Error("chrome.storage.local unavailable");
+    if (!mustChromeStorage()) throw new Error("Không thể truy cập chrome.storage.local.");
     return new Promise((resolve) => chrome.storage.local.set(obj, resolve));
   }
 
   async function storageGet(keys) {
-    if (!mustChromeStorage()) throw new Error("chrome.storage.local unavailable");
+    if (!mustChromeStorage()) throw new Error("Không thể truy cập chrome.storage.local.");
     return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
   }
 
@@ -49,14 +49,14 @@
   // Supabase helpers
   function supaReady() {
     if (!SUPA_URL || !SUPA_KEY) {
-      toast("Thieu SUPABASE_URL hoac SUPABASE_KEY trong auth/config.js");
+      toast("Thiếu SUPABASE_URL hoặc SUPABASE_KEY trong auth/config.js.");
       return false;
     }
     return true;
   }
 
   async function supaFetch(path, init = {}) {
-    if (!supaReady()) throw new Error("Supabase config missing");
+    if (!supaReady()) throw new Error("Thiếu cấu hình Supabase.");
     const url = `${SUPA_URL}${path}`;
     const res = await fetch(url, {
       ...init,
@@ -80,7 +80,7 @@
     const res = await supaFetch(
       `/rest/v1/users?email=eq.${encodeURIComponent(em)}&select=id,email,phone,password_hash,auth_provider,status,created_at,last_login_at`
     );
-    if (!res.ok) throw new Error(`Supabase select by email failed (${res.status})`);
+    if (!res.ok) throw new Error(`Không thể truy vấn tài khoản theo email (HTTP ${res.status}).`);
     const arr = await res.json();
     return Array.isArray(arr) && arr.length ? arr[0] : null;
   }
@@ -89,17 +89,21 @@
     const ph = normalizedPhone(phone);
     if (!ph) return null;
     const res = await supaFetch(
-      `/rest/v1/users?phone=eq.${encodeURIComponent(ph)}&select=id,email,phone&limit=1`
+      `/rest/v1/users?phone=eq.${encodeURIComponent(
+        ph
+      )}&select=id,email,phone,password_hash,auth_provider,status,created_at,last_login_at&limit=1`
     );
-    if (!res.ok) throw new Error(`Supabase select by phone failed (${res.status})`);
+    if (!res.ok) throw new Error(`Không thể truy vấn tài khoản theo số điện thoại (HTTP ${res.status}).`);
     const arr = await res.json();
     return Array.isArray(arr) && arr.length ? arr[0] : null;
   }
 
   async function supaInsertUser(email, phone, passwordHash) {
+    const em = normalizedEmail(email);
+    const ph = normalizedPhone(phone);
     const body = {
-      email: normalizedEmail(email),
-      phone: normalizedPhone(phone),
+      email: em || null,
+      phone: ph || null,
       password_hash: passwordHash,
       auth_provider: "local",
       status: "active",
@@ -111,8 +115,8 @@
       headers: { Prefer: "return=representation" },
       body: JSON.stringify(body),
     });
-    if (res.status === 409) throw new Error("duplicate");
-    if (!res.ok) throw new Error((await res.text()) || `insert failed (${res.status})`);
+    if (res.status === 409) throw new Error("Tài khoản đã tồn tại.");
+    if (!res.ok) throw new Error((await res.text()) || `Không thể tạo tài khoản (HTTP ${res.status}).`);
     const arr = await res.json();
     return Array.isArray(arr) && arr.length ? arr[0] : body;
   }
@@ -213,6 +217,23 @@
     return /^\+?[0-9]{8,15}$/.test(normalizedPhone(phone));
   }
 
+  function parseAccountInput(v) {
+    const raw = String(v || "").trim();
+    if (!raw) return null;
+
+    const email = normalizedEmail(raw);
+    if (emailLooksOk(email)) {
+      return { type: "email", value: email, email, phone: "" };
+    }
+
+    const phone = normalizedPhone(raw);
+    if (phoneLooksOk(phone)) {
+      return { type: "phone", value: phone, email: "", phone };
+    }
+
+    return null;
+  }
+
   function normalizeDbUserId(v) {
     const s = String(v ?? "").trim();
     return /^\d+$/.test(s) ? s : null;
@@ -246,14 +267,17 @@
 
   function profileFromUserRow(u) {
     const email = normalizedEmail(u?.email || "");
+    const phone = normalizedPhone(u?.phone || "");
     const uid = normalizeDbUserId(u?.id);
-    const name = email.includes("@") ? email.split("@")[0] : email || "user";
+    const identity = email || phone || uid || "user";
+    const nameSeed = email || phone || "user";
+    const name = nameSeed.includes("@") ? nameSeed.split("@")[0] : nameSeed;
     return {
-      id: uid || email,
+      id: uid || identity,
       email,
-      phone: normalizedPhone(u?.phone || ""),
+      phone,
       name,
-      provider: "email",
+      provider: "local",
       picture: "",
       user_id: uid,
       db_user_id: uid,
@@ -313,7 +337,7 @@
     const inp = $(inputId);
     if (!btn || !inp) return;
     const syncText = () => {
-      btn.textContent = inp.type === "password" ? "Hien" : "An";
+      btn.textContent = inp.type === "password" ? "Hiện" : "Ẩn";
     };
     syncText();
     btn.addEventListener("click", () => {
@@ -327,12 +351,11 @@
   bindPwToggle("togglePwS2", "signupPass2");
 
   // Form refs
-  const loginEmail = $("loginEmail");
+  const loginAccount = $("loginAccount");
   const loginPass = $("loginPass");
   const btnEmailLogin = $("btnEmailLogin");
 
-  const signupEmail = $("signupEmail");
-  const signupPhone = $("signupPhone");
+  const signupAccount = $("signupAccount");
   const signupPass = $("signupPass");
   const signupPass2 = $("signupPass2");
   const btnEmailSignup = $("btnEmailSignup");
@@ -373,24 +396,28 @@
 
   function refreshButtons() {
     if (btnEmailLogin) {
-      const ok = emailLooksOk(loginEmail?.value) && String(loginPass?.value || "").length > 0;
+      const accountRaw = String(loginAccount?.value || "");
+      const accountOk = !!parseAccountInput(accountRaw);
+      const pwOk = String(loginPass?.value || "").length > 0;
+      setInvalid(loginAccount, accountRaw.trim().length > 0 && !accountOk);
+      const ok = accountOk && pwOk;
       btnEmailLogin.disabled = !ok;
     }
 
     if (btnEmailSignup) {
-      const emailOk = emailLooksOk(signupEmail?.value);
-      const phoneOk = phoneLooksOk(signupPhone?.value);
+      const accountRaw = String(signupAccount?.value || "");
+      const accountOk = !!parseAccountInput(accountRaw);
       const { policyOk, mismatch } = renderSignupRules();
       const confirmOk = String(signupPass2?.value || "").length > 0 && !mismatch;
 
-      setInvalid(signupPhone, String(signupPhone?.value || "").length > 0 && !phoneOk);
+      setInvalid(signupAccount, accountRaw.trim().length > 0 && !accountOk);
       setInvalid(signupPass, String(signupPass?.value || "").length > 0 && !policyOk);
 
-      btnEmailSignup.disabled = !(emailOk && phoneOk && policyOk && confirmOk);
+      btnEmailSignup.disabled = !(accountOk && policyOk && confirmOk);
     }
   }
 
-  [loginEmail, loginPass, signupEmail, signupPhone, signupPass, signupPass2]
+  [loginAccount, loginPass, signupAccount, signupPass, signupPass2]
     .filter(Boolean)
     .forEach((el) => el.addEventListener("input", refreshButtons));
   refreshButtons();
@@ -401,40 +428,41 @@
     try {
       if (!supaReady()) return;
 
-      const email = normalizedEmail(signupEmail?.value);
-      const phone = normalizedPhone(signupPhone?.value);
+      const accountRaw = String(signupAccount?.value || "");
+      const account = parseAccountInput(accountRaw);
       const pw = String(signupPass?.value || "");
       const pw2 = String(signupPass2?.value || "");
+      const email = account?.type === "email" ? account.email : null;
+      const phone = account?.type === "phone" ? account.phone : null;
 
-      if (!emailLooksOk(email)) return toast("Email khong hop le.");
-      if (!phoneLooksOk(phone)) return toast("So dien thoai khong hop le.");
+      if (!account) return toast("Email hoặc số điện thoại không hợp lệ.");
       const pol = passwordPolicy(pw);
-      if (!pol.ok) return toast("Mat khau chua dat yeu cau.");
-      if (pw !== pw2) return toast("Mat khau nhap lai chua khop.");
+      if (!pol.ok) return toast("Mật khẩu chưa đạt yêu cầu.");
+      if (pw !== pw2) return toast("Mật khẩu nhập lại chưa khớp.");
 
-      const existsByEmail = await supaSelectUserByEmail(email);
-      if (existsByEmail) return toast("Tai khoan da ton tai. Vui long dang nhap.");
-
-      const existsByPhone = await supaSelectUserByPhone(phone);
-      if (existsByPhone) return toast("So dien thoai da duoc su dung.");
+      const existed =
+        account.type === "email"
+          ? await supaSelectUserByEmail(account.email)
+          : await supaSelectUserByPhone(account.phone);
+      if (existed) return toast("Tài khoản đã tồn tại. Vui lòng đăng nhập.");
 
       const passwordHash = await makePasswordHash(pw);
       await supaInsertUser(email, phone, passwordHash);
 
-      toast("Dang ky thanh cong. Vui long dang nhap.", 2600);
+      toast("Đăng ký thành công. Vui lòng đăng nhập.", 2600);
       setTimeout(() => {
         location.hash = "#login";
         showLogin();
-        if (loginEmail) loginEmail.value = email;
+        if (loginAccount) loginAccount.value = account.value;
         if (loginPass) loginPass.value = "";
         if (signupPass) signupPass.value = "";
         if (signupPass2) signupPass2.value = "";
-        if (signupPhone) signupPhone.value = "";
+        if (signupAccount) signupAccount.value = "";
         refreshButtons();
         loginPass?.focus?.();
       }, 600);
     } catch (e) {
-      toast("Dang ky that bai: " + String(e?.message || e));
+      toast("Đăng ký thất bại: " + String(e?.message || e));
     }
   }
 
@@ -442,27 +470,31 @@
     try {
       if (!supaReady()) return;
 
-      const email = normalizedEmail(loginEmail?.value);
+      const accountRaw = String(loginAccount?.value || "");
+      const account = parseAccountInput(accountRaw);
       const pw = String(loginPass?.value || "");
-      if (!emailLooksOk(email)) return toast("Email khong hop le.");
-      if (!pw) return toast("Vui long nhap mat khau.");
+      if (!account) return toast("Vui lòng nhập email hoặc số điện thoại hợp lệ.");
+      if (!pw) return toast("Vui lòng nhập mật khẩu.");
 
-      const u = await supaSelectUserByEmail(email);
+      const u =
+        account.type === "email"
+          ? await supaSelectUserByEmail(account.email)
+          : await supaSelectUserByPhone(account.phone);
       if (!u) {
-        toast("Sai email hoac tai khoan chua dang ky.");
+        toast("Sai tài khoản hoặc tài khoản chưa đăng ký.");
         await supaInsertAuthLogin(null, "local", false, "user_not_found");
         return;
       }
 
       if (u.status && u.status !== "active") {
-        toast("Tai khoan dang bi khoa hoac chua kich hoat.");
+        toast("Tài khoản đang bị khóa hoặc chưa kích hoạt.");
         await supaInsertAuthLogin(u.id, "local", false, "status_" + u.status);
         return;
       }
 
       const ok = await verifyPassword(pw, u.password_hash);
       if (!ok) {
-        toast("Sai mat khau.");
+        toast("Sai mật khẩu.");
         await supaInsertAuthLogin(u.id, "local", false, "bad_password");
         return;
       }
@@ -471,14 +503,16 @@
       await supaInsertAuthLogin(u.id, "local", true, null);
 
       const profile = profileFromUserRow(u);
-      await rememberEmailUserId(profile.email, profile.user_id || profile.db_user_id);
-      const session = await setSession("email", profile, {});
-      notifySuccess({ provider: "email", user: profile, tokens: {}, session });
+      if (profile.email) {
+        await rememberEmailUserId(profile.email, profile.user_id || profile.db_user_id);
+      }
+      const session = await setSession("local", profile, {});
+      notifySuccess({ provider: "local", user: profile, tokens: {}, session });
 
-      toast("Dang nhap thanh cong.");
+      toast("Đăng nhập thành công.");
       window.parent?.postMessage({ type: "VT_AUTH_CLOSE" }, "*");
     } catch (e) {
-      toast("Dang nhap that bai: " + String(e?.message || e));
+      toast("Đăng nhập thất bại: " + String(e?.message || e));
     }
   }
 
@@ -487,6 +521,6 @@
 
   $("forgotPw")?.addEventListener("click", (e) => {
     e.preventDefault();
-    toast("Chuc nang quen mat khau can luong backend rieng.", 4200);
+    toast("Chức năng quên mật khẩu cần luồng backend riêng.", 4200);
   });
 })();
