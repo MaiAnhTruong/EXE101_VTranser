@@ -377,13 +377,18 @@ html,body{
   gap:6px;
 }
 
+.chat-conv-row{
+  position:relative;
+  display:block;
+}
+
 .chat-conv-item{
   width:100%;
   text-align:left;
   border:1px solid #D9E2F1;
   background:#FFFFFF;
   border-radius:10px;
-  padding:9px 10px;
+  padding:9px 34px 9px 10px;
   cursor:pointer;
   transition:border-color .14s ease, background .14s ease, box-shadow .14s ease;
 }
@@ -397,6 +402,40 @@ html,body{
   border-color:#89AEE7;
   background:#EEF4FF;
   box-shadow:0 3px 10px rgba(37,99,235,.12);
+}
+
+.chat-conv-delete-btn{
+  position:absolute;
+  top:8px;
+  right:8px;
+  width:22px;
+  height:22px;
+  border:1px solid #D7A8AD;
+  border-radius:8px;
+  background:#FFFFFF;
+  color:#8C1D24;
+  cursor:pointer;
+  font-size:14px;
+  font-weight:700;
+  line-height:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  transition:border-color .14s ease, background .14s ease, box-shadow .14s ease;
+}
+
+.chat-conv-delete-btn:hover{
+  border-color:#C07B84;
+  background:#FFF1F2;
+}
+
+.chat-conv-delete-btn:focus-visible{
+  outline:none;
+  box-shadow:0 0 0 2px rgba(244,63,94,.18);
+}
+
+.chat-conv-row.active .chat-conv-delete-btn{
+  background:#FFF1F2;
 }
 
 .chat-conv-item-title{

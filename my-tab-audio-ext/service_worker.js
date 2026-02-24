@@ -1461,6 +1461,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
+    // snapshot realtime transcript for chat prompt context (sidepanel)
+    if (msg.__cmd === "__CHAT_REALTIME_SNAPSHOT__") {
+      sendResponse?.({
+        ok: true,
+        active: !!current?.startedAt,
+        starting: !!current?.starting,
+        tabId: current?.tabId || null,
+        full: String(lastEnStable?.full || ""),
+        seq: Number(lastEnStable?.seq || 0),
+        t_ms: Number(lastEnStable?.t_ms || 0),
+      });
+      return;
+    }
+
     // modes from sidepanel
     if (msg.__cmd === "__TRANSCRIPT_MODES__") {
       const modes = normalizeModes(msg.payload);

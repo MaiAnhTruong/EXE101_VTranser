@@ -61,6 +61,15 @@
                       <img src="icons/database.svg" alt="" class="input-btn-icon" />
                     </button>
                     <button
+                      id="chatChipRealtime"
+                      class="chip-button"
+                      type="button"
+                      title="Realtime transcript"
+                      aria-label="Realtime transcript"
+                    >
+                      <img src="icons/realtime.svg" alt="" class="input-btn-icon" />
+                    </button>
+                    <button
                       id="chatChipR1"
                       class="chip-button"
                       type="button"
@@ -275,6 +284,25 @@
       <div class="history-modal-actions">
         <button id="historyDeleteCancelBtn" class="history-confirm-cancel-btn" type="button">Hủy</button>
         <button id="historyDeleteConfirmBtn" class="history-confirm-delete-btn" type="button">Xóa</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CHAT DELETE CONFIRM MODAL -->
+  <div id="chatDeleteModal" class="history-modal hidden" aria-hidden="true">
+    <div class="history-modal-backdrop" data-chat-delete-close="1"></div>
+    <div class="history-modal-card history-confirm-card" role="dialog" aria-modal="true" aria-label="Xác nhận xóa cuộc trò chuyện">
+      <button id="chatDeleteClose" class="history-modal-close" type="button" aria-label="Đóng">×</button>
+      <div class="history-modal-head">
+        <h3 class="history-modal-title">Xác nhận xóa</h3>
+        <p id="chatDeleteMeta" class="history-modal-meta"></p>
+      </div>
+      <div id="chatDeleteText" class="history-confirm-text">
+        Bạn có chắc chắn muốn xóa cuộc trò chuyện này không? Hành động này không thể hoàn tác.
+      </div>
+      <div class="history-modal-actions">
+        <button id="chatDeleteCancelBtn" class="history-confirm-cancel-btn" type="button">Hủy</button>
+        <button id="chatDeleteConfirmBtn" class="history-confirm-delete-btn" type="button">Xóa</button>
       </div>
     </div>
   </div>

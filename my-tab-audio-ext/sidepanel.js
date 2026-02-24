@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Persist chat toggles
   const LS_CHAT_USE_RAG = 'sttChatUseRag';
   const LS_CHAT_USE_R1 = 'sttChatUseR1';
+  const LS_CHAT_USE_REALTIME = 'sttChatUseRealtime';
 
   // Optional debug
   const LS_CHAT_DEBUG = 'sttChatDebug'; // set "1" to log + show sent prompt in meta
@@ -228,20 +229,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const sid = String(sessionId || '').trim();
     if (!sid) return;
     const map = readChatHistoryMap();
-    map[sid] = (Array.isArray(items) ? items : [])
+    const nextItems = (Array.isArray(items) ? items : [])
       .slice(-CHAT_HISTORY_MAX)
       .map((x) => ({
         who: x?.who === 'assistant' ? 'assistant' : 'user',
         text: String(x?.text || ''),
         meta: String(x?.meta || ''),
       }));
+    if (nextItems.length) map[sid] = nextItems;
+    else delete map[sid];
     writeChatHistoryMap(map);
   }
 
   function pushChatHistoryItem(who, text, meta = '', opts = {}) {
     const msgText = String(text || '').trim();
     if (!msgText) return;
-    const sid = getSessionId();
+    const sid = String(opts.sessionId || getSessionId() || '').trim();
+    if (!sid) return;
     const arr = getChatHistoryItems(sid);
     arr.push({
       who: who === 'assistant' ? 'assistant' : 'user',
@@ -254,6 +258,44 @@ document.addEventListener('DOMContentLoaded', () => {
       titleHint: opts.titleHint || '',
     });
     syncConversationPanelAfterHistoryChange();
+  }
+
+  function clearChatDbCursorStateByLocalSession(sessionId) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return false;
+    const map = readJsonObjectLS(LS_CHAT_DB_CURSOR);
+    let changed = false;
+    Object.keys(map).forEach((k) => {
+      if (String(k || '').endsWith(`::${sid}`)) {
+        delete map[k];
+        changed = true;
+      }
+    });
+    if (changed) writeJsonObjectLS(LS_CHAT_DB_CURSOR, map);
+    return changed;
+  }
+
+  function deleteChatConversationData(sessionId) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return false;
+
+    let changed = false;
+    const histMap = readChatHistoryMap();
+    if (Object.prototype.hasOwnProperty.call(histMap, sid)) {
+      delete histMap[sid];
+      writeChatHistoryMap(histMap);
+      changed = true;
+    }
+
+    const metaMap = readChatSessionMetaMap();
+    if (Object.prototype.hasOwnProperty.call(metaMap, sid)) {
+      delete metaMap[sid];
+      writeChatSessionMetaMap(metaMap);
+      changed = true;
+    }
+
+    if (clearChatDbCursorStateByLocalSession(sid)) changed = true;
+    return changed;
   }
 
   function readBoolLS(key, fallback) {
@@ -505,13 +547,25 @@ document.addEventListener('DOMContentLoaded', () => {
   const chatConversationsList = document.getElementById('chatConversationsList');
   const chatConversationsEmpty = document.getElementById('chatConversationsEmpty');
   const chatConversationsNewBtn = document.getElementById('chatConversationsNewBtn');
+  const chatDeleteModal = document.getElementById('chatDeleteModal');
+  const chatDeleteClose = document.getElementById('chatDeleteClose');
+  const chatDeleteMeta = document.getElementById('chatDeleteMeta');
+  const chatDeleteText = document.getElementById('chatDeleteText');
+  const chatDeleteCancelBtn = document.getElementById('chatDeleteCancelBtn');
+  const chatDeleteConfirmBtn = document.getElementById('chatDeleteConfirmBtn');
   let chatScrollbarHideTimer = null;
   const chatConversationsState = {
     open: false,
     identityKey: '',
   };
+  const chatDeleteState = {
+    sessionId: '',
+    label: '',
+    submitting: false,
+  };
 
   const chipRag = document.getElementById('chatChipRag');
+  const chipRealtime = document.getElementById('chatChipRealtime');
   const chipR1 = document.getElementById('chatChipR1');
 
   const sendBtn = document.getElementById('icon-btn-send');
@@ -995,6 +1049,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ===== Transcript sentence delay logging =====
   let loggedSentCount = 0;
+  const realtimeSnapshotCache = {
+    active: false,
+    starting: false,
+    seq: 0,
+    tMs: 0,
+    full: '',
+    capturedAt: 0,
+  };
 
   const SENT_RE = /[^.!?]*[.!?]+(?:["']+)?(?:\s+|$)/g;
   function splitSentencesAndTail(text) {
@@ -1046,6 +1108,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (hasChromeRuntime) {
         if (willStart) {
+          setRealtimeSnapshotCache({ active: false, starting: true });
           setStartActive(true);
           startInFlight = true;
           setStartLoading(true);
@@ -1055,6 +1118,7 @@ document.addEventListener('DOMContentLoaded', () => {
             { __cmd: '__PANEL_START__', payload: { server: getServer() } },
             (res) => {
               if (!res?.ok) {
+                setRealtimeSnapshotCache({ active: false, starting: false });
                 setStartActive(false);
                 startInFlight = false;
                 setStartLoading(false);
@@ -1090,6 +1154,7 @@ document.addEventListener('DOMContentLoaded', () => {
           sendTranscriptModes();
           // timer & play visual sẽ bật khi nhận state 'running' từ OFFSCREEN_STATUS
         } else {
+          setRealtimeSnapshotCache({ active: false, starting: false });
           setStartActive(false);
           startInFlight = false;
           setStartLoading(false);
@@ -1121,6 +1186,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof msg.payload?.active === 'boolean') {
           const active = !!msg.payload.active;
           const starting = !!msg.payload.starting;
+          setRealtimeSnapshotCache({ active, starting });
 
           if (transcriptLiveFooter) {
             transcriptLiveFooter.textContent = active
@@ -1152,6 +1218,7 @@ document.addEventListener('DOMContentLoaded', () => {
           showBusyModal(text || undefined);
         }
         if (level === 'error') {
+          setRealtimeSnapshotCache({ active: false, starting: false });
           setPlayVisual(false);
           setStartActive(false);
           if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
@@ -1174,6 +1241,7 @@ document.addEventListener('DOMContentLoaded', () => {
           s === 'ws-open' ||
           s === 'ws-auth-sent'
         ) {
+          setRealtimeSnapshotCache({ active: false, starting: true });
           if (!runningUi) {
             startInFlight = true;
             setStartActive(true);
@@ -1193,6 +1261,7 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
         if (s === 'running') {
+          setRealtimeSnapshotCache({ active: true, starting: false });
           setStartActive(true);
           setPlayVisual(true);
           startInFlight = false;
@@ -1200,6 +1269,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live • Đang ghi';
         }
         if (s === 'stopped' || s === 'server-busy' || s === 'server-error' || s === 'error') {
+          setRealtimeSnapshotCache({ active: false, starting: false });
           if (s === 'server-busy') {
             showBusyModal(msg.payload?.text || 'Hệ thống đang bận, vui lòng thử lại sau.');
           }
@@ -1214,6 +1284,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (msg.__cmd === '__TRANSCRIPT_STABLE__') {
         const full = String(msg.payload?.full ?? msg.full ?? '');
+        const seq = Number(msg.payload?.seq ?? msg.seq ?? 0);
+        const tMs = Number(msg.payload?.t_ms ?? msg.t_ms ?? 0);
+        setRealtimeSnapshotCache({
+          active: true,
+          starting: false,
+          seq: Number.isFinite(seq) ? seq : 0,
+          tMs: Number.isFinite(tMs) ? tMs : 0,
+          full,
+        });
         if (!full) return;
         const { sents } = splitSentencesAndTail(full);
 
@@ -1236,6 +1315,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (transcriptStart && typeof res?.active === 'boolean') {
             const active = !!res.active;
             const starting = !!res.starting;
+            setRealtimeSnapshotCache({ active, starting });
 
             if (transcriptLiveFooter) {
               transcriptLiveFooter.textContent = active
@@ -1257,6 +1337,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ============================================================
   const chatToggles = {
     useRag: readBoolLS(LS_CHAT_USE_RAG, false),
+    useRealtime: readBoolLS(LS_CHAT_USE_REALTIME, false),
     useR1: readBoolLS(LS_CHAT_USE_R1, false),
   };
 
@@ -1321,8 +1402,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function ragStatusLabel(raw) {
     const s = String(raw || '').toLowerCase();
-    if (s === 'running') return 'Dang chay';
-    if (s === 'stopped') return 'Da dung';
+    if (s === 'running') return 'Đang chạy';
+    if (s === 'stopped') return 'Đã dừng';
     return s || 'N/A';
   }
 
@@ -1349,7 +1430,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function ragNormalizePreview(s, maxLen = 180) {
     const clean = String(s || '').replace(/\s+/g, ' ').trim();
-    if (!clean) return 'Dang cap nhat transcript...';
+    if (!clean) return 'Đang cập nhật transcript...';
     if (clean.length <= maxLen) return clean;
     return clean.slice(0, maxLen - 3) + '...';
   }
@@ -1404,7 +1485,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function setRagPickerEmpty(text, show) {
     if (!chatRagPickerEmpty) return;
-    chatRagPickerEmpty.textContent = String(text || 'Khong co du lieu.');
+    chatRagPickerEmpty.textContent = String(text || 'Không có dữ liệu.');
     chatRagPickerEmpty.classList.toggle('hidden', !show);
   }
 
@@ -1471,7 +1552,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `<span class="chat-rag-selection-chip${pinnedCls}" data-rag-open-id="${sid}" title="${escapeHtml(label)}">` +
         `<span class="chat-rag-selection-chip-text">${escapeHtml(label)}</span>` +
         `<button class="chat-rag-selection-remove" type="button" data-rag-remove-id="${sid}" ` +
-        `aria-label="Xoa nguon nay" title="Xoa nguon">x</button>` +
+        `aria-label="Xóa nguồn này" title="Xóa nguồn">x</button>` +
         `</span>`
       );
     }
@@ -1502,7 +1583,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chatRagPickerList.innerHTML = '';
 
     if (!ragPickerState.filtered.length) {
-      setRagPickerEmpty('Khong tim thay transcript phu hop.', true);
+      setRagPickerEmpty('Không tìm thấy transcript phù hợp.', true);
       updateRagPickerPinUi();
       return;
     }
@@ -1534,7 +1615,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
           <p class="rag-item-preview">${escapeHtml(previewText)}</p>
           <div class="rag-item-meta">
-            ${escapeHtml(`Tong thoi gian: ${ragFormatDurationMs(ragCalcDurationMs(item))} - Trang thai: ${ragStatusLabel(item?.status)}${pinned ? ' - Da chot' : ''}`)}
+            ${escapeHtml(`Tổng thời gian: ${ragFormatDurationMs(ragCalcDurationMs(item))} - Trạng thái: ${ragStatusLabel(item?.status)}${pinned ? ' - Đã chốt' : ''}`)}
           </div>
         </div>
         <button class="rag-item-open" type="button" data-rag-open-btn="1">Chi tiết</button>
@@ -1548,7 +1629,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadRagPickerList(force = false) {
     if (!hasChromeRuntime) {
-      setRagPickerEmpty('Khong co chrome.runtime.', true);
+      setRagPickerEmpty('Không có chrome.runtime.', true);
       return;
     }
     if (ragPickerState.loading) return;
@@ -1575,7 +1656,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ragPickerState.filtered = [];
         ragPickerState.loaded = true;
         renderRagPickerList();
-        setRagPickerEmpty('Ban can dang nhap de xem transcript history.', true);
+        setRagPickerEmpty('Bạn cần đăng nhập để xem transcript history.', true);
         openAuthOverlayFromPanel();
         return;
       }
@@ -1587,8 +1668,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const dbg = formatUserIdDebug(res?.debug);
         setRagPickerEmpty(
           dbg
-            ? `Khong tim thay user id hop le cho tai khoan hien tai.\n[debug] ${dbg}`
-            : 'Khong tim thay user id hop le cho tai khoan hien tai.',
+            ? `Không tìm thấy user id hợp lệ cho tài khoản hiện tại.\n[debug] ${dbg}`
+            : 'Không tìm thấy user id hợp lệ cho tài khoản hiện tại.',
           true
         );
         return;
@@ -1603,14 +1684,14 @@ document.addEventListener('DOMContentLoaded', () => {
       renderRagPickerList();
       prefetchRagMissingPreviews();
       if (!ragPickerState.items.length) {
-        setRagPickerEmpty('Chua co transcript nao duoc luu.', true);
+        setRagPickerEmpty('Chưa có transcript nào được lưu.', true);
       }
     } catch (e) {
       ragPickerState.items = [];
       ragPickerState.filtered = [];
       ragPickerState.loaded = false;
       renderRagPickerList();
-      setRagPickerEmpty(`Khong tai duoc transcript history: ${String(e?.message || e)}`, true);
+      setRagPickerEmpty(`Không tải được transcript history: ${String(e?.message || e)}`, true);
     } finally {
       setRagPickerLoading(false);
       positionRagPicker();
@@ -1755,9 +1836,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (chatRagDetailTitle) chatRagDetailTitle.textContent = ragDomainFrom(item);
     if (chatRagDetailMeta) {
       chatRagDetailMeta.textContent =
-        `Website: ${item?.tab_url || ragDomainFrom(item)} - Bat dau: ${ragFormatDateTime(item?.started_at)} - Tong thoi gian: ${ragFormatDurationMs(ragCalcDurationMs(item))}`;
+        `Website: ${item?.tab_url || ragDomainFrom(item)} - Bắt đầu: ${ragFormatDateTime(item?.started_at)} - Tổng thời gian: ${ragFormatDurationMs(ragCalcDurationMs(item))}`;
     }
-    if (chatRagDetailContent) chatRagDetailContent.textContent = 'Dang tai noi dung transcript...';
+    if (chatRagDetailContent) chatRagDetailContent.textContent = 'Đang tải nội dung transcript...';
     document.body.classList.add('history-modal-open');
   }
 
@@ -1766,10 +1847,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (chatRagDetailTitle) chatRagDetailTitle.textContent = ragDomainFrom(item);
     if (chatRagDetailMeta) {
       chatRagDetailMeta.textContent =
-        `Website: ${item?.tab_url || ragDomainFrom(item)} - Bat dau: ${ragFormatDateTime(item?.started_at)} - Tong thoi gian: ${ragFormatDurationMs(ragCalcDurationMs(item))}`;
+        `Website: ${item?.tab_url || ragDomainFrom(item)} - Bắt đầu: ${ragFormatDateTime(item?.started_at)} - Tổng thời gian: ${ragFormatDurationMs(ragCalcDurationMs(item))}`;
     }
     if (chatRagDetailContent) {
-      chatRagDetailContent.textContent = String(fullText || 'Dang cap nhat transcript...');
+      chatRagDetailContent.textContent = String(fullText || 'Đang cập nhật transcript...');
     }
   }
 
@@ -1820,8 +1901,8 @@ document.addEventListener('DOMContentLoaded', () => {
           fullText: (() => {
             const dbg = formatUserIdDebug(res?.debug);
             return dbg
-              ? `Khong tim thay user id hop le cho tai khoan hien tai.\n\n[debug] ${dbg}`
-              : 'Khong tim thay user id hop le cho tai khoan hien tai.';
+              ? `Không tìm thấy user id hợp lệ cho tài khoản hiện tại.\n\n[debug] ${dbg}`
+              : 'Không tìm thấy user id hợp lệ cho tài khoản hiện tại.';
           })(),
         };
       }
@@ -1830,7 +1911,7 @@ document.addEventListener('DOMContentLoaded', () => {
           ok: false,
           code: 'DETAIL_FAILED',
           item: baseItem,
-          fullText: `Khong tai duoc transcript: ${String(res?.error || 'DETAIL_FAILED')}`,
+          fullText: `Không tải được transcript: ${String(res?.error || 'DETAIL_FAILED')}`,
         };
       }
 
@@ -1844,7 +1925,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ok: false,
         code: 'DETAIL_FAILED',
         item: findRagItem(sid) || { id: sid },
-        fullText: `Khong tai duoc transcript: ${String(e?.message || e)}`,
+        fullText: `Không tải được transcript: ${String(e?.message || e)}`,
       }))
       .finally(() => {
         ragPickerState.detailInflight.delete(sid);
@@ -1864,7 +1945,7 @@ document.addEventListener('DOMContentLoaded', () => {
     openChatRagDetailSkeleton(baseItem);
     const detail = await ensureRagDetail(sid);
     if (!detail) {
-      fillChatRagDetail(baseItem, 'Khong tai duoc noi dung transcript.');
+      fillChatRagDetail(baseItem, 'Không tải được nội dung transcript.');
       return;
     }
     if (detail.code === 'AUTH_REQUIRED') {
@@ -2030,11 +2111,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function applyChatTogglesUI() {
     if (chipRag) chipRag.classList.toggle('active', !!chatToggles.useRag);
+    if (chipRealtime) chipRealtime.classList.toggle('active', !!chatToggles.useRealtime);
     if (chipR1) chipR1.classList.toggle('active', !!chatToggles.useR1);
     writeBoolLS(LS_CHAT_USE_RAG, !!chatToggles.useRag);
+    writeBoolLS(LS_CHAT_USE_REALTIME, !!chatToggles.useRealtime);
     writeBoolLS(LS_CHAT_USE_R1, !!chatToggles.useR1);
     updateRagPickerPinUi();
   }
+
+  if (chipRealtime) chipRealtime.addEventListener('click', () => {
+    chatToggles.useRealtime = !chatToggles.useRealtime;
+    applyChatTogglesUI();
+    if (chatToggles.useRealtime) {
+      refreshRealtimeSnapshotCache().catch((e) => dlog('refreshRealtimeSnapshotCache failed:', e));
+    }
+  });
 
   if (chipR1) chipR1.addEventListener('click', () => {
     chatToggles.useR1 = !chatToggles.useR1;
@@ -2207,7 +2298,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function collectConversationRowsForIdentity(identityKey) {
     const wanted = normalizeIdentityKey(identityKey || 'guest') || 'guest';
-    const sidNow = getSessionId();
     const histMap = readChatHistoryMap();
     const metaMap = readChatSessionMetaMap();
     const allSessionIds = [...new Set([...Object.keys(histMap), ...Object.keys(metaMap)])];
@@ -2228,7 +2318,10 @@ document.addEventListener('DOMContentLoaded', () => {
         continue;
       }
 
-      if (!items.length && !meta.title && sessionId !== sidNow) continue;
+      const hasAssistantReply = items.some(
+        (x) => x?.who === 'assistant' && String(x?.text || '').trim()
+      );
+      if (!hasAssistantReply) continue;
 
       const firstUser = items.find((x) => x?.who === 'user' && String(x?.text || '').trim());
       const lastMsg = items.length ? items[items.length - 1] : null;
@@ -2278,14 +2371,17 @@ document.addEventListener('DOMContentLoaded', () => {
           ? `<div class="chat-conv-item-time">${escapeHtml(row.timeLabel)}${row.messageCount ? ` • ${row.messageCount}` : ''}</div>`
           : '';
         return (
+          `<div class="chat-conv-row${activeCls}" data-chat-conv-row="${escapeHtml(row.sessionId)}">` +
           `<button class="chat-conv-item${activeCls}" type="button" data-chat-session-id="${escapeHtml(row.sessionId)}">` +
           `<p class="chat-conv-item-title">${escapeHtml(row.title || 'Cuộc trò chuyện')}</p>` +
-          `${previewHtml}${timeHtml}</button>`
+          `${previewHtml}${timeHtml}</button>` +
+          `<button class="chat-conv-delete-btn" type="button" data-chat-delete-session-id="${escapeHtml(row.sessionId)}" ` +
+          `aria-label="Xóa cuộc trò chuyện" title="Xóa cuộc trò chuyện">&times;</button>` +
+          `</div>`
         );
       })
       .join('');
   }
-
   function syncConversationPanelAfterHistoryChange() {
     if (!chatConversationsState.open) return;
     renderChatConversations(chatConversationsState.identityKey || 'guest');
@@ -2335,20 +2431,101 @@ document.addEventListener('DOMContentLoaded', () => {
     if (opts.closePanel !== false) closeChatConversationsPanel();
   }
 
+  function isChatDeleteModalOpen() {
+    return !!(chatDeleteModal && !chatDeleteModal.classList.contains('hidden'));
+  }
+
+  function setChatDeleteModalBusy(on) {
+    const busy = !!on;
+    chatDeleteState.submitting = busy;
+    if (chatDeleteConfirmBtn) chatDeleteConfirmBtn.disabled = busy;
+    if (chatDeleteCancelBtn) chatDeleteCancelBtn.disabled = busy;
+    if (chatDeleteClose) chatDeleteClose.disabled = busy;
+  }
+
+  function closeChatDeleteModal(opts = {}) {
+    const force = !!opts.force;
+    if (!chatDeleteModal) return;
+    if (chatDeleteState.submitting && !force) return;
+    setChatDeleteModalBusy(false);
+    chatDeleteModal.classList.add('hidden');
+    chatDeleteModal.setAttribute('aria-hidden', 'true');
+    chatDeleteState.sessionId = '';
+    chatDeleteState.label = '';
+    if (chatDeleteMeta) chatDeleteMeta.textContent = '';
+    if (chatDeleteText) {
+      chatDeleteText.textContent = 'Bạn có chắc chắn muốn xóa cuộc trò chuyện này không? Hành động này không thể hoàn tác.';
+    }
+  }
+
+  async function openChatDeleteModal(sessionId, label = '') {
+    const sid = String(sessionId || '').trim();
+    if (!sid || !chatDeleteModal) return;
+
+    const identityKey = chatConversationsState.identityKey || await getCurrentChatIdentityKey();
+    chatConversationsState.identityKey = identityKey;
+    const rows = collectConversationRowsForIdentity(identityKey);
+    const row = rows.find((x) => x.sessionId === sid) || null;
+    const finalLabel = String(label || row?.title || 'Cuộc trò chuyện').trim();
+
+    chatDeleteState.sessionId = sid;
+    chatDeleteState.label = finalLabel;
+    setChatDeleteModalBusy(false);
+    if (chatDeleteMeta) chatDeleteMeta.textContent = finalLabel;
+    if (chatDeleteText) {
+      chatDeleteText.textContent = `Bạn có chắc chắn muốn xóa "${finalLabel}" không? Hành động này không thể hoàn tác.`;
+    }
+    chatDeleteModal.classList.remove('hidden');
+    chatDeleteModal.setAttribute('aria-hidden', 'false');
+  }
+
+  async function submitChatDeleteModal() {
+    const sid = String(chatDeleteState.sessionId || '').trim();
+    if (!sid || chatDeleteState.submitting) return;
+    setChatDeleteModalBusy(true);
+    try {
+      const deleted = await deleteChatConversation(sid, { focusInput: false });
+      if (!deleted) throw new Error('DELETE_CHAT_FAILED');
+      closeChatDeleteModal({ force: true });
+    } catch (err) {
+      if (chatDeleteText) {
+        chatDeleteText.textContent = `Xóa cuộc trò chuyện thất bại: ${String(err?.message || err)}`;
+      }
+      dlog('submitChatDeleteModal failed:', err);
+      setChatDeleteModalBusy(false);
+    }
+  }
+
+  async function deleteChatConversation(sessionId, opts = {}) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return false;
+
+    const identityKey = chatConversationsState.identityKey || await getCurrentChatIdentityKey();
+    chatConversationsState.identityKey = identityKey;
+
+    deleteChatConversationData(sid);
+
+    if (getSessionId() === sid) {
+      const remainRows = collectConversationRowsForIdentity(identityKey);
+      const nextSid = remainRows[0]?.sessionId || ('sess_' + uid());
+      try {
+        localStorage.setItem(LS_CHAT_SESSION, nextSid);
+      } catch {}
+      restoreChatHistory();
+    }
+
+    renderChatConversations(identityKey);
+    if (opts.focusInput !== false && chatTextArea) chatTextArea.focus();
+    return true;
+  }
+
   async function createNewChatConversation() {
     const sid = 'sess_' + uid();
-    const identityKey = await getCurrentChatIdentityKey();
     try {
       localStorage.setItem(LS_CHAT_SESSION, sid);
     } catch {}
-    upsertChatSessionMeta(sid, {
-      identityKey,
-      title: 'Cuộc trò chuyện mới',
-      preview: '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      messageCount: 0,
-    });
+    const identityKey = chatConversationsState.identityKey || await getCurrentChatIdentityKey();
+    chatConversationsState.identityKey = identityKey;
     restoreChatHistory();
     renderChatConversations(identityKey);
     closeChatConversationsPanel();
@@ -2365,12 +2542,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (chatConversationsNewBtn) {
       chatConversationsNewBtn.addEventListener('click', () => {
-        createNewChatConversation();
+        createNewChatConversation().catch((err) => dlog('createNewChatConversation failed:', err));
       });
     }
 
     if (chatConversationsList) {
       chatConversationsList.addEventListener('click', (e) => {
+        const deleteBtn = e.target?.closest?.('[data-chat-delete-session-id]');
+        if (deleteBtn) {
+          const delSid = String(deleteBtn.getAttribute('data-chat-delete-session-id') || '').trim();
+          if (!delSid) return;
+          const rowEl = deleteBtn.closest('[data-chat-conv-row]');
+          const titleEl = rowEl?.querySelector?.('.chat-conv-item-title');
+          const title = String(titleEl?.textContent || '').trim();
+          openChatDeleteModal(delSid, title)
+            .catch((err) => dlog('openChatDeleteModal failed:', err));
+          return;
+        }
         const row = e.target?.closest?.('[data-chat-session-id]');
         if (!row) return;
         const sid = String(row.getAttribute('data-chat-session-id') || '').trim();
@@ -2383,13 +2571,33 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!chatConversationsState.open) return;
       const tgt = e.target;
       if (!tgt) return;
+      if (isChatDeleteModalOpen()) return;
       if (chatConversationsPanel && chatConversationsPanel.contains(tgt)) return;
       if (chatConversationsToggle && chatConversationsToggle.contains(tgt)) return;
       closeChatConversationsPanel();
     });
 
+    if (chatDeleteModal) {
+      chatDeleteModal.addEventListener('click', (e) => {
+        const tgt = e.target;
+        if (!tgt) return;
+        if (tgt.closest?.('[data-chat-delete-close="1"]')) closeChatDeleteModal();
+      });
+    }
+    if (chatDeleteClose) chatDeleteClose.addEventListener('click', () => closeChatDeleteModal());
+    if (chatDeleteCancelBtn) chatDeleteCancelBtn.addEventListener('click', () => closeChatDeleteModal());
+    if (chatDeleteConfirmBtn) {
+      chatDeleteConfirmBtn.addEventListener('click', () => {
+        submitChatDeleteModal().catch((err) => dlog('submitChatDeleteModal failed:', err));
+      });
+    }
+
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
+      if (isChatDeleteModalOpen()) {
+        closeChatDeleteModal();
+        return;
+      }
       if (chatConversationsState.open) closeChatConversationsPanel();
     });
   }
@@ -2577,7 +2785,12 @@ document.addEventListener('DOMContentLoaded', () => {
         sseUrl,
         body,
         (tok) => {
-          if (assistBubble && assistBubble.textContent === '…') assistBubble.textContent = '';
+          if (assistBubble) {
+            const currentText = String(assistBubble.textContent || '').trim();
+            if (currentText === '...' || currentText === '\u2026') {
+              assistBubble.textContent = '';
+            }
+          }
           acc += tok;
           if (assistBubble) assistBubble.textContent += tok;
           if (chatHistory) chatHistory.scrollTop = chatHistory.scrollHeight;
@@ -2599,77 +2812,122 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function clipRealtimeSnapshotText(text, maxLen = 6000) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    if (raw.length <= maxLen) return raw;
+    return `...${raw.slice(-maxLen)}`;
+  }
+
+  function cloneRealtimeSnapshot(snapshot = realtimeSnapshotCache) {
+    const src = snapshot && typeof snapshot === 'object' ? snapshot : {};
+    return {
+      active: !!src.active,
+      starting: !!src.starting,
+      seq: Number(src.seq || 0),
+      tMs: Number(src.tMs || 0),
+      full: clipRealtimeSnapshotText(src.full, 6000),
+      capturedAt: Number(src.capturedAt || 0),
+    };
+  }
+
+  function setRealtimeSnapshotCache(patch = {}) {
+    if (!patch || typeof patch !== 'object') return cloneRealtimeSnapshot(realtimeSnapshotCache);
+    const next = {
+      active: Object.prototype.hasOwnProperty.call(patch, 'active')
+        ? !!patch.active
+        : !!realtimeSnapshotCache.active,
+      starting: Object.prototype.hasOwnProperty.call(patch, 'starting')
+        ? !!patch.starting
+        : !!realtimeSnapshotCache.starting,
+      seq: Object.prototype.hasOwnProperty.call(patch, 'seq')
+        ? Number(patch.seq || 0)
+        : Number(realtimeSnapshotCache.seq || 0),
+      tMs: Object.prototype.hasOwnProperty.call(patch, 'tMs')
+        ? Number(patch.tMs || 0)
+        : Number(realtimeSnapshotCache.tMs || 0),
+      full: Object.prototype.hasOwnProperty.call(patch, 'full')
+        ? clipRealtimeSnapshotText(patch.full, 6000)
+        : clipRealtimeSnapshotText(realtimeSnapshotCache.full, 6000),
+      capturedAt: Date.now(),
+    };
+    realtimeSnapshotCache.active = !!next.active;
+    realtimeSnapshotCache.starting = !!next.starting;
+    realtimeSnapshotCache.seq = Number.isFinite(next.seq) ? next.seq : 0;
+    realtimeSnapshotCache.tMs = Number.isFinite(next.tMs) ? next.tMs : 0;
+    realtimeSnapshotCache.full = String(next.full || '');
+    realtimeSnapshotCache.capturedAt = Number.isFinite(next.capturedAt) ? next.capturedAt : 0;
+    return cloneRealtimeSnapshot(realtimeSnapshotCache);
+  }
+
+  async function refreshRealtimeSnapshotCache() {
+    try {
+      const snap = await getRealtimeTranscriptSnapshot();
+      if (snap) return setRealtimeSnapshotCache(snap);
+    } catch {}
+    return cloneRealtimeSnapshot(realtimeSnapshotCache);
+  }
+
+  function captureRealtimeSnapshotForSend() {
+    return cloneRealtimeSnapshot(realtimeSnapshotCache);
+  }
+
+  async function getRealtimeTranscriptSnapshot() {
+    const res = await sendRuntime({ __cmd: '__CHAT_REALTIME_SNAPSHOT__' });
+    if (!res?.ok) return null;
+    return {
+      active: !!res.active,
+      starting: !!res.starting,
+      seq: Number(res.seq || 0),
+      tMs: Number(res.t_ms || 0),
+      full: clipRealtimeSnapshotText(res.full, 6000),
+      capturedAt: Date.now(),
+    };
+  }
+
+  function buildRealtimeContextBlock(snapshot) {
+    if (!snapshot?.full) return '';
+    const status = snapshot.active ? 'running' : (snapshot.starting ? 'starting' : 'idle');
+    return [
+      '[Realtime transcript snapshot]',
+      `status: ${status}`,
+      `seq: ${snapshot.seq}`,
+      `t_ms: ${snapshot.tMs}`,
+      `captured_at_ms: ${Number(snapshot.capturedAt || 0)}`,
+      snapshot.full,
+    ].join('\n');
+  }
+
   async function sendChat(question) {
     if (!question || !question.trim()) return;
+
+    const rawUserQ = question.trim();
+    const sid = getSessionId();
+    const frozenRealtimeSnapshot = chatToggles.useRealtime ? captureRealtimeSnapshotForSend() : null;
 
     const profile = await getVtAuthProfile();
     const ok = !!(profile && (profile.email || profile.id || profile.name || profile.full_name));
     if (!ok) {
       openAuthOverlayFromPanel();
-      const blockedText = '🔒 Bạn cần đăng nhập để dùng Chat.';
-      const blockedMeta = nowTime();
-      appendBubble('assistant', blockedText, blockedMeta);
-      pushChatHistoryItem('assistant', blockedText, blockedMeta, {
-        identityKey: 'guest',
-        titleHint: blockedText,
-      });
+      appendBubble('assistant', 'Bạn cần đăng nhập để dùng Chat.', nowTime());
       return;
     }
 
-    const rawUserQ = question.trim();
-    const sid = getSessionId();
     const authIdentityKey = authIdentityKeyFromProfile(profile);
     const modelTag = chatToggles.useR1 ? 'r1' : 'default';
     const langTag = 'vi';
 
     const userMeta = nowTime();
     appendBubble('user', rawUserQ, userMeta);
-    pushChatHistoryItem('user', rawUserQ, userMeta, {
-      identityKey: authIdentityKey,
-      titleHint: rawUserQ,
-    });
 
-    const assistBubble = appendBubble('assistant', '…');
+    const assistBubble = appendBubble('assistant', '...');
     const apiBase = getApiBase();
     let useRag = !!chatToggles.useRag;
 
-    try {
-      await persistChatMessageToDb({
-        identityKey: authIdentityKey,
-        localSessionId: sid,
-        role: 'user',
-        content: rawUserQ,
-        titleHint: rawUserQ,
-        source: 'sidepanel',
-        model: modelTag,
-        language: langTag,
-      });
-    } catch (e) {
-      dlog('persist user chat failed:', e);
-    }
-
     const okBase = await probeApiBase(apiBase);
     if (!okBase) {
-      const errText = `⚠️ Không kết nối được API ở ${apiBase}. Mở Setting để nhập đúng base (vd: http://127.0.0.1:8000).`;
+      const errText = `Không kết nối được API ở ${apiBase}. Mở Setting để nhập đúng base (vd: http://127.0.0.1:8000).`;
       if (assistBubble) assistBubble.textContent = errText;
-      pushChatHistoryItem('assistant', errText, nowTime(), {
-        identityKey: authIdentityKey,
-        titleHint: rawUserQ,
-      });
-      try {
-        await persistChatMessageToDb({
-          identityKey: authIdentityKey,
-          localSessionId: sid,
-          role: 'assistant',
-          content: errText,
-          titleHint: rawUserQ,
-          source: 'sidepanel',
-          model: modelTag,
-          language: langTag,
-        });
-      } catch (e) {
-        dlog('persist assistant error msg failed:', e);
-      }
       return;
     }
 
@@ -2681,45 +2939,92 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (pinnedContext && !useRag) useRag = true;
 
+    const realtimeSnapshot = frozenRealtimeSnapshot;
+    let realtimeContext = '';
+    if (chatToggles.useRealtime) {
+      realtimeContext = buildRealtimeContextBlock(realtimeSnapshot);
+    }
+    if (realtimeContext && !useRag) useRag = true;
+
+    const selectedContextParts = [];
+    if (pinnedContext) selectedContextParts.push(pinnedContext);
+    if (realtimeContext) selectedContextParts.push(realtimeContext);
+    const selectedContext = selectedContextParts.join('\n\n');
+
     const pinnedCount = ragPickerState.pinnedIds.size;
-    const metaLine = `${nowTime()}${useRag ? ' • RAG: ON' : ' • RAG: OFF'}${pinnedCount ? ` • PIN: ${pinnedCount}` : ''}`;
+    const metaLine = `${nowTime()}${useRag ? ' | RAG: ON' : ' | RAG: OFF'}${pinnedCount ? ` | PIN: ${pinnedCount}` : ''}`;
+    const metaLineOut = `${metaLine}${chatToggles.useRealtime ? (realtimeContext ? ' | RT: ON' : ' | RT: EMPTY') : ''}`;
 
     const selectedSourceIds = [...ragPickerState.pinnedIds];
     const q0Raw = buildQuestionToServer(rawUserQ, useRag, 0);
     const body0 = { question: q0Raw, session_id: sid, user_id: 'sidepanel', use_rag: useRag };
-    if (pinnedContext) body0.selected_context = pinnedContext;
+    if (selectedContext) body0.selected_context = selectedContext;
     if (selectedSourceIds.length) body0.selected_source_ids = selectedSourceIds;
 
     dlog('apiBase', apiBase);
     dlog('Q0 sent:', q0Raw);
     dlog('selected_source_ids:', selectedSourceIds);
+    dlog('realtime_snapshot:', realtimeSnapshot ? {
+      active: !!realtimeSnapshot.active,
+      starting: !!realtimeSnapshot.starting,
+      seq: Number(realtimeSnapshot.seq || 0),
+      tMs: Number(realtimeSnapshot.tMs || 0),
+      hasText: !!realtimeContext,
+      capturedAt: Number(realtimeSnapshot.capturedAt || 0),
+    } : null);
 
     let out0 = '';
     try {
       out0 = await callChatOnce(apiBase, body0, assistBubble);
 
       if (useRag && looksLikeBoilerplateAnswer(out0)) {
-        if (assistBubble) assistBubble.textContent = '… (retry)';
+        if (assistBubble) assistBubble.textContent = '... (retry)';
         const q1Raw = buildQuestionToServer(rawUserQ, useRag, 1);
         const body1 = { question: q1Raw, session_id: sid, user_id: 'sidepanel', use_rag: useRag };
-        if (pinnedContext) body1.selected_context = pinnedContext;
+        if (selectedContext) body1.selected_context = selectedContext;
         if (selectedSourceIds.length) body1.selected_source_ids = selectedSourceIds;
         dlog('Q1 retry:', q1Raw);
         out0 = await callChatOnce(apiBase, body1, assistBubble);
       }
+
+      out0 = String(out0 || '').trim();
+      if (!out0) throw new Error('EMPTY_ASSISTANT_RESPONSE');
 
       if (assistBubble) {
         const extra = isDebug()
           ? `\n\n[sent]\n${(useRag ? (looksLikeBoilerplateAnswer(out0) ? 'retry' : 'ok') : 'no-rag')}`
           : '';
         assistBubble.innerHTML =
-          escapeHtml(assistBubble.textContent + extra) +
-          `<span class="meta">${escapeHtml(metaLine)}</span>`;
+          escapeHtml(out0 + extra) +
+          `<span class="meta">${escapeHtml(metaLineOut)}</span>`;
       }
-      pushChatHistoryItem('assistant', out0, metaLine, {
+
+      pushChatHistoryItem('user', rawUserQ, userMeta, {
+        sessionId: sid,
         identityKey: authIdentityKey,
         titleHint: rawUserQ,
       });
+      pushChatHistoryItem('assistant', out0, metaLineOut, {
+        sessionId: sid,
+        identityKey: authIdentityKey,
+        titleHint: rawUserQ,
+      });
+
+      try {
+        await persistChatMessageToDb({
+          identityKey: authIdentityKey,
+          localSessionId: sid,
+          role: 'user',
+          content: rawUserQ,
+          titleHint: rawUserQ,
+          source: 'sidepanel',
+          model: modelTag,
+          language: langTag,
+        });
+      } catch (e) {
+        dlog('persist user chat failed:', e);
+      }
+
       try {
         await persistChatMessageToDb({
           identityKey: authIdentityKey,
@@ -2735,26 +3040,8 @@ document.addEventListener('DOMContentLoaded', () => {
         dlog('persist assistant chat failed:', e);
       }
     } catch (err) {
-      const errText = `⚠️ ${String(err)}`;
+      const errText = `Lỗi: ${String(err)}`;
       if (assistBubble) assistBubble.textContent = errText;
-      pushChatHistoryItem('assistant', errText, nowTime(), {
-        identityKey: authIdentityKey,
-        titleHint: rawUserQ,
-      });
-      try {
-        await persistChatMessageToDb({
-          identityKey: authIdentityKey,
-          localSessionId: sid,
-          role: 'assistant',
-          content: errText,
-          titleHint: rawUserQ,
-          source: 'sidepanel',
-          model: modelTag,
-          language: langTag,
-        });
-      } catch (e) {
-        dlog('persist assistant catch msg failed:', e);
-      }
     }
   }
   // ===== Chat events =====
@@ -2788,6 +3075,9 @@ document.addEventListener('DOMContentLoaded', () => {
   bindChatConversationsUi();
   bindChatHistoryScrollbarAutoHide();
   applyChatTogglesUI();
+  if (chatToggles.useRealtime) {
+    refreshRealtimeSnapshotCache().catch((e) => dlog('refreshRealtimeSnapshotCache init failed:', e));
+  }
   updateRagPickerPinUi();
   (async () => {
     await rotateChatSessionIfRuntimeChanged();
