@@ -4,6 +4,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // ===== Constants =====
   const LS_KEY_SERVER = 'sttServerWs';
   const DEFAULT_WS = 'ws://localhost:8765';
+  const LS_KEY_TRANS_SERVER = 'sttTranslatorWs';
+  const DEFAULT_TRANS_WS = 'ws://localhost:8766';
 
   const LS_CHAT_API = 'sttChatApiBase';
   const DEFAULT_API = 'http://127.0.0.1:8000';
@@ -64,6 +66,38 @@ document.addEventListener('DOMContentLoaded', () => {
   function getServer() {
     const v = (localStorage.getItem(LS_KEY_SERVER) || '').trim();
     return v || DEFAULT_WS;
+  }
+
+  function deriveTranslatorServerFromStt(sttServer) {
+    try {
+      const u = new URL(String(sttServer || '').trim());
+      const out = new URL(u.toString());
+      const p = out.pathname || '/';
+
+      if ((out.hostname === 'localhost' || out.hostname === '127.0.0.1') && String(out.port || '') === '8765') {
+        out.port = '8766';
+        if (/^\/stt(?:\/|$)/i.test(p)) out.pathname = p.replace(/^\/stt/i, '/tr');
+        out.search = '';
+        out.hash = '';
+        return out.toString();
+      }
+
+      if (/^\/stt(?:\/|$)/i.test(p)) out.pathname = p.replace(/^\/stt/i, '/tr');
+      else if (!p || p === '/') out.pathname = '/tr';
+
+      out.search = '';
+      out.hash = '';
+      return out.toString();
+    } catch {
+      return '';
+    }
+  }
+
+  function getTranslatorServer() {
+    const v = (localStorage.getItem(LS_KEY_TRANS_SERVER) || '').trim();
+    if (v) return v;
+    const derived = deriveTranslatorServerFromStt(getServer());
+    return derived || DEFAULT_TRANS_WS;
   }
 
   function getApiBase() {
@@ -469,6 +503,11 @@ document.addEventListener('DOMContentLoaded', () => {
       try { chrome.storage.local.get(keys, resolve); } catch { resolve({}); }
     });
   }
+  function storeSet(obj) {
+    return new Promise((resolve) => {
+      try { chrome.storage.local.set(obj || {}, () => resolve()); } catch { resolve(); }
+    });
+  }
   function storeRemove(keys) {
     return new Promise((resolve) => {
       try { chrome.storage.local.remove(keys, resolve); } catch { resolve(); }
@@ -528,6 +567,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const settingsResetBtn = document.getElementById('settingsResetBtn');
   const settingsStatus = document.getElementById('settingsStatus');
   const settingsWsInput = document.getElementById('settingsWsInput');
+  const settingsTransInput = document.getElementById('settingsTransInput');
   const settingsApiInput = document.getElementById('settingsApiInput');
   const settingsModeEn = document.getElementById('settingsModeEn');
   const settingsModeVi = document.getElementById('settingsModeVi');
@@ -719,10 +759,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function fillSettingsFormFromStorage() {
+  async function fillSettingsFormFromStorage() {
     if (!settingsModal) return;
+    const wsVal = getServer();
     if (settingsApiInput) settingsApiInput.value = getApiBase();
-    if (settingsWsInput) settingsWsInput.value = getServer();
+    if (settingsWsInput) settingsWsInput.value = wsVal;
+    let transVal = (localStorage.getItem(LS_KEY_TRANS_SERVER) || '').trim();
+    if (!transVal) {
+      const st = await storeGet([LS_KEY_TRANS_SERVER]);
+      transVal = String(st?.[LS_KEY_TRANS_SERVER] || '').trim();
+      if (transVal) {
+        try { localStorage.setItem(LS_KEY_TRANS_SERVER, transVal); } catch {}
+      }
+    }
+    if (!transVal) transVal = getTranslatorServer();
+    if (settingsTransInput) settingsTransInput.value = transVal;
     if (settingsModeEn) settingsModeEn.checked = readBoolLS(LS_MODE_EN, false);
     if (settingsModeVi) settingsModeVi.checked = readBoolLS(LS_MODE_VI, false);
     if (settingsModeVoice) settingsModeVoice.checked = readBoolLS(LS_MODE_VOICE, false);
@@ -734,6 +785,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function fillSettingsFormDefault() {
     if (settingsApiInput) settingsApiInput.value = DEFAULT_API;
     if (settingsWsInput) settingsWsInput.value = DEFAULT_WS;
+    if (settingsTransInput) settingsTransInput.value = DEFAULT_TRANS_WS;
     if (settingsModeEn) settingsModeEn.checked = false;
     if (settingsModeVi) settingsModeVi.checked = false;
     if (settingsModeVoice) settingsModeVoice.checked = false;
@@ -748,17 +800,24 @@ document.addEventListener('DOMContentLoaded', () => {
     settingsModal.setAttribute('aria-hidden', 'true');
   }
 
-  function openSettingsModal() {
+  async function openSettingsModal() {
     if (!settingsModal) return;
-    fillSettingsFormFromStorage();
+    await fillSettingsFormFromStorage();
     settingsModal.classList.remove('hidden');
     settingsModal.setAttribute('aria-hidden', 'false');
     settingsApiInput?.focus?.();
   }
 
-  function applySettingsFromForm() {
+  async function applySettingsFromForm() {
     const apiVal = normalizeApiBaseInput(settingsApiInput?.value || '');
     const wsVal = normalizeWsServerInput(settingsWsInput?.value || '');
+    const transRaw = normalizeWsServerInput(settingsTransInput?.value || '');
+    const transVal = transRaw || deriveTranslatorServerFromStt(wsVal) || DEFAULT_TRANS_WS;
+    if (!isValidWsUrl(transVal)) {
+      setSettingsStatus('Translator WebSocket (VI) must be a valid ws/wss URL.', 'error');
+      settingsTransInput?.focus?.();
+      return false;
+    }
 
     if (!isValidHttpUrl(apiVal)) {
       setSettingsStatus('Chat API Base phải là URL http/https hợp lệ.', 'error');
@@ -774,9 +833,14 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       localStorage.setItem(LS_CHAT_API, apiVal);
       localStorage.setItem(LS_KEY_SERVER, wsVal);
+      localStorage.setItem(LS_KEY_TRANS_SERVER, transVal);
       localStorage.setItem(LS_CHAT_DEBUG, settingsDebugChat?.checked ? '1' : '0');
       localStorage.setItem(LS_STT_SOURCE_LANG, STT_SOURCE_LANG_ONLY);
     } catch {}
+    if (settingsTransInput) settingsTransInput.value = transVal;
+    if (hasChromeRuntime) {
+      try { await storeSet({ [LS_KEY_TRANS_SERVER]: transVal }); } catch {}
+    }
 
     modes.en = !!settingsModeEn?.checked;
     modes.vi = !!settingsModeVi?.checked;
@@ -792,7 +856,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (settingButton) {
     settingButton.addEventListener('click', (e) => {
       e.preventDefault?.();
-      openSettingsModal();
+      openSettingsModal().catch(() => {});
     });
   }
 
@@ -806,11 +870,11 @@ document.addEventListener('DOMContentLoaded', () => {
   if (settingsResetBtn) settingsResetBtn.addEventListener('click', fillSettingsFormDefault);
   if (settingsSaveBtn) {
     settingsSaveBtn.addEventListener('click', () => {
-      applySettingsFromForm();
+      applySettingsFromForm().catch(() => {});
     });
   }
 
-  [settingsApiInput, settingsWsInput, settingsModeEn, settingsModeVi, settingsModeVoice, settingsModeRecord, settingsDebugChat]
+  [settingsApiInput, settingsWsInput, settingsTransInput, settingsModeEn, settingsModeVi, settingsModeVoice, settingsModeRecord, settingsDebugChat]
     .filter(Boolean)
     .forEach((el) => {
       const evt = (el.tagName === 'INPUT' && el.type === 'checkbox') ? 'change' : 'input';
@@ -819,9 +883,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (settingsModal) {
     settingsModal.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.target === settingsApiInput || e.target === settingsWsInput)) {
+      if (e.key === 'Enter' && (e.target === settingsApiInput || e.target === settingsWsInput || e.target === settingsTransInput)) {
         e.preventDefault?.();
-        applySettingsFromForm();
+        applySettingsFromForm().catch(() => {});
       }
     });
   }
@@ -1181,7 +1245,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (msg.__cmd === '__PANEL_OPENED__') {
         const server = (msg.payload?.server || '').trim();
-        if (server) { try { localStorage.setItem(LS_KEY_SERVER, server); } catch {} }
+        if (server) {
+          try { localStorage.setItem(LS_KEY_SERVER, server); } catch {}
+          const curTrans = (localStorage.getItem(LS_KEY_TRANS_SERVER) || '').trim();
+          if (!curTrans) {
+            const derivedTrans = deriveTranslatorServerFromStt(server);
+            if (derivedTrans) {
+              try { localStorage.setItem(LS_KEY_TRANS_SERVER, derivedTrans); } catch {}
+              storeSet({ [LS_KEY_TRANS_SERVER]: derivedTrans }).catch(() => {});
+            }
+          }
+        }
 
         if (typeof msg.payload?.active === 'boolean') {
           const active = !!msg.payload.active;

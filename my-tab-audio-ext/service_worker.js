@@ -69,7 +69,7 @@ const STORAGE_KEYS = {
   VT_AUTH: "vtAuth",        // overlay session (profile/tokens)
   API_BASE: "sttApiBase",   // optional: https://api.example.com
   VT_NEED_AUTH: "vtNeedAuth",
-  TRANS_URL: "sttTranslatorWs", // optional: ws://127.0.0.1:8787
+  TRANS_URL: "sttTranslatorWs", // optional override, e.g. ws://127.0.0.1:8766 or wss://host/tr
   TRANS_DEBUG: "sttTransDebug",
   EMAIL_USER_ID_MAP: "vtEmailUserIdMapV1",
 };
@@ -388,6 +388,42 @@ function deriveApiBaseFromServer(serverUrl) {
   if (origin.startsWith("wss://")) return origin.replace("wss://", "https://");
   if (origin.startsWith("ws://"))  return origin.replace("ws://", "http://");
   return origin;
+}
+function deriveTranslatorUrlFromServer(serverUrl) {
+  const u = parseUrlOrNull(serverUrl);
+  if (!u) return "";
+
+  const out = new URL(u.toString());
+  const p = out.pathname || "/";
+
+  if (isLocalHost(out.hostname) && String(out.port || "") === "8765") {
+    out.port = "8766";
+    if (/^\/stt(?:\/|$)/i.test(p)) {
+      out.pathname = p.replace(/^\/stt/i, "/tr");
+    }
+    out.search = "";
+    out.hash = "";
+    return out.toString();
+  }
+
+  if (/^\/stt(?:\/|$)/i.test(p)) {
+    out.pathname = p.replace(/^\/stt/i, "/tr");
+  } else if (!p || p === "/") {
+    out.pathname = "/tr";
+  }
+  out.search = "";
+  out.hash = "";
+  return out.toString();
+}
+async function resolveTranslatorUrl(serverUrl = "") {
+  const st = await storeGet([STORAGE_KEYS.TRANS_URL]);
+  const stored = (st?.[STORAGE_KEYS.TRANS_URL] || "").trim();
+  if (stored) return { url: stored, source: "stored" };
+
+  const derived = deriveTranslatorUrlFromServer(serverUrl || current?.server || "");
+  if (derived) return { url: derived, source: "derived" };
+
+  return { url: "", source: "none" };
 }
 function safeJwtExpMs(token) {
   try {
@@ -844,9 +880,8 @@ let lastSentStableSeq = -1;
 let lastRxViCommitSeq = -1;
 
 async function loadTranslatorUrlFromStorage() {
-  const st = await storeGet([STORAGE_KEYS.TRANS_URL]);
-  const v = (st?.[STORAGE_KEYS.TRANS_URL] || "").trim();
-  if (v) transUrl = v;
+  const resolved = await resolveTranslatorUrl(current?.server || "");
+  if (resolved?.url) transUrl = resolved.url;
 }
 
 function disconnectTranslator(hard = false) {
@@ -1338,9 +1373,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         let accessToken = tok.accessToken || "";
         const refreshToken = tok.refreshToken || "";
 
-        // production wss: yêu cầu token để xin ticket (nếu không có ticket endpoint)
+        // public wss may run without auth ticket (server.py REQUIRE_AUTH=0).
         if (isWss && !isLocalDev && !accessToken) {
-          throw new Error("Thiếu API token. Hãy nhập token (Advanced) hoặc cấu hình token trong vtAuth.");
+          warn("No access token on non-local wss; continue in direct/no-auth mode.");
         }
 
         const st = await storeGet([STORAGE_KEYS.API_BASE]);
@@ -1375,8 +1410,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (transcriptPersist) {
           try { await transcriptPersist.stop(lastEnStable?.full || ""); } catch {}
         }
-        const transUrlSt = await storeGet([STORAGE_KEYS.TRANS_URL]);
-        const transServer = (transUrlSt[STORAGE_KEYS.TRANS_URL] || "").trim();
+        const trResolved = await resolveTranslatorUrl(server);
+        const transServer = trResolved?.url || "";
         const profile = normalizeAuthProfile(authSess);
         const supaAuthToken = pickSupabaseAccessToken(authSess);
         const userEmail = String(profile.email || "").trim();
@@ -1426,7 +1461,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         await trySendOverlayMode(tab.id);
 
-        sendResponse?.({ ok: true, mode: auth ? "auth-message" : "ticket", ws: finalWsUrl });
+        const mode = auth ? "auth-message" : ((isWss && accessToken && apiBase) ? "ticket" : "direct");
+        sendResponse?.({ ok: true, mode, ws: finalWsUrl });
       } catch (e) {
         const msgErr = String(e?.message || e);
         if (transcriptPersist) {
