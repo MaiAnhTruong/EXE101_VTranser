@@ -121,6 +121,23 @@ html,body{
   margin-top:2px;
 }
 
+.toolbar-account-plan{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:34px;
+  height:16px;
+  padding:0 6px;
+  border-radius:999px;
+  border:1px solid #dbeafe;
+  background:#eff6ff;
+  color:#1d4ed8;
+  font-size:10px;
+  font-weight:700;
+  line-height:1;
+  letter-spacing:.01em;
+}
+
 .view-container{
   flex:1;
   display:flex;
@@ -187,22 +204,32 @@ html,body{
   min-width:0;
 }
 
-.bottom-greeting,
-.bottom-plan-badge{
+.bottom-greeting{
   display:inline-flex;
   align-items:center;
-  height:24px;
-  padding:0 10px;
+  gap:7px;
+  height:28px;
+  padding:0 12px 0 9px;
   border-radius:999px;
-  border:1px solid #cfe0ff;
-  background:#eef4ff;
-  color:#1e40af;
-  font-size:12px;
-  font-weight:700;
-  letter-spacing:.02em;
-  text-transform:capitalize;
+  border:1px solid #dbeafe;
+  background:linear-gradient(180deg,#f8fbff 0%,#eef5ff 100%);
+  color:#1e3a8a;
+  font-size:12.5px;
+  font-weight:600;
   white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
   max-width:240px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.75);
+}
+.bottom-greeting::before{
+  content:"";
+  width:8px;
+  height:8px;
+  border-radius:999px;
+  background:#60a5fa;
+  box-shadow:0 0 0 3px rgba(96,165,250,.2);
+  flex-shrink:0;
 }
 
 /* --- 1. HEADER --- */
@@ -1863,7 +1890,7 @@ html,body{
 #btn-setting{
   background-image:url('icons/setting.svg');
 }
-#btnAccount{ background-image:url('icons/user-line.svg'); }
+#btnAccount{ background-image:url('icons/user-circle.svg'); }
 
 /* Footer icons (bottom bar) */
 #icon-btn-gift{ background-image:url('icons/gift.svg'); }

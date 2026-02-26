@@ -577,6 +577,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // bottom bar
   const bottomGreetingEl = document.getElementById('bottomGreeting');
+  const toolbarAccountPlanEl = document.getElementById('toolbarAccountPlan');
   const loginBtns = document.querySelectorAll('.login-btn');
 
   // chat view elements
@@ -685,8 +686,10 @@ document.addEventListener('DOMContentLoaded', () => {
   async function refreshGreeting() {
     try {
       const p = await getVtAuthProfile();
+      const name = String(p?.full_name || p?.name || p?.email || '').trim();
       const plan = String(p?.plan || p?.subscription_plan || p?.tier || 'Free').trim() || 'Free';
-      if (bottomGreetingEl) bottomGreetingEl.textContent = plan;
+      if (bottomGreetingEl) bottomGreetingEl.textContent = name ? `Xin chào, ${name}` : 'Xin chào';
+      if (toolbarAccountPlanEl) toolbarAccountPlanEl.textContent = plan;
       // hide login when authed
       if (loginBtns && loginBtns.length) {
         const authed = !!(p && (p.email || p.id || p.name || p.full_name));
