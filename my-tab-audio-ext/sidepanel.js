@@ -685,11 +685,11 @@ document.addEventListener('DOMContentLoaded', () => {
   async function refreshGreeting() {
     try {
       const p = await getVtAuthProfile();
-      const name = String(p?.full_name || p?.name || p?.email || '').trim();
-      if (bottomGreetingEl) bottomGreetingEl.textContent = name ? `Xin chào, ${name}` : 'Hi';
+      const plan = String(p?.plan || p?.subscription_plan || p?.tier || 'Free').trim() || 'Free';
+      if (bottomGreetingEl) bottomGreetingEl.textContent = plan;
       // hide login when authed
       if (loginBtns && loginBtns.length) {
-        const authed = !!name;
+        const authed = !!(p && (p.email || p.id || p.name || p.full_name));
         loginBtns.forEach((b) => b.classList.toggle('hidden', authed));
       }
     } catch {}

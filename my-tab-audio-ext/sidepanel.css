@@ -187,14 +187,22 @@ html,body{
   min-width:0;
 }
 
-.bottom-greeting{
-  color:var(--text);
-  font-size:14px;
-  font-weight:500;
+.bottom-greeting,
+.bottom-plan-badge{
+  display:inline-flex;
+  align-items:center;
+  height:24px;
+  padding:0 10px;
+  border-radius:999px;
+  border:1px solid #cfe0ff;
+  background:#eef4ff;
+  color:#1e40af;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.02em;
+  text-transform:capitalize;
   white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  max-width: 240px;
+  max-width:240px;
 }
 
 /* --- 1. HEADER --- */
@@ -1855,7 +1863,7 @@ html,body{
 #btn-setting{
   background-image:url('icons/setting.svg');
 }
-#btnAccount{ background-image:url('icons/account.svg'); }
+#btnAccount{ background-image:url('icons/user-line.svg'); }
 
 /* Footer icons (bottom bar) */
 #icon-btn-gift{ background-image:url('icons/gift.svg'); }
@@ -2158,8 +2166,8 @@ html,body{
   mask-image:url("icons/gift.svg");
 }
 .vt-acc-ico-account{
-  -webkit-mask-image:url("icons/account.svg");
-  mask-image:url("icons/account.svg");
+  -webkit-mask-image:url("icons/user-line.svg");
+  mask-image:url("icons/user-line.svg");
 }
 .vt-acc-ico-site{
   -webkit-mask-image:url("icons/file-text.svg");
@@ -2183,55 +2191,6 @@ html,body{
   margin: 6px 6px;
 }
 .vt-acc-logout{ color:#111827; }
-
-.vt-acc-social{
-  display:flex;
-  gap:10px;
-  padding:10px 6px 2px;
-  justify-content:center;
-}
-.vt-social-btn{
-  width:28px;
-  height:28px;
-  border-radius:8px;
-  border:1px solid #e5e7eb;
-  background:#fff;
-  cursor:pointer;
-  position:relative;
-}
-.vt-social-btn:hover{ background:#f9fafb; }
-.vt-social-btn::before{
-  content:"";
-  position:absolute;
-  left:50%;
-  top:50%;
-  width:14px;
-  height:14px;
-  transform:translate(-50%, -50%);
-  background:#111827;
-  -webkit-mask-repeat:no-repeat;
-  mask-repeat:no-repeat;
-  -webkit-mask-position:center;
-  mask-position:center;
-  -webkit-mask-size:contain;
-  mask-size:contain;
-}
-.vt-social-btn-x::before{
-  -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M17.53 3h3.07l-6.71 7.66L21.78 21h-6.18l-4.84-6.32L5.22 21H2.14l7.18-8.21L1.77 3h6.34l4.37 5.76L17.53 3zm-1.08 16.17h1.7L7.2 4.74H5.37l11.08 14.43z'/%3E%3C/svg%3E");
-  mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M17.53 3h3.07l-6.71 7.66L21.78 21h-6.18l-4.84-6.32L5.22 21H2.14l7.18-8.21L1.77 3h6.34l4.37 5.76L17.53 3zm-1.08 16.17h1.7L7.2 4.74H5.37l11.08 14.43z'/%3E%3C/svg%3E");
-}
-.vt-social-btn-discord::before{
-  -webkit-mask-image:url("icons/message.svg");
-  mask-image:url("icons/message.svg");
-}
-.vt-social-btn-youtube::before{
-  -webkit-mask-image:url("icons/start.svg");
-  mask-image:url("icons/start.svg");
-}
-.vt-social-btn-linkedin::before{
-  -webkit-mask-image:url("icons/account.svg");
-  mask-image:url("icons/account.svg");
-}
 
 .vt-acc-toast{
   position:fixed;
