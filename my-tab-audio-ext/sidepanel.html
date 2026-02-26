@@ -313,8 +313,7 @@
     <div class="history-modal-card settings-modal-card" role="dialog" aria-modal="true" aria-label="Cài đặt cơ bản">
       <button id="settingsClose" class="history-modal-close" type="button" aria-label="Đóng">×</button>
       <div class="history-modal-head">
-        <h3 class="history-modal-title">Cài đặt cơ bản</h3>
-        <p class="history-modal-meta">Thiết lập nhanh cho kết nối STT, API chat và chế độ mặc định.</p>
+        <h3 class="history-modal-title">Cài đặt</h3>
       </div>
 
       <div class="settings-modal-body">
@@ -322,7 +321,7 @@
           <h4 class="settings-section-title">Kết nối</h4>
 
           <label class="settings-field">
-            <span class="settings-label">STT WebSocket Server</span>
+            <span class="settings-label">Phiên âm</span>
             <input
               id="settingsWsInput"
               class="settings-input"
@@ -333,7 +332,7 @@
           </label>
 
           <label class="settings-field">
-            <span class="settings-label">Chat API Base</span>
+            <span class="settings-label">Trợ lý ảo</span>
             <input
               id="settingsApiInput"
               class="settings-input"
@@ -344,7 +343,7 @@
           </label>
 
           <label class="settings-field">
-            <span class="settings-label">Translator WebSocket (VI)</span>
+            <span class="settings-label">Phiên dịch</span>
             <input
               id="settingsTransInput"
               class="settings-input"
@@ -356,15 +355,15 @@
         </div>
 
         <div class="settings-section">
-          <h4 class="settings-section-title">Mặc định khi mở panel</h4>
+          <h4 class="settings-section-title">Mặc định</h4>
           <div class="settings-check-grid">
             <label class="settings-check-item">
               <input id="settingsModeEn" type="checkbox" />
-              <span>Phụ đề (EN)</span>
+              <span>Phụ đề</span>
             </label>
             <label class="settings-check-item">
               <input id="settingsModeVi" type="checkbox" />
-              <span>Phiên dịch (VI)</span>
+              <span>Phiên dịch</span>
             </label>
             <label class="settings-check-item">
               <input id="settingsModeVoice" type="checkbox" />
@@ -379,13 +378,9 @@
 
         <div class="settings-section">
           <h4 class="settings-section-title">Khác</h4>
-          <div class="settings-readonly-row">
-            <span class="settings-label">Nguồn - đích STT</span>
-            <span class="settings-pill">English -> Vietnamese</span>
-          </div>
           <label class="settings-check-item settings-check-single">
             <input id="settingsDebugChat" type="checkbox" />
-            <span>Bật debug chat (log console)</span>
+            <span>Bật debug</span>
           </label>
         </div>
       </div>
