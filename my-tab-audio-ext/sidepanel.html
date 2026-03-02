@@ -159,10 +159,10 @@
               <button id="btn-subtitle-trans" class="transcript-btn" type="button">
                 <img src="icons/dichphude.svg" alt="" class="action-btn-icon" />Phiên dịch
               </button>
-              <button id="btn-voice" class="transcript-btn" type="button">
+              <button id="btn-voice" class="transcript-btn" type="button" disabled aria-disabled="true">
                 <img src="icons/giongnoi.svg" alt="" class="action-btn-icon" />Giọng nói
               </button>
-              <button id="btn-record" class="transcript-btn" type="button">
+              <button id="btn-record" class="transcript-btn" type="button" disabled aria-disabled="true">
                 <img src="icons/record.svg" alt="" class="action-btn-icon" />Ghi
               </button>
             </div>
@@ -366,12 +366,12 @@
               <input id="settingsModeVi" type="checkbox" />
               <span>Phiên dịch</span>
             </label>
-            <label class="settings-check-item">
-              <input id="settingsModeVoice" type="checkbox" />
+            <label class="settings-check-item is-disabled">
+              <input id="settingsModeVoice" type="checkbox" disabled />
               <span>Giọng nói</span>
             </label>
-            <label class="settings-check-item">
-              <input id="settingsModeRecord" type="checkbox" />
+            <label class="settings-check-item is-disabled">
+              <input id="settingsModeRecord" type="checkbox" disabled />
               <span>Ghi</span>
             </label>
           </div>

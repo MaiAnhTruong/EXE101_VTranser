@@ -1267,6 +1267,27 @@ html,body{
 }
 .transcript-btn:hover{ background:#E5E7EB; }
 
+.transcript-btn:disabled{
+  cursor:not-allowed;
+  color:#9CA3AF;
+  background:#F3F4F6;
+  border-color:#E5E7EB;
+  box-shadow:none;
+}
+
+.transcript-btn:disabled:hover,
+.transcript-btn:disabled.active{
+  background:#F3F4F6;
+  border-color:#E5E7EB;
+  color:#9CA3AF;
+  box-shadow:none;
+}
+
+.transcript-btn:disabled .action-btn-icon{
+  opacity:.45;
+  filter:grayscale(1);
+}
+
 .transcript-btn.active{
   background:#E0F2FF;
   border-color:#60A5FA;
@@ -1770,6 +1791,17 @@ html,body{
 
 .settings-check-item input{
   margin:0;
+}
+
+.settings-check-item.is-disabled{
+  background:#F9FAFB;
+  border-color:#E5E7EB;
+  color:#9CA3AF;
+  cursor:not-allowed;
+}
+
+.settings-check-item.is-disabled span{
+  color:#9CA3AF;
 }
 
 .settings-check-single{

@@ -25,6 +25,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const LS_MODE_RECORD = 'sttModeRecord';
   const LS_STT_SOURCE_LANG = 'sttSourceLang';
   const STT_SOURCE_LANG_ONLY = 'en';
+  const STT_LOCKED_MODES = Object.freeze({
+    voice: true,
+    record: true,
+  });
 
   // Persist chat toggles
   const LS_CHAT_USE_RAG = 'sttChatUseRag';
@@ -644,6 +648,25 @@ document.addEventListener('DOMContentLoaded', () => {
   const voiceBtn = document.getElementById('btn-voice');
   const recordBtn = document.getElementById('btn-record');
 
+  function syncLockedTranscriptControlsUi() {
+    if (voiceBtn) {
+      voiceBtn.disabled = !!STT_LOCKED_MODES.voice;
+      voiceBtn.setAttribute('aria-disabled', STT_LOCKED_MODES.voice ? 'true' : 'false');
+    }
+    if (recordBtn) {
+      recordBtn.disabled = !!STT_LOCKED_MODES.record;
+      recordBtn.setAttribute('aria-disabled', STT_LOCKED_MODES.record ? 'true' : 'false');
+    }
+    if (settingsModeVoice) {
+      settingsModeVoice.disabled = !!STT_LOCKED_MODES.voice;
+      if (STT_LOCKED_MODES.voice) settingsModeVoice.checked = false;
+    }
+    if (settingsModeRecord) {
+      settingsModeRecord.disabled = !!STT_LOCKED_MODES.record;
+      if (STT_LOCKED_MODES.record) settingsModeRecord.checked = false;
+    }
+  }
+
   // ===== Auth open helper =====
   function openAuthOverlayFromPanel() {
     if (typeof window.__vtOpenAccountOrAuth === 'function') {
@@ -782,6 +805,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (settingsModeVoice) settingsModeVoice.checked = readBoolLS(LS_MODE_VOICE, false);
     if (settingsModeRecord) settingsModeRecord.checked = readBoolLS(LS_MODE_RECORD, false);
     if (settingsDebugChat) settingsDebugChat.checked = isDebug();
+    syncLockedTranscriptControlsUi();
     setSettingsStatus('');
   }
 
@@ -794,6 +818,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (settingsModeVoice) settingsModeVoice.checked = false;
     if (settingsModeRecord) settingsModeRecord.checked = false;
     if (settingsDebugChat) settingsDebugChat.checked = false;
+    syncLockedTranscriptControlsUi();
     setSettingsStatus('Đã đưa về bộ mặc định. Nhấn "Lưu cài đặt" để áp dụng.', 'success');
   }
 
@@ -849,6 +874,9 @@ document.addEventListener('DOMContentLoaded', () => {
     modes.vi = !!settingsModeVi?.checked;
     modes.voice = !!settingsModeVoice?.checked;
     modes.record = !!settingsModeRecord?.checked;
+    if (STT_LOCKED_MODES.voice) modes.voice = false;
+    if (STT_LOCKED_MODES.record) modes.record = false;
+    syncLockedTranscriptControlsUi();
     sendTranscriptModes();
 
     if (transcriptSourceLangSelect) transcriptSourceLangSelect.value = STT_SOURCE_LANG_ONLY;
@@ -920,12 +948,19 @@ document.addEventListener('DOMContentLoaded', () => {
     record: readBoolLS(LS_MODE_RECORD, false),
   };
 
+  function enforceLockedTranscriptModes() {
+    if (STT_LOCKED_MODES.voice) modes.voice = false;
+    if (STT_LOCKED_MODES.record) modes.record = false;
+  }
+
   function setBtnActive(btn, on) {
     if (!btn) return;
     btn.classList.toggle('active', !!on);
   }
 
   function applyModesToUI() {
+    enforceLockedTranscriptModes();
+    syncLockedTranscriptControlsUi();
     setBtnActive(subtitleBtn, modes.en);
     setBtnActive(subtitleTransBtn, modes.vi);
     setBtnActive(voiceBtn, modes.voice);
@@ -963,6 +998,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (voiceBtn) {
       voiceBtn.addEventListener('click', () => {
+        if (STT_LOCKED_MODES.voice) return;
         modes.voice = !modes.voice;
         sendTranscriptModes();
       });
@@ -970,6 +1006,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (recordBtn) {
       recordBtn.addEventListener('click', () => {
+        if (STT_LOCKED_MODES.record) return;
         modes.record = !modes.record;
         sendTranscriptModes();
       });
