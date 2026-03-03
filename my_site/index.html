@@ -1,0 +1,2374 @@
+<!doctype html>
+<html lang="vi" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>V-Transer</title>
+  <link rel="icon" type="image/png" href="./image.png" />
+
+  <!-- SEO / Social -->
+  <meta name="description" content="V-Transer giúp bạn theo dõi các nội dung đa ngôn ngữ thời gian thực với ứng dụng trí tuệ nhân tạo." />
+  <meta property="og:title" content="V-Transer — Tiện ích AI cho dịch thuật" />
+  <meta property="og:description" content="Phụ đề realtime • Dịch EN↔VI • Lưu lịch sử • Trợ lý AI" />
+  <meta property="og:image" content="https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1600&q=80" />
+  <meta name="theme-color" content="#07080a" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;650;700;800;900&display=swap" rel="stylesheet"/>
+
+  <style>
+    /* =========================================================
+      1) THEME TOKENS (Dark default)
+    ========================================================= */
+    :root{
+      --font: "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+
+      --max: 1180px;
+      --pad: 24px;
+      --navH: 74px;
+
+      --radius: 16px;
+      --radius2: 22px;
+
+      --bg0: #07080a;
+      --bg1: #06070a;
+      --bg2: #040408;
+
+      --text: #eef0f4;
+      --muted: rgba(238,240,244,.68);
+      --muted2: rgba(238,240,244,.50);
+
+      --border: rgba(255,255,255,.085);
+      --border2: rgba(255,255,255,.14);
+
+      --card: rgba(255,255,255,.03);
+      --card2: rgba(255,255,255,.055);
+      --hover: rgba(255,255,255,.07);
+
+      --blue: #2f7bff;
+      --cyan: #34d7ff;
+      --violet: #a36bff;
+
+      --shadow: 0 24px 80px rgba(0,0,0,.56);
+      --shadow2: 0 14px 44px rgba(0,0,0,.46);
+
+      --hdr-bg: rgba(7,8,10,.58);
+      --hdr-blur: 14px;
+
+      /* Background composition */
+      --mesh-1: radial-gradient(1200px 650px at 50% -160px, rgba(47,123,255,.18), transparent 60%);
+      --mesh-2: radial-gradient(1000px 560px at 10% 12%, rgba(52,215,255,.12), transparent 58%);
+      --mesh-3: radial-gradient(900px 520px at 88% 18%, rgba(163,107,255,.12), transparent 58%);
+      --bg-linear: linear-gradient(180deg, var(--bg0), var(--bg1) 58%, var(--bg2) 100%);
+
+      --grid-line: rgba(255,255,255,.05);
+      --grid-opacity: .14;
+      --grid-mask: radial-gradient(900px 420px at 50% 180px, black 52%, transparent 76%);
+
+      --vignette: radial-gradient(1200px 720px at 50% 0%, transparent 45%, rgba(0,0,0,.58) 100%);
+
+      --h1-grad: linear-gradient(180deg, #ffffff 0%, rgba(255,255,255,.78) 58%, rgba(255,255,255,.58) 100%);
+
+      --btn-ghost: transparent;
+      --btn-ghost-hover: rgba(255,255,255,.05);
+
+      --btn-solid: rgba(255,255,255,.06);
+      --btn-solid-hover: rgba(255,255,255,.10);
+      --btn-solid-border: rgba(255,255,255,.10);
+      --btn-solid-border-hover: rgba(255,255,255,.16);
+
+      --btn-primary: linear-gradient(90deg, var(--blue), var(--cyan));
+      --btn-primary-shadow: 0 0 0 1px rgba(255,255,255,.06) inset, 0 14px 44px rgba(47,123,255,.18);
+      --btn-primary-shadow-hover: 0 0 0 1px rgba(255,255,255,.08) inset, 0 18px 58px rgba(47,123,255,.26);
+
+      --chip-bg: rgba(255,255,255,.05);
+      --chip-border: rgba(255,255,255,.10);
+
+      /* Image harmony */
+      --img-contrast: 1.07;
+      --img-sat: .92;
+      --img-bright: .92;
+      --img-tint: rgba(0,0,0,.18);
+      --img-edge: radial-gradient(100% 85% at 50% 50%, rgba(0,0,0,0) 62%, rgba(0,0,0,.78) 100%);
+    }
+
+    /* =========================================================
+      2) LIGHT THEME OVERRIDES (White + ocean blue gradients)
+    ========================================================= */
+    html[data-theme="light"]{
+      --bg0: #ffffff;
+      --bg1: #fbfdff;
+      --bg2: #f6f9ff;
+
+      --text: #0b1220;
+      --muted: rgba(11,18,32,.66);
+      --muted2: rgba(11,18,32,.50);
+
+      --border: rgba(11,18,32,.10);
+      --border2: rgba(11,18,32,.16);
+
+      --card: rgba(255,255,255,.72);
+      --card2: rgba(255,255,255,.88);
+      --hover: rgba(11,18,32,.05);
+
+      --blue: #1f66ff;
+      --cyan: #1fc7ff;
+      --violet: #6f7dff;
+
+      --shadow: 0 24px 80px rgba(11,18,32,.14);
+      --shadow2: 0 14px 44px rgba(11,18,32,.10);
+
+      --hdr-bg: rgba(255,255,255,.72);
+
+      --mesh-1: radial-gradient(1200px 650px at 50% -200px, rgba(31,199,255,.22), transparent 62%);
+      --mesh-2: radial-gradient(1000px 560px at 10% 10%, rgba(31,102,255,.18), transparent 60%);
+      --mesh-3: radial-gradient(900px 520px at 88% 18%, rgba(111,125,255,.14), transparent 60%);
+      --bg-linear: linear-gradient(180deg, var(--bg0), var(--bg1) 56%, var(--bg2) 100%);
+
+      --grid-line: rgba(11,18,32,.07);
+      --grid-opacity: .20;
+      --grid-mask: radial-gradient(980px 440px at 50% 220px, black 55%, transparent 80%);
+
+      --vignette: radial-gradient(1200px 720px at 50% 0%, transparent 55%, rgba(11,18,32,.08) 100%);
+
+      --h1-grad: linear-gradient(180deg, #0b1220 0%, rgba(11,18,32,.80) 60%, rgba(11,18,32,.62) 100%);
+
+      --btn-ghost-hover: rgba(11,18,32,.05);
+
+      --btn-solid: rgba(11,18,32,.05);
+      --btn-solid-hover: rgba(11,18,32,.08);
+      --btn-solid-border: rgba(11,18,32,.10);
+      --btn-solid-border-hover: rgba(11,18,32,.16);
+
+      --btn-primary: linear-gradient(90deg, #1f66ff, #1fc7ff);
+      --btn-primary-shadow: 0 0 0 1px rgba(11,18,32,.06) inset, 0 14px 44px rgba(31,199,255,.16);
+      --btn-primary-shadow-hover: 0 0 0 1px rgba(11,18,32,.08) inset, 0 18px 58px rgba(31,199,255,.22);
+
+      --chip-bg: rgba(11,18,32,.04);
+      --chip-border: rgba(11,18,32,.10);
+
+      --img-contrast: 1.03;
+      --img-sat: .96;
+      --img-bright: 1.02;
+      --img-tint: rgba(255,255,255,.12);
+      --img-edge: radial-gradient(100% 85% at 50% 50%, rgba(255,255,255,0) 60%, rgba(255,255,255,.70) 100%);
+    }
+
+    /* =========================================================
+      3) BASE
+    ========================================================= */
+    *{ box-sizing:border-box; }
+    html,body{ height:100%; }
+    body{
+      margin:0;
+      font-family: var(--font);
+      background: var(--mesh-1), var(--mesh-2), var(--mesh-3), var(--bg-linear);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: geometricPrecision;
+      overflow-x:hidden;
+      transition: background-color .25s ease, color .25s ease;
+    }
+    a{ color:inherit; text-decoration:none; }
+    button{ font-family:inherit; }
+    .container{
+      width:100%;
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 var(--pad);
+      position:relative;
+      z-index:1;
+      overflow: visible; /* FIX: tránh cắt dấu/gradient text ở một số browser */
+    }
+    section{ scroll-margin-top: calc(var(--navH) + 18px); }
+
+    .bg-grid{
+      position:fixed; inset:0;
+      pointer-events:none;
+      background-image:
+        linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+        linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+      background-size: 72px 72px;
+      opacity: var(--grid-opacity);
+      mask-image: var(--grid-mask);
+      z-index:0;
+      transition: opacity .25s ease;
+    }
+    .bg-vignette{
+      position:fixed; inset:-1px;
+      pointer-events:none;
+      background: var(--vignette);
+      z-index:0;
+      transition: background .25s ease;
+    }
+
+    /* =========================================================
+      4) NAV
+    ========================================================= */
+    header{
+      position: sticky;
+      top:0;
+      z-index: 50;
+      backdrop-filter: blur(var(--hdr-blur));
+      background: var(--hdr-bg);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav{
+      height: var(--navH);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 16px;
+    }
+    .brand{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      font-weight:800;
+      letter-spacing:-.02em;
+    }
+    .brand .wordmark{ font-size: 14.5px; }
+    .navlinks{
+      display:flex;
+      gap: 10px;
+      align-items:center;
+      color: var(--muted);
+      font-size: 13.5px;
+      font-weight: 650;
+    }
+    .navlinks a{
+      padding: 10px 10px;
+      border-radius: 999px;
+      transition: .18s ease;
+    }
+    .navlinks a:hover{
+      color: var(--text);
+      background: var(--btn-ghost-hover);
+    }
+
+    .navactions{
+      display:flex;
+      gap: 10px;
+      align-items:center;
+    }
+
+    .btn{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:10px;
+      border-radius: 999px;
+      padding: 10px 14px;
+      border: 1px solid transparent;
+      cursor:pointer;
+      font-size: 13.5px;
+      font-weight: 700;
+      letter-spacing: -.01em;
+      transition: .18s ease;
+      user-select:none;
+      white-space:nowrap;
+      background: transparent;
+      color: inherit;
+    }
+    .btn.ghost{
+      background: var(--btn-ghost);
+      color: var(--muted);
+      border-color: transparent;
+    }
+    .btn.ghost:hover{
+      color: var(--text);
+      background: var(--btn-ghost-hover);
+    }
+
+    .btn.solid{
+      background: var(--btn-solid);
+      border-color: var(--btn-solid-border);
+      color: var(--text);
+    }
+    .btn.solid:hover{
+      background: var(--btn-solid-hover);
+      border-color: var(--btn-solid-border-hover);
+      transform: translateY(-1px);
+    }
+
+    .btn.primary{
+      background: var(--btn-primary);
+      border-color: rgba(255,255,255,.10);
+      box-shadow: var(--btn-primary-shadow);
+      color: #fff;
+    }
+    .btn.primary:hover{
+      transform: translateY(-1px);
+      box-shadow: var(--btn-primary-shadow-hover);
+    }
+
+    .btn.theme{
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid var(--btn-solid-border);
+      background: var(--btn-solid);
+    }
+    .btn.theme:hover{
+      background: var(--btn-solid-hover);
+      border-color: var(--btn-solid-border-hover);
+      transform: translateY(-1px);
+    }
+
+    .hamburger{
+      display:none;
+      width: 42px; height: 42px;
+      border-radius: 14px;
+      border:1px solid var(--border);
+      background: var(--btn-solid);
+      cursor:pointer;
+      align-items:center;
+      justify-content:center;
+    }
+    .hamburger:hover{
+      background: var(--btn-solid-hover);
+      border-color: var(--border2);
+    }
+
+    .mobileSheet{
+      display:none;
+      position: fixed;
+      inset: calc(var(--navH) + 10px) 14px auto 14px;
+      background: color-mix(in srgb, var(--bg0) 86%, transparent);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow2);
+      padding: 10px;
+      z-index: 60;
+    }
+    .mobileSheet a{
+      display:flex;
+      padding: 12px 12px;
+      border-radius: 14px;
+      color: var(--muted);
+      font-weight: 750;
+      transition: .18s ease;
+    }
+    .mobileSheet a:hover{
+      background: var(--btn-ghost-hover);
+      color: var(--text);
+    }
+
+    .tokenScreen{
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 90;
+    }
+    .tokenScreen.open{ display:flex; }
+    .tokenBackdrop{
+      position:absolute;
+      inset:0;
+      background: rgba(2,6,12,.72);
+      backdrop-filter: blur(10px);
+    }
+    .tokenPanel{
+      position:relative;
+      z-index:1;
+      width:min(760px, 95vw);
+      border:1px solid var(--border2);
+      border-radius: 24px;
+      background: color-mix(in srgb, var(--bg0) 92%, transparent);
+      box-shadow: var(--shadow);
+      padding: 22px;
+    }
+    .tokenHead{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .tokenHead h3{
+      margin:0;
+      font-size: 26px;
+      letter-spacing: -.03em;
+      font-weight: 900;
+      line-height: 1.1;
+    }
+    .tokenHead p{
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .tokenClose{
+      width:38px;
+      height:38px;
+      border-radius: 999px;
+      border:1px solid var(--btn-solid-border);
+      background: var(--btn-solid);
+      color: var(--text);
+      cursor:pointer;
+      font-size: 22px;
+      line-height: 1;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      transition: .18s ease;
+      flex: 0 0 auto;
+    }
+    .tokenClose:hover{
+      transform: translateY(-1px);
+      border-color: var(--btn-solid-border-hover);
+      background: var(--btn-solid-hover);
+    }
+    .tokenRuntime{
+      border:1px solid var(--border);
+      border-radius: 16px;
+      background: color-mix(in srgb, var(--card2) 72%, transparent);
+      padding: 12px;
+    }
+    .tokenRuntimeList{
+      display:flex;
+      flex-direction:column;
+      gap: 8px;
+    }
+    .tokenRuntimeRow{
+      display:grid;
+      grid-template-columns: 170px 1fr auto;
+      gap: 8px;
+      align-items:center;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--card) 84%, transparent);
+      padding: 8px;
+    }
+    .tokenRuntimeLabel{
+      font-size: 12.5px;
+      font-weight: 850;
+      color: color-mix(in srgb, var(--text) 72%, transparent);
+      letter-spacing: -.01em;
+    }
+    .tokenRuntimeValue{
+      margin: 0;
+      font-size: 12.8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      color: var(--text);
+      overflow:auto;
+      white-space: nowrap;
+      scrollbar-width: thin;
+    }
+    .tokenCopyBtn{
+      border:1px solid var(--btn-solid-border);
+      border-radius: 999px;
+      background: var(--btn-solid);
+      color: var(--text);
+      cursor:pointer;
+      font-size: 12px;
+      font-weight: 800;
+      padding: 7px 10px;
+      white-space: nowrap;
+      transition: .18s ease;
+    }
+    .tokenCopyBtn:hover{
+      transform: translateY(-1px);
+      border-color: var(--btn-solid-border-hover);
+      background: var(--btn-solid-hover);
+    }
+    /* =========================================================
+      5) HERO
+    ========================================================= */
+    main{ padding-bottom: 90px; }
+    .hero{ padding: 64px 0 28px; overflow: visible; } /* FIX: tránh cắt dấu */
+
+    .badge{
+      display:inline-flex;
+      align-items:center;
+      gap:10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border:1px solid var(--border);
+      background: var(--btn-solid);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 750;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.02) inset;
+      transition: .18s ease;
+    }
+    html[data-theme="light"] .badge{
+      box-shadow: 0 0 0 1px rgba(11,18,32,.03) inset;
+    }
+    .badge .dot{
+      width: 8px; height: 8px;
+      border-radius:999px;
+      background: linear-gradient(90deg, var(--cyan), var(--blue));
+      box-shadow: 0 0 16px color-mix(in srgb, var(--cyan) 35%, transparent);
+    }
+    .badge:hover{
+      border-color: var(--border2);
+      background: var(--btn-solid-hover);
+      color: var(--text);
+      transform: translateY(-1px);
+    }
+
+    .heroGrid{
+      margin-top: 18px;
+      display:grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 26px;
+      align-items:start;
+    }
+
+    /* ✅ FIX: H1 tiếng Việt bị cắt dấu + bỏ chạy chữ */
+    h1{
+      font-size: clamp(44px, 5.2vw, 76px);
+      line-height: 1.12;          /* tăng để không cắt dấu */
+      letter-spacing: -0.045em;
+      margin: 18px 0 14px;
+      font-weight: 900;
+      color: var(--text);
+
+      padding-block: 0.06em;      /* “khoảng thở” trên/dưới */
+      overflow: visible;
+    }
+    @supports ((-webkit-background-clip: text) or (background-clip: text)){
+      h1{
+        background: var(--h1-grad);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+
+        /* fix thêm cho vài browser hay bị cắt dấu */
+        -webkit-box-decoration-break: clone;
+        box-decoration-break: clone;
+      }
+    }
+
+    .lead{
+      margin: 0 0 22px;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.6;
+      max-width: 62ch;
+    }
+    .heroCtas{
+      display:flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items:center;
+      margin-bottom: 14px;
+    }
+    .subnote{
+      color: var(--muted2);
+      font-size: 12.8px;
+      display:flex;
+      flex-wrap:wrap;
+      gap: 10px;
+      align-items:center;
+      margin-top: 6px;
+    }
+    .subnote span{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      font-weight: 750;
+    }
+
+    .heroSide{
+      display:flex;
+      flex-direction:column;
+      gap: 12px;
+    }
+    .miniStats{
+      display:grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .stat{
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 16px;
+      padding: 12px 12px;
+    }
+    .stat .k{
+      font-size: 12px;
+      color: var(--muted2);
+      margin-bottom: 6px;
+      font-weight: 800;
+      letter-spacing: .01em;
+    }
+    .stat .v{
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: -.01em;
+      color: color-mix(in srgb, var(--text) 88%, transparent);
+    }
+
+    /* =========================================================
+      6) IMAGE + MEDIA SYSTEM (harmonize + fade edges)
+    ========================================================= */
+    .imgWrap{
+      position:relative;
+      width:100%;
+      height:100%;
+      overflow:hidden;
+      border-radius: inherit;
+    }
+    .softImg{
+      width:100%;
+      height:100%;
+      display:block;
+      object-fit: cover;
+      filter:
+        saturate(var(--img-sat))
+        contrast(var(--img-contrast))
+        brightness(var(--img-bright));
+      transform: scale(1.02);
+    }
+    .softMedia{
+      width:100%;
+      height:100%;
+      display:block;
+      object-fit: cover;
+      filter:
+        saturate(var(--img-sat))
+        contrast(var(--img-contrast))
+        brightness(var(--img-bright));
+      transform: scale(1.01);
+    }
+
+    .imgWrap::after{
+      content:"";
+      position:absolute;
+      inset:0;
+      background:
+        linear-gradient(180deg, rgba(0,0,0,.08), rgba(0,0,0,.0) 42%, rgba(0,0,0,.18)),
+        var(--img-edge);
+      mix-blend-mode: multiply;
+      pointer-events:none;
+    }
+    html[data-theme="light"] .imgWrap::after{
+      mix-blend-mode: normal;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,0) 42%, rgba(255,255,255,.10)),
+        var(--img-edge);
+    }
+    .imgGlow{
+      position:absolute;
+      inset:-1px;
+      pointer-events:none;
+      background:
+        radial-gradient(760px 340px at 18% 0%, color-mix(in srgb, var(--cyan) 12%, transparent), transparent 58%),
+        radial-gradient(740px 340px at 82% 12%, color-mix(in srgb, var(--violet) 10%, transparent), transparent 58%);
+      opacity:.95;
+    }
+
+    /* ✅ Media frame: chuẩn hóa ảnh ngang 16:9 và ảnh dọc cùng tỉ lệ */
+    .mediaFrame{
+      margin-top: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--card) 74%, transparent);
+      overflow:hidden;
+      position:relative;
+      box-shadow: 0 10px 30px rgba(0,0,0,.12);
+    }
+    html[data-theme="light"] .mediaFrame{ box-shadow: 0 10px 30px rgba(11,18,32,.08); }
+
+    .mediaFrame .ratio{ width:100%; position:relative; }
+    .mediaFrame.r16x9 .ratio{ aspect-ratio: 16/9; }
+    .mediaFrame.p3x4 .ratio{ aspect-ratio: 3/4; }
+
+    .mediaFrame::before{
+      content:"";
+      position:absolute;
+      inset:0;
+      pointer-events:none;
+      background:
+        radial-gradient(520px 160px at 20% 0%, color-mix(in srgb, var(--cyan) 8%, transparent), transparent 60%),
+        radial-gradient(520px 160px at 80% 10%, color-mix(in srgb, var(--violet) 7%, transparent), transparent 60%);
+      opacity:.55;
+      mix-blend-mode: normal;
+    }
+
+    /* =========================================================
+      7) HERO VISUAL (Video preview)
+    ========================================================= */
+    .heroVisual{
+      margin-top: 26px;
+      border-radius: 26px;
+      border: 1px solid var(--border);
+      background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--card2) 78%, transparent),
+        color-mix(in srgb, var(--card) 58%, transparent)
+      );
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      position:relative;
+    }
+    .visualTop{
+      position:relative;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      padding: 14px 14px 10px;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--card2) 60%, transparent);
+    }
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--chip-border);
+      background: var(--chip-bg);
+      color: color-mix(in srgb, var(--text) 68%, transparent);
+      font-size: 12px;
+      font-weight: 850;
+      letter-spacing:-.01em;
+      user-select:none;
+    }
+
+    .visualBody{
+      position:relative;
+      padding: 14px;
+      display:grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+
+    .shotFrame{
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--bg0) 60%, transparent);
+      border-radius: 20px;
+      overflow:hidden;
+      box-shadow: var(--shadow2);
+      position:relative;
+    }
+    .shotFrame .ratio{
+      aspect-ratio: 16/9;
+      width:100%;
+      position:relative;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+
+    video{ outline:none; border: 0; }
+
+    /* =========================================================
+      8) TRUST
+    ========================================================= */
+    .trust{
+      margin-top: 30px;
+      padding: 22px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .trustRow{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 16px;
+      flex-wrap:wrap;
+    }
+    .trustRow p{
+      margin:0;
+      font-size: 12px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: color-mix(in srgb, var(--text) 40%, transparent);
+      font-weight: 900;
+    }
+    .logos{
+      display:flex;
+      gap: 12px;
+      flex-wrap:wrap;
+      align-items:center;
+      opacity:.92;
+    }
+    .logoChip{
+      font-weight: 900;
+      letter-spacing:-.04em;
+      font-size: 14px;
+      color: color-mix(in srgb, var(--text) 62%, transparent);
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--card);
+    }
+
+    /* =========================================================
+      9) SECTIONS
+    ========================================================= */
+    .section{ padding: 84px 0; }
+    .sectionHead{
+      display:flex;
+      align-items:flex-end;
+      justify-content:space-between;
+      gap: 16px;
+      flex-wrap:wrap;
+      margin-bottom: 26px;
+    }
+    .sectionHead h2{
+      margin:0;
+      font-size: 34px;
+      letter-spacing:-.03em;
+      font-weight: 900;
+      line-height: 1.1;
+    }
+    .sectionHead p{
+      margin:0;
+      color: var(--muted);
+      max-width: 70ch;
+      font-size: 14.8px;
+      line-height: 1.6;
+    }
+
+    /* =========================================================
+      10) BENTO GRID
+    ========================================================= */
+    .bento{
+      display:grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 12px;
+    }
+    .card{
+      border: 1px solid var(--border);
+      background: var(--card2);
+      border-radius: 22px;
+      padding: 18px;
+      position:relative;
+      overflow:hidden;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.02) inset;
+      transition: transform .18s ease, background .18s ease, border-color .18s ease;
+      min-height: 190px;
+    }
+    html[data-theme="light"] .card{
+      box-shadow: 0 0 0 1px rgba(11,18,32,.02) inset;
+    }
+    .card:hover{
+      transform: translateY(-2px);
+      background: color-mix(in srgb, var(--card2) 70%, var(--hover));
+      border-color: var(--border2);
+    }
+    .glow{
+      content:"";
+      position:absolute;
+      width: 320px; height: 320px;
+      right: -150px; top:-170px;
+      background: radial-gradient(circle, color-mix(in srgb, var(--cyan) 14%, transparent), transparent 62%);
+      pointer-events:none;
+      opacity:.95;
+    }
+    .glow.violet{ background: radial-gradient(circle, color-mix(in srgb, var(--violet) 13%, transparent), transparent 62%); }
+    .glow.blue{ background: radial-gradient(circle, color-mix(in srgb, var(--blue) 13%, transparent), transparent 62%); }
+
+    .card .topline{
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .icon{
+      width: 34px; height: 34px;
+      border-radius: 12px;
+      border:1px solid var(--border);
+      background: color-mix(in srgb, var(--card) 75%, transparent);
+      display:flex; align-items:center; justify-content:center;
+      box-shadow: 0 10px 30px rgba(0,0,0,.10);
+    }
+    html[data-theme="light"] .icon{ box-shadow: 0 10px 30px rgba(11,18,32,.08); }
+    .icon svg{ width:18px; height:18px; }
+    .card h3{
+      margin:0;
+      font-size: 16px;
+      letter-spacing:-.02em;
+      font-weight: 900;
+    }
+    .card p{
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+      max-width: 64ch;
+    }
+
+    /* ✅ Text-only block (for cards without images) */
+    .textOnly{
+      margin-top: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--card) 70%, transparent);
+      padding: 14px 14px;
+    }
+    .textOnly ul{
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+      color: color-mix(in srgb, var(--text) 80%, transparent);
+      font-weight: 800;
+      font-size: 13.5px;
+      line-height: 1.5;
+    }
+    .textOnly li{
+      display:flex;
+      gap: 10px;
+      align-items:flex-start;
+    }
+    .textOnly li::before{
+      content:"";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      margin-top: 6px;
+      background: linear-gradient(90deg, var(--cyan), var(--blue));
+      box-shadow: 0 0 16px color-mix(in srgb, var(--cyan) 18%, transparent);
+      flex: 0 0 auto;
+    }
+    .textOnly small{
+      display:block;
+      margin-top: 2px;
+      color: var(--muted2);
+      font-weight: 750;
+      line-height: 1.45;
+    }
+
+    /* bento layout spans */
+    .span-5{ grid-column: span 5; }
+    .span-7{ grid-column: span 7; }
+    .span-4{ grid-column: span 4; }
+    .span-6{ grid-column: span 6; }
+    .span-8{ grid-column: span 8; }
+
+    /* =========================================================
+      11) HOW IT WORKS
+    ========================================================= */
+    .steps{
+      display:grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .step{
+      border:1px solid var(--border);
+      background: var(--card2);
+      border-radius: 22px;
+      padding: 18px;
+      position:relative;
+      overflow:hidden;
+      min-height: 170px;
+    }
+    .stepNum{
+      width: 34px; height: 34px;
+      border-radius: 999px;
+      display:flex; align-items:center; justify-content:center;
+      background: var(--btn-solid);
+      border:1px solid var(--border);
+      font-weight: 950;
+      letter-spacing:-.02em;
+    }
+    .step h4{
+      margin: 12px 0 8px;
+      font-size: 16px;
+      font-weight: 900;
+      letter-spacing:-.02em;
+    }
+    .step p{
+      margin:0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* =========================================================
+      12) INSTALL
+    ========================================================= */
+    .installGrid{
+      display:grid;
+      grid-template-columns: 1.2fr .8fr;
+      gap: 12px;
+      align-items:start;
+    }
+    .panel{
+      border:1px solid var(--border);
+      background: var(--card2);
+      border-radius: 22px;
+      overflow:hidden;
+    }
+    .panelHead{
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      background: color-mix(in srgb, var(--card2) 70%, transparent);
+    }
+    .panelHead b{ font-weight: 950; letter-spacing:-.02em; }
+    .panelBody{ padding: 14px 16px 16px; }
+    .list{
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+    }
+    .row{
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 16px;
+      padding: 12px 12px;
+      display:flex;
+      justify-content:space-between;
+      gap: 12px;
+      align-items:flex-start;
+    }
+    .row b{ font-size: 13.5px; font-weight: 900; letter-spacing:-.01em; }
+    .row small{ color: var(--muted2); font-weight: 850; display:block; margin-top:4px; line-height:1.4; }
+    .row .btn{ padding: 8px 12px; font-size: 13px; }
+
+    .useShot{
+      border:1px solid var(--border);
+      background: var(--card);
+      border-radius: 22px;
+      overflow:hidden;
+      box-shadow: var(--shadow2);
+    }
+    .useShot .ratio{
+      aspect-ratio: 4/3;
+      width:100%;
+      position:relative;
+    }
+
+    /* =========================================================
+      13) PRICING
+    ========================================================= */
+    .pricing{
+      display:grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      align-items:stretch;
+    }
+    .plan{
+      border: 1px solid var(--border);
+      background: var(--card2);
+      border-radius: 24px;
+      padding: 18px;
+      position:relative;
+      overflow:hidden;
+      display:flex;
+      flex-direction:column;
+      gap: 12px;
+      min-height: 340px;
+    }
+    .plan .tag{
+      width: fit-content;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border:1px solid var(--border);
+      background: var(--card);
+      color: color-mix(in srgb, var(--text) 72%, transparent);
+      font-weight: 900;
+      font-size: 12px;
+      letter-spacing:-.01em;
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+    }
+    .plan .price{
+      font-size: 34px;
+      font-weight: 950;
+      letter-spacing:-.03em;
+      margin-top: 2px;
+    }
+    .plan .price small{
+      font-size: 13px;
+      color: var(--muted2);
+      font-weight: 900;
+      margin-left: 6px;
+    }
+    .plan ul{
+      margin: 6px 0 0;
+      padding: 0;
+      list-style: none;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 13.5px;
+      line-height: 1.4;
+    }
+    .plan li{
+      display:flex;
+      gap: 10px;
+      align-items:flex-start;
+    }
+    .tick{
+      width: 18px; height: 18px;
+      border-radius: 6px;
+      border:1px solid var(--border);
+      background: color-mix(in srgb, var(--card) 70%, transparent);
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      flex: 0 0 auto;
+      margin-top: 1px;
+    }
+    .tick svg{ width: 12px; height: 12px; }
+    .plan .cta{
+      margin-top:auto;
+      display:flex;
+      gap: 10px;
+      flex-wrap:wrap;
+    }
+    .plan.featured{
+      border-color: color-mix(in srgb, var(--cyan) 35%, var(--border2));
+      box-shadow: var(--shadow2);
+      background:
+        radial-gradient(720px 280px at 30% 0%, color-mix(in srgb, var(--cyan) 10%, transparent), transparent 60%),
+        radial-gradient(720px 280px at 70% 0%, color-mix(in srgb, var(--blue) 10%, transparent), transparent 60%),
+        var(--card2);
+    }
+    .plan.featured::after{
+      content:"Đề xuất";
+      position:absolute;
+      top: 14px;
+      right: 14px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: var(--btn-primary);
+      color:#fff;
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing:-.01em;
+      box-shadow: 0 10px 30px rgba(0,0,0,.18);
+    }
+
+    /* =========================================================
+      14) FAQ
+    ========================================================= */
+    .faq{
+      border: 1px solid var(--border);
+      background: var(--card2);
+      border-radius: 24px;
+      overflow:hidden;
+    }
+    .qa{ border-top: 1px solid var(--border); }
+    .qa:first-child{ border-top:none; }
+    .qBtn{
+      width:100%;
+      padding: 16px 16px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 12px;
+      background: transparent;
+      border:none;
+      cursor:pointer;
+      color: var(--text);
+      text-align:left;
+      font-weight: 950;
+      letter-spacing:-.02em;
+      font-size: 14.5px;
+    }
+    .qBtn:hover{ background: var(--btn-ghost-hover); }
+    .ans{
+      max-height: 0;
+      overflow:hidden;
+      transition: max-height .25s ease;
+    }
+    .ansInner{
+      padding: 0 16px 16px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+    .chev{
+      width: 18px; height: 18px;
+      transition: transform .2s ease;
+      flex: 0 0 auto;
+      opacity:.85;
+    }
+    .qa.open .chev{ transform: rotate(180deg); }
+
+    /* =========================================================
+      15) BIG CTA
+    ========================================================= */
+    .bigCta{
+      margin-top: 60px;
+      border:1px solid var(--border);
+      border-radius: 28px;
+      background:
+        radial-gradient(900px 340px at 30% 0%, color-mix(in srgb, var(--cyan) 12%, transparent), transparent 62%),
+        radial-gradient(900px 340px at 70% 0%, color-mix(in srgb, var(--blue) 12%, transparent), transparent 62%),
+        var(--card2);
+      padding: 24px;
+      box-shadow: var(--shadow2);
+      overflow:hidden;
+      position:relative;
+    }
+    .bigCta h2{
+      margin:0 0 10px;
+      font-size: 36px;
+      letter-spacing:-.03em;
+      font-weight: 950;
+      line-height: 1.06;
+    }
+    .bigCta p{
+      margin:0 0 16px;
+      color: var(--muted);
+      max-width: 74ch;
+      line-height: 1.65;
+      font-size: 14.8px;
+    }
+
+    /* =========================================================
+      16) FOOTER
+    ========================================================= */
+    footer{
+      border-top: 1px solid var(--border);
+      padding: 56px 0 70px;
+      background: color-mix(in srgb, var(--bg0) 86%, transparent);
+    }
+    .foot{
+      display:grid;
+      grid-template-columns: 1.6fr 1fr 1fr;
+      gap: 18px;
+    }
+    .foot .colh{
+      color: color-mix(in srgb, var(--text) 70%, transparent);
+      font-weight: 950;
+      margin-bottom: 10px;
+      letter-spacing:-.01em;
+      font-size: 13px;
+    }
+    .foot a{
+      display:block;
+      padding: 8px 0;
+      color: color-mix(in srgb, var(--text) 52%, transparent);
+      font-weight: 700;
+      font-size: 13px;
+      transition: .16s ease;
+    }
+    .foot a:hover{ color: color-mix(in srgb, var(--cyan) 86%, transparent); }
+    .footBrand p{
+      margin: 10px 0 0;
+      color: color-mix(in srgb, var(--text) 50%, transparent);
+      font-size: 13px;
+      line-height: 1.55;
+      max-width: 46ch;
+    }
+    .copy{
+      margin-top: 14px;
+      color: color-mix(in srgb, var(--text) 34%, transparent);
+      font-size: 12.5px;
+      font-weight: 650;
+    }
+
+    /* =========================================================
+      17) ANIMATIONS (scroll reveal)
+    ========================================================= */
+    .reveal{
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity .5s ease, transform .5s ease;
+    }
+    .reveal.in{
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* =========================================================
+      18) RESPONSIVE
+    ========================================================= */
+    @media (max-width: 980px){
+      .heroGrid{ grid-template-columns: 1fr; }
+      .installGrid{ grid-template-columns: 1fr; }
+      .bento{ grid-template-columns: repeat(12, 1fr); }
+      .span-7,.span-5,.span-8,.span-6,.span-4{ grid-column: span 12; }
+      .steps{ grid-template-columns: 1fr; }
+      .pricing{ grid-template-columns: 1fr; }
+      .foot{ grid-template-columns: 1fr; }
+      .tokenNavBtn{ display:none; }
+    }
+    @media (max-width: 820px){
+      .navlinks{ display:none; }
+      .hamburger{ display:inline-flex; }
+      .tokenPanel{ padding: 18px; }
+      .tokenHead h3{ font-size: 23px; }
+      .tokenRuntimeRow{ grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce){
+      *{ animation:none !important; transition:none !important; scroll-behavior:auto !important; }
+      .reveal{ opacity:1 !important; transform:none !important; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="bg-grid" aria-hidden="true"></div>
+  <div class="bg-vignette" aria-hidden="true"></div>
+
+  <!-- =========================================================
+    NAVBAR (no login)
+  ========================================================= -->
+  <header>
+    <div class="container">
+      <div class="nav">
+        <a class="brand" href="#top" aria-label="V-Transer">
+          <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+            <defs>
+              <linearGradient id="logoG" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="var(--cyan)"/>
+                <stop offset="0.55" stop-color="var(--blue)"/>
+                <stop offset="1" stop-color="var(--violet)"/>
+              </linearGradient>
+            </defs>
+            <circle cx="11" cy="11" r="9.3" fill="url(#logoG)" opacity="0.95"/>
+            <circle cx="14" cy="8" r="3.2" fill="rgba(255,255,255,.25)"/>
+          </svg>
+          <span class="wordmark">V-Transer</span>
+        </a>
+
+        <nav class="navlinks" aria-label="Điều hướng">
+          <a href="#sanpham">Sản phẩm</a>
+          <a href="#tinhnang">Tính năng</a>
+          <a href="#cachhoatdong">Cách hoạt động</a>
+          <a href="#cai-dat">Cài đặt</a>
+          <a href="#banggia">Bảng giá</a>
+          <a href="#hoidap">Hỏi đáp</a>
+        </nav>
+
+        <div class="navactions">
+          <button class="btn theme" id="themeToggle" type="button" aria-label="Đổi giao diện" aria-pressed="false" title="Đổi giao diện">
+            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" id="themeIcon">
+              <path fill="currentColor" d="M12 18a6 6 0 1 1 0-12a6 6 0 0 1 0 12Z"/>
+            </svg>
+          </button>
+
+          <button class="btn solid tokenNavBtn" type="button" data-open-token-screen="1">Mã kết nối</button>
+          <a class="btn primary" href="#dungthu">Dùng thử ngay <span aria-hidden="true">→</span></a>
+
+          <button class="hamburger" id="hamburger" aria-label="Mở menu" aria-expanded="false">
+            <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+              <path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="mobileSheet" id="mobileSheet" role="dialog" aria-modal="true" aria-label="Menu">
+    <a href="#sanpham">Sản phẩm</a>
+    <a href="#tinhnang">Tính năng</a>
+    <a href="#cachhoatdong">Cách hoạt động</a>
+    <a href="#cai-dat">Cài đặt</a>
+    <a href="#banggia">Bảng giá</a>
+    <a href="#hoidap">Hỏi đáp</a>
+    <a href="#" data-open-token-screen="1">Mã kết nối</a>
+    <a href="#dungthu">Dùng thử</a>
+  </div>
+
+  <div class="tokenScreen" id="tokenScreen" aria-hidden="true">
+    <div class="tokenBackdrop" data-token-close="1"></div>
+    <div class="tokenPanel" role="dialog" aria-modal="true" aria-labelledby="tokenScreenTitle">
+      <div class="tokenHead">
+        <div>
+          <h3 id="tokenScreenTitle">Mã kết nối</h3>
+        </div>
+        <button class="tokenClose" id="tokenScreenClose" type="button" aria-label="Đóng màn mã kết nối">×</button>
+      </div>
+
+      <div class="tokenRuntime" aria-live="polite">
+        <div class="tokenRuntimeList">
+          <div class="tokenRuntimeRow">
+            <span class="tokenRuntimeLabel">API</span>
+            <p class="tokenRuntimeValue" id="tokenApiUrl">-</p>
+            <button class="tokenCopyBtn" type="button" data-copy-target="tokenApiUrl">Copy</button>
+          </div>
+          <div class="tokenRuntimeRow">
+            <span class="tokenRuntimeLabel">STT WebSocket</span>
+            <p class="tokenRuntimeValue" id="tokenSttWsUrl">-</p>
+            <button class="tokenCopyBtn" type="button" data-copy-target="tokenSttWsUrl">Copy</button>
+          </div>
+          <div class="tokenRuntimeRow">
+            <span class="tokenRuntimeLabel">Translator WebSocket</span>
+            <p class="tokenRuntimeValue" id="tokenTrWsUrl">-</p>
+            <button class="tokenCopyBtn" type="button" data-copy-target="tokenTrWsUrl">Copy</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <main id="top">
+    <!-- =========================================================
+      HERO
+    ========================================================= -->
+    <section class="hero" id="sanpham">
+      <div class="container">
+        <a class="badge reveal" href="#tinhnang" title="Xem tính năng">
+          <span class="dot" aria-hidden="true"></span>
+          Khám phá tính năng nổi bật
+          <span aria-hidden="true">→</span>
+        </a>
+
+        <div class="heroGrid">
+          <div class="reveal">
+            <!-- ✅ H1: không chạy chữ + FIX cắt dấu -->
+            <h1 aria-label="Tiện ích trí tuệ nhân tạo cho dịch thuật.">
+              Tiện ích trí tuệ<br/>
+              nhân tạo<br/>
+              cho dịch thuật.
+            </h1>
+
+            <p class="lead">
+              V-Transer là một tiện ích ứng dụng trí tuệ nhân tạo cho phép bạn tạo phụ đề trực tiếp ngay trên website.
+              Theo dõi thời gian thực các nội dung đa ngôn ngữ. Hệ thống lưu trữ nội dung và trợ lý ảo AI giúp bạn tìm hiểu và trao đổi về nội dung theo dõi.
+            </p>
+
+            <div class="heroCtas">
+              <a class="btn primary" href="#dungthu">Dùng thử ngay <span aria-hidden="true">→</span></a>
+              <button class="btn solid" type="button" data-open-token-screen="1">Mã kết nối</button>
+              <a class="btn solid" href="#tinhnang">Xem tính năng</a>
+              <a class="btn ghost" href="#lienhe">Liên hệ</a>
+            </div>
+
+            <div class="subnote">
+              <span>⚡ Chạy ngay trên trình duyệt</span>
+              <span>🧠 Dịch thuật ổn định</span>
+              <span>🔒 Hệ thống lưu dữ liệu</span>
+            </div>
+          </div>
+
+          <div class="heroSide reveal">
+            <div class="miniStats">
+              <div class="stat">
+                <div class="k">Phụ đề</div>
+                <div class="v">Ổn định, chính xác</div>
+              </div>
+              <div class="stat">
+                <div class="k">Đa ngôn ngữ</div>
+                <div class="v">100+ ngôn ngữ quốc tế</div>
+              </div>
+              <div class="stat">
+                <div class="k">Lịch sử</div>
+                <div class="v">Hệ thống cơ sở dữ liệu lưu trữ nội dung</div>
+              </div>
+              <div class="stat">
+                <div class="k">Trợ lý ảo</div>
+                <div class="v">Tóm tắt, trao đổi, tạo file</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- HERO VISUAL (VIDEO PREVIEW) -->
+        <div class="heroVisual reveal" aria-label="Bản xem trước">
+          <div class="visualTop">
+            <div class="pill">Bản xem trước</div>
+          </div>
+
+          <div class="visualBody">
+            <div class="shotFrame">
+              <div class="ratio">
+                <div class="imgGlow" aria-hidden="true"></div>
+
+                <div class="imgWrap" aria-label="Video demo">
+                  <video
+                    id="demoVideo"
+                    class="softMedia"
+                    controls
+                    playsinline
+                    preload="metadata"
+                    poster="https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1600&q=80">
+                    <source src="D:/vtranser/demo.mp4" type="video/mp4" />
+                    Trình duyệt của bạn không hỗ trợ video.
+                  </video>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <section class="trust reveal" aria-label="Phù hợp cho">
+          <div class="trustRow">
+            <p>PHÙ HỢP CHO HỌC TẬP • CÁC CUỘC HỌP • XEM NỘI DUNG QUỐC TẾ</p>
+            <div class="logos" aria-label="Nền tảng phổ biến">
+              <span class="logoChip">YouTube</span>
+              <span class="logoChip">Zoom</span>
+              <span class="logoChip">Google Meet</span>
+              <span class="logoChip">Livestream</span>
+              <span class="logoChip">Đa nền tảng</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- =========================================================
+      FEATURES (BENTO)
+    ========================================================= -->
+    <section class="section" id="tinhnang">
+      <div class="container">
+        <div class="sectionHead reveal">
+          <div>
+            <h2>Các tính năng chính</h2>
+          </div>
+        </div>
+
+        <div class="bento">
+          <!-- 1) Subtitle (ẢNH NGANG 1920x1080 - 16:9) -->
+          <div class="card span-7 reveal">
+            <div class="glow blue"></div>
+            <div class="topline">
+              <div class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M7 6h10a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H12l-4 3v-3H7a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3Z"/>
+                </svg>
+              </div>
+              <h3>Phụ đề realtime trực tiếp trên website</h3>
+            </div>
+            <p>Bật/tắt phụ đề cho video/cuộc gọi/livestream ngay trong trình duyệt.</p>
+
+            <div class="mediaFrame r16x9" aria-label="Ảnh minh hoạ phụ đề realtime (ngang 16:9)">
+              <div class="ratio">
+                <div class="imgWrap">
+                  <img
+                    class="softImg"
+                    alt="Minh hoạ phụ đề realtime"
+                    loading="lazy"
+                    decoding="async"
+                    src="./phude.jpg" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2) Translate (ẢNH NGANG 1920x1080 - 16:9) -->
+          <div class="card span-5 reveal">
+            <div class="glow violet"></div>
+            <div class="topline">
+              <div class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M4 5h16v2H4V5Zm0 6h10v2H4v-2Zm0 6h16v2H4v-2Zm12-6 4-4 1.4 1.4-4 4L16 11Z"/>
+                </svg>
+              </div>
+              <h3>Dịch thuật</h3>
+            </div>
+            <p>Dịch EN↔VI (và nhiều ngôn ngữ) theo thời gian thực — hiển thị rõ ràng, hạn chế “giật chữ”.</p>
+
+            <div class="mediaFrame r16x9" aria-label="Ảnh minh hoạ dịch thuật (ngang 16:9)">
+              <div class="ratio">
+                <div class="imgWrap">
+                  <img
+                    class="softImg"
+                    alt="Minh hoạ dịch thuật"
+                    loading="lazy"
+                    decoding="async"
+                    src="./dichthuat.jpg" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3) Database (ẢNH DỌC - cùng tỉ lệ với card 4) -->
+          <div class="card span-6 reveal">
+            <div class="glow blue"></div>
+            <div class="topline">
+              <div class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M7 3h10a2 2 0 0 1 2 2v14l-4-2-4 2-4-2-4 2V5a2 2 0 0 1 2-2Z"/>
+                </svg>
+              </div>
+              <h3>Cơ sở dữ liệu lưu trữ nội dung</h3>
+            </div>
+            <p>Lưu theo phiên lịch sử để tìm lại nội dung nhanh, theo thời gian và theo nguồn.</p>
+
+            <div class="mediaFrame p3x4" aria-label="Ảnh minh hoạ lưu trữ dữ liệu (dọc, cùng kích thước)">
+              <div class="ratio">
+                <div class="imgWrap">
+                  <img
+                    class="softImg"
+                    alt="Minh hoạ cơ sở dữ liệu lưu trữ"
+                    loading="lazy"
+                    decoding="async"
+                    src="./lichsu.jpg" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 4) AI Assistant (ẢNH DỌC - cùng tỉ lệ với card 3) -->
+          <div class="card span-6 reveal">
+            <div class="glow violet"></div>
+            <div class="topline">
+              <div class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M12 2a6 6 0 0 1 6 6c0 2.1-1.1 3.9-2.7 5a4 4 0 0 1 2.7 3.7V20H6v-3.3A4 4 0 0 1 8.7 13C7.1 11.9 6 10.1 6 8a6 6 0 0 1 6-6Z"/>
+                </svg>
+              </div>
+              <h3>Trợ lý ảo AI</h3>
+            </div>
+            <p>Hỏi đáp theo nội dung đang xem, tóm tắt nhanh, gợi ý việc cần làm và tạo file theo nhu cầu.</p>
+
+            <div class="mediaFrame p3x4" aria-label="Ảnh minh hoạ trợ lý AI (dọc, cùng kích thước)">
+              <div class="ratio">
+                <div class="imgWrap">
+                  <img
+                    class="softImg"
+                    alt="Minh hoạ trợ lý AI"
+                    loading="lazy"
+                    decoding="async"
+                    src="./chatbot.jpg" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 5) Voice mode (TEXT ONLY) -->
+          <div class="card span-4 reveal">
+            <div class="glow"></div>
+            <div class="topline">
+              <div class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M12 2a7 7 0 0 1 7 7v3a3 3 0 0 0 1 2.2V16a4 4 0 0 1-4 4h-1.1a3 3 0 0 1-5.8 0H8a4 4 0 0 1-4-4v-1.8A3 3 0 0 0 5 12V9a7 7 0 0 1 7-7Z"/>
+                </svg>
+              </div>
+              <h3>Voice mode (Giọng nói)</h3>
+            </div>
+            <p>Nghe bản dịch theo thời gian thực để nắm nội dung nhanh hơn.</p>
+
+            <div class="textOnly" aria-label="Chi tiết Voice mode">
+              <ul>
+                <li>
+                  <div>
+                    Đọc theo ngôn ngữ bạn chọn
+                    <small>Tự đồng bộ với chế độ dịch để luôn “đúng tiếng”.</small>
+                  </div>
+                </li>
+                <li>
+                  <div>
+                    Tối ưu cho học tập & họp online
+                    <small>Giúp bạn theo kịp nhịp nói khi đang đa nhiệm.</small>
+                  </div>
+                </li>
+                <li>
+                  <div>
+                    Tuỳ chỉnh trải nghiệm nghe
+                    <small>Điều chỉnh tốc độ/ngắt câu theo nhu cầu.</small>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- 6) Data Control (TEXT ONLY) -->
+          <div class="card span-8 reveal">
+            <div class="glow blue"></div>
+            <div class="topline">
+              <div class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M12 2 4 5v7c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V5l-8-3Zm0 5a3 3 0 0 1 3 3c0 1.3-.8 2.4-2 2.8V16h-2v-3.2A3 3 0 0 1 12 7Z"/>
+                </svg>
+              </div>
+              <h3>Kiểm soát dữ liệu rõ ràng</h3>
+            </div>
+            <p>Tuỳ chọn lưu/không lưu và kiểm soát theo nhu cầu riêng tư của bạn.</p>
+
+            <div class="textOnly" aria-label="Chi tiết kiểm soát dữ liệu">
+              <ul>
+                <li>
+                  <div>
+                    Bật/tắt lưu lịch sử theo phiên
+                    <small>Bạn chủ động quyết định dữ liệu nào được ghi lại.</small>
+                  </div>
+                </li>
+                <li>
+                  <div>
+                    Tuỳ chọn chạy local / server nội bộ
+                    <small>Phù hợp yêu cầu bảo mật cá nhân hoặc doanh nghiệp.</small>
+                  </div>
+                </li>
+                <li>
+                  <div>
+                    Minh bạch & dễ quản trị
+                    <small>Truy xuất, kiểm tra, dọn lịch sử nhanh gọn.</small>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+      HOW IT WORKS
+    ========================================================= -->
+    <section class="section" id="cachhoatdong">
+      <div class="container">
+        <div class="sectionHead reveal">
+          <div>
+            <h2>3 bước để bắt đầu</h2>
+          </div>
+        </div>
+
+        <div class="steps">
+          <div class="step reveal">
+            <div class="stepNum">1</div>
+            <h4>Cài đặt V-Transer</h4>
+            <p>Thêm extension vào Chrome/Edge. Mở trên tab bạn đang xem video/họp/livestream.</p>
+          </div>
+          <div class="step reveal">
+            <div class="stepNum">2</div>
+            <h4>Chọn chế độ</h4>
+            <p>Bật Phụ đề / Dịch / Voice mode. Tuỳ chỉnh hiển thị theo nhu cầu.</p>
+          </div>
+          <div class="step reveal">
+            <div class="stepNum">3</div>
+            <h4>Sử dụng các tính năng mở rộng</h4>
+            <p>Sau khi đã có các nội dung, bạn được tùy chọn xử lý các tác vụ nâng cao khác.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+      INSTALL
+    ========================================================= -->
+    <section class="section" id="cai-dat">
+      <div class="container">
+        <div class="sectionHead reveal">
+          <div>
+            <h2>Cài đặt nhanh</h2>
+            <p>
+              Bạn có thể sử dụng phiên bản trên Store với cấu hình mặc định. Với các nhu cầu nâng cao, có thể chọn chạy local/server tuỳ chọn để kiểm soát dữ liệu.
+            </p>
+          </div>
+        </div>
+
+        <div class="installGrid">
+          <div class="panel reveal">
+            <div class="panelHead">
+              <b>Chọn cách bạn muốn dùng</b>
+              <span class="pill">Gợi ý</span>
+            </div>
+            <div class="panelBody">
+              <div class="list">
+                <div class="row">
+                  <div>
+                    <b>Cài từ Chrome Web Store</b>
+                    <small>Đơn giản, nhanh nhất cho người dùng phổ thông.</small>
+                  </div>
+                  <a class="btn primary" href="#lienhe">Nhận link →</a>
+                </div>
+
+                <div class="row">
+                  <div>
+                    <b>Chạy local</b>
+                    <small>Ưu tiên riêng tư: Chạy trên máy bạn.</small>
+                  </div>
+                  <a class="btn solid" href="#hoidap">Xem FAQ</a>
+                </div>
+
+                <div class="row">
+                  <div>
+                    <b>Triển khai server nội bộ</b>
+                    <small>Phù hợp nhóm/doanh nghiệp: kiểm soát dữ liệu, phân quyền, SLA.</small>
+                  </div>
+                  <a class="btn solid" href="#banggia">Bảng giá</a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="useShot reveal" aria-label="Ảnh minh hoạ use case">
+            <div class="ratio">
+              <div class="imgWrap">
+                <img class="softImg" alt="Use case: học tập & làm việc" loading="lazy" decoding="async"
+                     src="https://images.unsplash.com/photo-1521737604893-d14cc237f11d?auto=format&fit=crop&w=1800&q=80" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bigCta reveal" id="dungthu">
+          <h2>Hãy trải nghiệm V-Transer ngay hôm nay!</h2>
+          <p>
+            Nếu bạn đang làm việc với video tiếng Anh, họp với đối tác, hoặc học qua hội thảo —
+            V-Transer giúp bạn hiểu nhanh hơn, tìm hiểu kỹ lưỡng hơn và làm việc hiệu quả hơn.
+          </p>
+          <div class="heroCtas">
+            <a class="btn primary" href="#lienhe">Nhận demo <span aria-hidden="true">→</span></a>
+            <a class="btn solid" href="#banggia">Xem gói Pro</a>
+            <a class="btn ghost" href="#hoidap">Xem hỏi đáp</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+      PRICING
+    ========================================================= -->
+    <section class="section" id="banggia">
+      <div class="container">
+        <div class="sectionHead reveal">
+          <div>
+            <h2>Bảng giá</h2>
+          </div>
+        </div>
+
+        <div class="pricing">
+          <div class="plan reveal">
+            <div class="tag">Miễn phí</div>
+            <div class="price">0đ<small>/tháng</small></div>
+            <ul>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Phụ đề realtime cơ bản</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Dịch thuật giới hạn ngôn ngữ</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Cơ sở lưu trữ giới hạn</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Trợ lý ảo</li>
+            </ul>
+            <div class="cta">
+              <a class="btn solid" href="#cai-dat">Bắt đầu</a>
+            </div>
+          </div>
+
+          <div class="plan featured reveal">
+            <div class="tag">Pro</div>
+            <div class="price">99k<small>/tháng</small></div>
+            <ul>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Phụ đề + dịch thuật ổn định</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Mở rộng 100+ ngôn ngữ</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Cơ sở lưu trữ không giới hạn</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Trợ lý ảo thông minh hơn</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Tuỳ chỉnh UI</li>
+            </ul>
+            <div class="cta">
+              <a class="btn primary" href="#lienhe">Dùng thử Pro</a>
+              <a class="btn solid" href="#lienhe">Tư vấn</a>
+            </div>
+          </div>
+
+          <div class="plan reveal">
+            <div class="tag">Doanh nghiệp</div>
+            <div class="price">Liên hệ<small></small></div>
+            <ul>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Triển khai nội bộ</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> SSO / phân quyền</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> SLA & hỗ trợ ưu tiên</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Tuỳ biến theo quy trình</li>
+              <li><span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M9.2 16.6 4.9 12.3l1.4-1.4 2.9 2.9 8.6-8.6 1.4 1.4-10 10Z"/></svg></span> Cơ sở dữ liệu riêng tư và bảo mật cao</li>
+            </ul>
+            <div class="cta">
+              <a class="btn solid" href="#lienhe">Liên hệ sales</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+      FAQ
+    ========================================================= -->
+    <section class="section" id="hoidap">
+      <div class="container">
+        <div class="sectionHead reveal">
+          <div>
+            <h2>Hỏi đáp</h2>
+            <p>Những câu hỏi phổ biến trước khi bạn bắt đầu.</p>
+          </div>
+        </div>
+
+        <div class="faq reveal" role="region" aria-label="Câu hỏi thường gặp">
+          <div class="qa">
+            <button class="qBtn" type="button">
+              V-Transer dùng được cho những nền tảng nào?
+              <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5"/></svg>
+            </button>
+            <div class="ans">
+              <div class="ansInner">
+                V-Transer hoạt động theo tab trình duyệt, nên phù hợp cho video, cuộc gọi, livestream, webinar…
+                Bạn có thể dùng với nhiều website khác nhau miễn là âm thanh phát từ tab.
+              </div>
+            </div>
+          </div>
+
+          <div class="qa">
+            <button class="qBtn" type="button">
+              Dịch có bị “giật chữ” không?
+              <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5"/></svg>
+            </button>
+            <div class="ans">
+              <div class="ansInner">
+                Thiết kế ưu tiên ổn định: hiển thị nháp để theo kịp nhịp nói, sau đó “chốt” đoạn ổn định để hạn chế rung chữ.
+                Bạn có thể tinh chỉnh tốc độ hiển thị theo nhu cầu.
+              </div>
+            </div>
+          </div>
+
+          <div class="qa">
+            <button class="qBtn" type="button">
+              Dữ liệu của tôi có được lưu lại không?
+              <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5"/></svg>
+            </button>
+            <div class="ans">
+              <div class="ansInner">
+                Bạn có quyền kiểm soát: có thể bật/tắt lưu lịch sử.
+                Ngoài ra có tuỳ chọn chạy local hoặc triển khai nội bộ để phù hợp yêu cầu bảo mật.
+              </div>
+            </div>
+          </div>
+
+          <div class="qa">
+            <button class="qBtn" type="button">
+              Tôi muốn thay ảnh/screenshot của sản phẩm thì làm sao?
+              <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5"/></svg>
+            </button>
+            <div class="ans">
+              <div class="ansInner">
+                Bạn chỉ cần thay 4 ảnh trong phần <b>Các tính năng chính</b>.
+                Ảnh ngang dùng tỉ lệ <b>16:9</b> (phude.jpg, dichthuat.jpg), ảnh dọc dùng tỉ lệ <b>3:4</b> (lichsu.jpg, chatbot.jpg) để đồng bộ bố cục.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+      FOOTER
+    ========================================================= -->
+    <footer id="lienhe">
+      <div class="container">
+        <div class="foot">
+          <div class="footBrand">
+            <div class="brand" style="gap:10px;">
+              <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+                <defs>
+                  <linearGradient id="logoG2" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="var(--cyan)"/>
+                    <stop offset="0.55" stop-color="var(--blue)"/>
+                    <stop offset="1" stop-color="var(--violet)"/>
+                  </linearGradient>
+                </defs>
+                <circle cx="11" cy="11" r="9.3" fill="url(#logoG2)" opacity="0.95"/>
+                <circle cx="14" cy="8" r="3.2" fill="rgba(255,255,255,.25)"/>
+              </svg>
+              <span class="wordmark">V-Transer</span>
+            </div>
+            <p>V-Transer - Tiện ích trí tuệ nhân tạo giúp bạn theo dõi các nội dung đa ngôn ngữ thời gian thực.</p>
+            <div class="copy">© V-Transer. All rights reserved.</div>
+          </div>
+
+          <div>
+            <div class="colh">Sản phẩm</div>
+            <a href="#sanpham">Tổng quan</a>
+            <a href="#tinhnang">Tính năng</a>
+            <a href="#cai-dat">Cài đặt</a>
+            <a href="#banggia">Bảng giá</a>
+          </div>
+
+          <div>
+            <div class="colh">Liên hệ</div>
+            <a href="mailto:hello@v-transer.com">hello@v-transer.com</a>
+            <a href="#lienhe">Nhận demo</a>
+            <a href="#lienhe">Hợp tác</a>
+            <a href="#lienhe">Hỗ trợ</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <script>
+    (function(){
+      const html = document.documentElement;
+      const THEME_KEY = "vt_theme";
+      const metaTheme = document.querySelector('meta[name="theme-color"]');
+
+      const sunPath = 'M12 18a6 6 0 1 1 0-12a6 6 0 0 1 0 12Zm0-16a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0V3a1 1 0 0 1 1-1Zm0 18a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0v-1a1 1 0 0 1 1-1ZM3 11a1 1 0 0 1 1 1a1 1 0 1 1-1-1Zm18 0a1 1 0 0 1 1 1a1 1 0 1 1-1-1ZM5.05 5.05a1 1 0 0 1 1.41 0l.7.7A1 1 0 1 1 5.76 7.16l-.7-.7a1 1 0 0 1 0-1.41Zm12.49 12.49a1 1 0 0 1 1.41 0l.7.7a1 1 0 1 1-1.41 1.41l-.7-.7a1 1 0 0 1 0-1.41ZM18.95 5.05a1 1 0 0 1 0 1.41l-.7.7a1 1 0 0 1-1.41-1.41l.7-.7a1 1 0 0 1 1.41 0ZM7.16 16.84a1 1 0 0 1 0 1.41l-.7.7A1 1 0 1 1 5.05 18.95l.7-.7a1 1 0 0 1 1.41 0Z';
+      const moonPath = 'M21 14.5A8.5 8.5 0 0 1 9.5 3a7 7 0 1 0 11.5 11.5Z';
+
+      const toggleBtn = document.getElementById("themeToggle");
+      const iconSvg = document.getElementById("themeIcon");
+
+      function setMetaTheme(theme){
+        if (!metaTheme) return;
+        metaTheme.setAttribute("content", theme === "light" ? "#ffffff" : "#07080a");
+      }
+
+      function renderIcon(theme){
+        const path = iconSvg?.querySelector("path");
+        if (!path) return;
+        path.setAttribute("d", theme === "light" ? moonPath : sunPath);
+      }
+
+      function applyTheme(theme, persist){
+        html.setAttribute("data-theme", theme);
+        setMetaTheme(theme);
+        renderIcon(theme);
+
+        if (toggleBtn){
+          toggleBtn.setAttribute("aria-pressed", theme === "light" ? "true" : "false");
+          toggleBtn.setAttribute("aria-label", theme === "light" ? "Chuyển sang giao diện tối" : "Chuyển sang giao diện sáng");
+          toggleBtn.title = theme === "light" ? "Chuyển sang tối" : "Chuyển sang sáng";
+        }
+
+        if (persist) {
+          try { localStorage.setItem(THEME_KEY, theme); } catch {}
+        }
+      }
+
+      function getInitialTheme(){
+        try {
+          const saved = localStorage.getItem(THEME_KEY);
+          if (saved === "dark" || saved === "light") return saved;
+        } catch {}
+        const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+        return prefersLight ? "light" : "dark";
+      }
+
+      applyTheme(getInitialTheme(), false);
+
+      toggleBtn?.addEventListener("click", () => {
+        const current = html.getAttribute("data-theme") === "light" ? "light" : "dark";
+        applyTheme(current === "light" ? "dark" : "light", true);
+      });
+
+      // Mobile menu
+      const btn = document.getElementById("hamburger");
+      const sheet = document.getElementById("mobileSheet");
+      const closeSheet = () => {
+        if (!sheet || !btn) return;
+        sheet.style.display = "none";
+        btn.setAttribute("aria-expanded","false");
+      };
+      const openSheet = () => {
+        if (!sheet || !btn) return;
+        sheet.style.display = "block";
+        btn.setAttribute("aria-expanded","true");
+      };
+      btn?.addEventListener("click", () => {
+        const isOpen = btn.getAttribute("aria-expanded") === "true";
+        isOpen ? closeSheet() : openSheet();
+      });
+      sheet?.querySelectorAll("a").forEach(a => a.addEventListener("click", closeSheet));
+      document.addEventListener("click", (e) => {
+        if (!btn || !sheet) return;
+        const isOpen = btn.getAttribute("aria-expanded") === "true";
+        if (!isOpen) return;
+        if (sheet.contains(e.target) || btn.contains(e.target)) return;
+        closeSheet();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          closeSheet();
+          closeTokenScreen();
+        }
+      });
+
+      // Token screen
+      const tokenScreen = document.getElementById("tokenScreen");
+      const tokenCloseBtn = document.getElementById("tokenScreenClose");
+      const tokenApiUrl = document.getElementById("tokenApiUrl");
+      const tokenSttWsUrl = document.getElementById("tokenSttWsUrl");
+      const tokenTrWsUrl = document.getElementById("tokenTrWsUrl");
+      let tokenEndpointTimer = null;
+      const METRICS_PORTS = [20241, 20242, 20243, 20244, 20245];
+      const LS_PUBLIC_BASE = "vt_public_base";
+      const PUBLIC_ORIGIN_PATH = "/public-origin";
+
+      function buildProbeBases(extraBases){
+        const out = [];
+        const seen = new Set();
+        const sameOrigin = normalizeOriginCandidate(window.location.origin);
+        if (sameOrigin) {
+          out.push("");
+          seen.add("");
+        }
+        (extraBases || []).forEach((base) => {
+          const key = String(base || "").trim().replace(/\/+$/, "");
+          if (!key || seen.has(key)) return;
+          out.push(key);
+          seen.add(key);
+        });
+        return out;
+      }
+
+      function normalizeOriginCandidate(raw){
+        const v = String(raw || "").trim();
+        if (!v) return "";
+        const lowered = v.toLowerCase();
+        if (lowered === "null" || lowered === "undefined") return "";
+        try {
+          const withProto = v.includes("://") ? v : `https://${v}`;
+          const u = new URL(withProto);
+          let proto = u.protocol;
+          if (proto === "ws:") proto = "http:";
+          if (proto === "wss:") proto = "https:";
+          if (proto !== "http:" && proto !== "https:") return "";
+          return `${proto}//${u.host}`;
+        } catch {
+          return "";
+        }
+      }
+
+      function toWsOrigin(httpOrigin){
+        try {
+          const u = new URL(String(httpOrigin || ""));
+          const proto = u.protocol === "https:" ? "wss:" : "ws:";
+          return `${proto}//${u.host}`;
+        } catch {
+          return "";
+        }
+      }
+
+      async function probePublicOriginFromServerEndpoint(){
+        const apiBases = buildProbeBases([
+          "http://127.0.0.1:8000",
+          "http://localhost:8000",
+          "http://127.0.0.1:8080",
+          "http://localhost:8080",
+        ]);
+        for (const base of apiBases){
+          try {
+            const prefix = base ? base.replace(/\/+$/, "") : "";
+            const res = await fetch(`${prefix}${PUBLIC_ORIGIN_PATH}?ts=${Date.now()}`, {
+              cache: "no-store",
+            });
+            if (!res.ok) continue;
+            const payload = await res.json();
+            const fromOrigin = normalizeOriginCandidate(payload?.origin);
+            if (fromOrigin) return fromOrigin;
+
+            const apiUrl = String(payload?.api || "").trim();
+            if (apiUrl) {
+              const stripped = apiUrl.replace(/\/docs\/?$/i, "");
+              const fromApi = normalizeOriginCandidate(stripped);
+              if (fromApi) return fromApi;
+            }
+          } catch {}
+        }
+        return "";
+      }
+
+      async function probePublicOriginFromMetrics(){
+        const metricBases = buildProbeBases(["http://127.0.0.1:8080", "http://localhost:8080"]);
+
+        for (const port of METRICS_PORTS){
+          for (const base of metricBases){
+            try {
+              const prefix = base ? `${base.replace(/\/+$/, "")}` : "";
+              const res = await fetch(`${prefix}/__cloudflared_metrics/${port}/metrics?ts=${Date.now()}`, {
+                cache: "no-store",
+              });
+              if (!res.ok) continue;
+              const txt = await res.text();
+              const m = txt.match(/cloudflared_tunnel_user_hostnames_counts\{[^}]*userHostname="([^"]+)"/i);
+              if (!m || !m[1]) continue;
+              const normalized = normalizeOriginCandidate(m[1]);
+              if (normalized) return normalized;
+            } catch {}
+          }
+        }
+        return "";
+      }
+
+      async function resolvePublicOrigin(){
+        const qs = new URLSearchParams(window.location.search);
+        const explicitCandidates = [
+          qs.get("public_base"),
+          qs.get("public"),
+          qs.get("base"),
+          qs.get("origin"),
+        ];
+        for (const c of explicitCandidates){
+          const n = normalizeOriginCandidate(c);
+          if (n) return n;
+        }
+
+        const fromServer = await probePublicOriginFromServerEndpoint();
+        if (fromServer) {
+          try { localStorage.setItem(LS_PUBLIC_BASE, fromServer); } catch {}
+          return fromServer;
+        }
+
+        const fromMetrics = await probePublicOriginFromMetrics();
+        if (fromMetrics) {
+          try { localStorage.setItem(LS_PUBLIC_BASE, fromMetrics); } catch {}
+          return fromMetrics;
+        }
+
+        let cachedRaw = "";
+        try { cachedRaw = localStorage.getItem(LS_PUBLIC_BASE) || ""; } catch {}
+        const cached = normalizeOriginCandidate(cachedRaw);
+        if (cached) return cached;
+
+        return normalizeOriginCandidate(window.location.origin);
+      }
+
+      function setTokenEndpointTexts(api, stt, tr){
+        if (tokenApiUrl) tokenApiUrl.textContent = api || "-";
+        if (tokenSttWsUrl) tokenSttWsUrl.textContent = stt || "-";
+        if (tokenTrWsUrl) tokenTrWsUrl.textContent = tr || "-";
+      }
+
+      async function updateTokenEndpoints(){
+        const origin = await resolvePublicOrigin();
+        if (!origin){
+          setTokenEndpointTexts("-", "-", "-");
+          return;
+        }
+
+        const originClean = origin.replace(/\/+$/, "");
+        const wsOrigin = toWsOrigin(originClean);
+        setTokenEndpointTexts(
+          `${originClean}/docs`,
+          wsOrigin ? `${wsOrigin}/stt` : "-",
+          wsOrigin ? `${wsOrigin}/tr` : "-"
+        );
+      }
+
+      async function copyTokenTarget(targetId, btn){
+        const el = document.getElementById(targetId);
+        const value = String(el?.textContent || "").trim();
+        if (!value || value === "-") return;
+        const old = btn ? btn.textContent : "";
+        const okText = "Đã copy";
+        try {
+          await navigator.clipboard.writeText(value);
+          if (btn) {
+            btn.textContent = okText;
+            setTimeout(() => { btn.textContent = old; }, 1100);
+          }
+        } catch {
+          if (btn) {
+            btn.textContent = "Lỗi copy";
+            setTimeout(() => { btn.textContent = old; }, 1100);
+          }
+        }
+      }
+
+      function closeTokenScreen(){
+        if (!tokenScreen) return;
+        tokenScreen.classList.remove("open");
+        tokenScreen.setAttribute("aria-hidden", "true");
+        document.body.style.overflow = "";
+        if (tokenEndpointTimer) {
+          clearInterval(tokenEndpointTimer);
+          tokenEndpointTimer = null;
+        }
+      }
+      function openTokenScreen(){
+        if (!tokenScreen) return;
+        tokenScreen.classList.add("open");
+        tokenScreen.setAttribute("aria-hidden", "false");
+        document.body.style.overflow = "hidden";
+        updateTokenEndpoints().catch(() => {});
+        if (tokenEndpointTimer) clearInterval(tokenEndpointTimer);
+        tokenEndpointTimer = setInterval(() => {
+          updateTokenEndpoints().catch(() => {});
+        }, 3000);
+      }
+
+      document.querySelectorAll('[data-open-token-screen="1"]').forEach((el) => {
+        el.addEventListener("click", (e) => {
+          e.preventDefault();
+          closeSheet();
+          openTokenScreen();
+        });
+      });
+
+      tokenCloseBtn?.addEventListener("click", closeTokenScreen);
+      tokenScreen?.addEventListener("click", (e) => {
+        const target = e.target;
+        if (target && target.matches('[data-token-close="1"]')) {
+          closeTokenScreen();
+        }
+      });
+      document.querySelectorAll("[data-copy-target]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          copyTokenTarget(btn.getAttribute("data-copy-target"), btn);
+        });
+      });
+      window.addEventListener("focus", () => {
+        updateTokenEndpoints().catch(() => {});
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) updateTokenEndpoints().catch(() => {});
+      });
+
+      // Smooth scroll
+      document.querySelectorAll('a[href^="#"]').forEach(a => {
+        a.addEventListener("click", (e) => {
+          const id = a.getAttribute("href");
+          if (!id || id === "#") return;
+          const el = document.querySelector(id);
+          if (!el) return;
+          e.preventDefault();
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
+
+      // FAQ accordion (auto height, no cut)
+      function closeAllQA(){
+        document.querySelectorAll(".qa.open").forEach(x => {
+          x.classList.remove("open");
+          const ans = x.querySelector(".ans");
+          if (ans) ans.style.maxHeight = "0px";
+        });
+      }
+      document.querySelectorAll(".qa .qBtn").forEach(b => {
+        b.addEventListener("click", () => {
+          const qa = b.closest(".qa");
+          if (!qa) return;
+
+          const ans = qa.querySelector(".ans");
+          const inner = qa.querySelector(".ansInner");
+          const isOpen = qa.classList.contains("open");
+
+          closeAllQA();
+          if (!isOpen){
+            qa.classList.add("open");
+            if (ans && inner){
+              ans.style.maxHeight = inner.scrollHeight + "px";
+            }
+          }
+        });
+      });
+
+      // Scroll reveal
+      const prefersReduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      if (!prefersReduced && "IntersectionObserver" in window){
+        const io = new IntersectionObserver((entries) => {
+          entries.forEach(en => {
+            if (en.isIntersecting){
+              en.target.classList.add("in");
+              io.unobserve(en.target);
+            }
+          });
+        }, { threshold: 0.12 });
+
+        document.querySelectorAll(".reveal").forEach(el => io.observe(el));
+      } else {
+        document.querySelectorAll(".reveal").forEach(el => el.classList.add("in"));
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -381,6 +381,35 @@ function buildUserIdDebug(profile = {}, authToken = "") {
 function isLocalHost(hostname) {
   return hostname === "localhost" || hostname === "127.0.0.1";
 }
+function normalizeHttpApiBase(raw) {
+  const input = String(raw || "").trim();
+  if (!input) return "";
+
+  const normalizePath = (pathname) => {
+    let p = String(pathname || "").replace(/\/+$/, "");
+    p = p.replace(/\/openapi\.json$/i, "");
+    p = p.replace(/\/docs$/i, "");
+    p = p.replace(/\/redoc$/i, "");
+    return p.replace(/\/+$/, "");
+  };
+
+  const parseOne = (candidate) => {
+    const u = parseUrlOrNull(candidate);
+    if (!u) return "";
+    if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+    const p = normalizePath(u.pathname || "");
+    return `${u.origin}${p}`.replace(/\/+$/, "");
+  };
+
+  const direct = parseOne(input);
+  if (direct) return direct;
+
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+    const withHttps = parseOne(`https://${input}`);
+    if (withHttps) return withHttps;
+  }
+  return input.replace(/\/+$/, "");
+}
 function deriveApiBaseFromServer(serverUrl) {
   const u = parseUrlOrNull(serverUrl);
   if (!u) return "";
@@ -512,7 +541,9 @@ async function maybeRefreshAccessToken({ apiBase, accessToken, refreshToken }) {
   if (!expMs) return { accessToken };
   if (expMs - Date.now() > 60_000) return { accessToken };
 
-  const url = apiBase.replace(/\/+$/, "") + DEFAULT_REFRESH_PATH;
+  const normalizedApiBase = normalizeHttpApiBase(apiBase);
+  if (!normalizedApiBase) return { accessToken };
+  const url = normalizedApiBase + DEFAULT_REFRESH_PATH;
   try {
     const r = await fetch(url, {
       method: "POST",
@@ -532,7 +563,9 @@ async function maybeRefreshAccessToken({ apiBase, accessToken, refreshToken }) {
 
 // -------------------- Ticket: POST /stt/ws-ticket --------------------
 async function requestWsTicket({ apiBase, accessToken, server }) {
-  const url = apiBase.replace(/\/+$/, "") + DEFAULT_TICKET_PATH;
+  const normalizedApiBase = normalizeHttpApiBase(apiBase);
+  if (!normalizedApiBase) throw new Error("API_BASE_INVALID");
+  const url = normalizedApiBase + DEFAULT_TICKET_PATH;
 
   const r = await fetch(url, {
     method: "POST",
@@ -1379,7 +1412,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         const st = await storeGet([STORAGE_KEYS.API_BASE]);
-        const apiBase = (st[STORAGE_KEYS.API_BASE] || deriveApiBaseFromServer(server)).trim();
+        const apiBaseRaw = (st[STORAGE_KEYS.API_BASE] || deriveApiBaseFromServer(server)).trim();
+        const apiBase = normalizeHttpApiBase(apiBaseRaw);
 
         if (apiBase && accessToken && refreshToken) {
           const rf = await maybeRefreshAccessToken({ apiBase, accessToken, refreshToken });
@@ -1764,7 +1798,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       try {
         const { apiBase, body } = msg.payload || {};
-        const url = (apiBase || "").replace(/\/+$/, "") + "/v1/rest-retrieve/";
+        const normalizedApiBase = normalizeHttpApiBase(apiBase || "");
+        if (!normalizedApiBase) {
+          sendResponse({ ok: false, error: "CHAT_API_BASE_INVALID" });
+          return;
+        }
+        const url = normalizedApiBase + "/v1/rest-retrieve/";
 
         const userIdHeader =
           body?.user_id ||

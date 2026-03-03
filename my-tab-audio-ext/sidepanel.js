@@ -104,9 +104,50 @@ document.addEventListener('DOMContentLoaded', () => {
     return derived || DEFAULT_TRANS_WS;
   }
 
+  function normalizeHttpBaseUrl(raw) {
+    const input = String(raw || '').trim();
+    if (!input) return '';
+
+    const normalizePath = (pathname) => {
+      let p = String(pathname || '').replace(/\/+$/, '');
+      p = p.replace(/\/openapi\.json$/i, '');
+      p = p.replace(/\/docs$/i, '');
+      p = p.replace(/\/redoc$/i, '');
+      return p.replace(/\/+$/, '');
+    };
+
+    const parseOne = (candidate) => {
+      try {
+        const u = new URL(candidate);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+        const p = normalizePath(u.pathname || '');
+        return `${u.origin}${p}`.replace(/\/+$/, '');
+      } catch {
+        return '';
+      }
+    };
+
+    const direct = parseOne(input);
+    if (direct) return direct;
+
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+      const withHttps = parseOne(`https://${input}`);
+      if (withHttps) return withHttps;
+    }
+
+    return input
+      .replace(/\/+$/, '')
+      .replace(/\/openapi\.json$/i, '')
+      .replace(/\/docs$/i, '')
+      .replace(/\/redoc$/i, '')
+      .replace(/\/+$/, '');
+  }
+
   function getApiBase() {
-    const raw = (localStorage.getItem(LS_CHAT_API) || DEFAULT_API).trim();
-    return raw.replace(/\/+$/, '');
+    const rawStored = (localStorage.getItem(LS_CHAT_API) || '').trim();
+    if (!rawStored) return DEFAULT_API;
+    const normalized = normalizeHttpBaseUrl(rawStored);
+    return normalized || rawStored.replace(/\/+$/, '');
   }
 
   function getSessionId() {
@@ -540,7 +581,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const panelEl = document.getElementById('panel');
   const chatButton = document.getElementById('btn-chat');
   const transcriptButton = document.getElementById('btn-transcript');
-  const historyButton = document.getElementById('btn-history'); // ✅ NEW
+  const historyButton = document.getElementById('btn-history'); // NEW
   const moreButton = document.getElementById('btn-more');
   const collapseButton = document.getElementById('btn-collapse');
   const fullscreenButton = document.getElementById('btn-fullscreen');
@@ -549,7 +590,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const chatView = document.getElementById('chat-content');
   const transcriptView = document.getElementById('transcript-content');
-  const historyView = document.getElementById('history-content'); // ✅ NEW
+  const historyView = document.getElementById('history-content'); // NEW
   const allViews = [chatView, transcriptView, historyView];
   const historyController = window.__vtHistoryView || null;
 
@@ -693,7 +734,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // ✅ If SW asked to login recently
+  // If SW asked to login recently
   (async () => {
     try {
       const st = await storeGet(['vtNeedAuth']);
@@ -760,7 +801,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function normalizeApiBaseInput(v) {
-    return String(v || '').trim().replace(/\/+$/, '');
+    return normalizeHttpBaseUrl(v);
   }
 
   function normalizeWsServerInput(v) {
@@ -837,10 +878,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function applySettingsFromForm() {
-    const apiVal = normalizeApiBaseInput(settingsApiInput?.value || '');
+    const apiInputRaw = String(settingsApiInput?.value || '');
+    const apiVal = normalizeApiBaseInput(apiInputRaw);
     const wsVal = normalizeWsServerInput(settingsWsInput?.value || '');
     const transRaw = normalizeWsServerInput(settingsTransInput?.value || '');
     const transVal = transRaw || deriveTranslatorServerFromStt(wsVal) || DEFAULT_TRANS_WS;
+    const apiInputTrimmed = apiInputRaw.trim().replace(/\/+$/, '');
+    const apiAutoFixed = !!apiVal && apiVal !== apiInputTrimmed;
     if (!isValidWsUrl(transVal)) {
       setSettingsStatus('Translator WebSocket (VI) must be a valid ws/wss URL.', 'error');
       settingsTransInput?.focus?.();
@@ -865,6 +909,7 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem(LS_CHAT_DEBUG, settingsDebugChat?.checked ? '1' : '0');
       localStorage.setItem(LS_STT_SOURCE_LANG, STT_SOURCE_LANG_ONLY);
     } catch {}
+    if (settingsApiInput) settingsApiInput.value = apiVal;
     if (settingsTransInput) settingsTransInput.value = transVal;
     if (hasChromeRuntime) {
       try { await storeSet({ [LS_KEY_TRANS_SERVER]: transVal }); } catch {}
@@ -880,7 +925,11 @@ document.addEventListener('DOMContentLoaded', () => {
     sendTranscriptModes();
 
     if (transcriptSourceLangSelect) transcriptSourceLangSelect.value = STT_SOURCE_LANG_ONLY;
-    setSettingsStatus('Đã lưu cài đặt.', 'success');
+    if (apiAutoFixed) {
+      setSettingsStatus(`Đã lưu cài đặt. Chat API Base được chuẩn hóa thành: ${apiVal}`, 'success');
+    } else {
+      setSettingsStatus('Đã lưu cài đặt.', 'success');
+    }
     return true;
   }
 
@@ -939,7 +988,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ============================================================
-  // ✅ TRANSCRIPT MODES
+  // TRANSCRIPT MODES
   // ============================================================
   const modes = {
     en: readBoolLS(LS_MODE_EN, false),
@@ -1029,7 +1078,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ============================================================
-  // ✅ VIEW SWITCHING (chỉ đổi màn giữa)
+  // VIEW SWITCHING (chỉ đổi màn giữa)
   // ============================================================
   function showView(viewId, clickedButton) {
     allViews.forEach(view => view && view.classList.add('hidden'));
@@ -1447,7 +1496,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
   // ============================================================
-  // ✅ CHAT TOGGLES
+  // CHAT TOGGLES
   // ============================================================
   const chatToggles = {
     useRag: readBoolLS(LS_CHAT_USE_RAG, false),
@@ -2247,7 +2296,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ============================================================
-  // ✅ Smart rewrite (giữ nguyên logic của bạn)
+  // Smart rewrite (giữ nguyên logic của bạn)
   // ============================================================
   function isGenericAboutQuery(q) {
     const s = String(q || '').trim().toLowerCase();
@@ -2320,7 +2369,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ============================================================
-  // ✅ Chat UI
+  // Chat UI
   // ============================================================
   function showChatScrollbarTemporarily(ms = CHAT_SCROLLBAR_HIDE_MS) {
     if (!chatHistory) return;

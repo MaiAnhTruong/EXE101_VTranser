@@ -63,7 +63,7 @@
   const EN_STATE_MAX_CHARS = Number(localStorage.getItem("sttEnStateMaxChars") || 5200);
   const VI_STATE_MAX_CHARS = Number(localStorage.getItem("sttViStateMaxChars") || 4200);
 
-  // VI render throttling: Ã¢â‚¬Å“ra chÃ¡Â»Â¯ theo word/cÃ¡Â»Â¥mÃ¢â‚¬Â cho Ã¡Â»â€¢n Ã„â€˜Ã¡Â»â€¹nh
+  // VI render throttling: “ra chữ theo word/cụm” cho ổn định
   const VI_MIN_RENDER_MS = Number(localStorage.getItem("sttViMinRenderMs") || 170);
   const VI_FORCE_RENDER_MS = Number(localStorage.getItem("sttViForceRenderMs") || 420);
   const VI_RENDER_BOUNDARY_RE = /(\s|[.!?\u2026,:;\uFF0C\u3002\uFF1F\uFF01])$/;
@@ -79,7 +79,7 @@
   const frame = document.createElement("div");
   frame.className = "frame";
 
-  // Ã°Å¸â€â€™ Force EN on top, VI below (khÃƒÂ´ng phÃ¡Â»Â¥ thuÃ¡Â»â„¢c CSS ngoÃƒÂ i)
+  // 🔒 Force EN on top, VI below (không phụ thuộc CSS ngoài)
   frame.style.display = "flex";
   frame.style.flexDirection = "column";
   frame.style.gap = "6px";
@@ -448,20 +448,20 @@
   }
 
   // ---------- VI model: commit + draft + throttle render ----------
-  // commit: phÃ¡ÂºÂ§n Ã„â€˜ÃƒÂ£ Ã¢â‚¬Å“Ã¡Â»â€¢n Ã„â€˜Ã¡Â»â€¹nhÃ¢â‚¬Â
+  // commit: phần đã “ổn định”
   let viCommitText = "";
-  // draft: phÃ¡ÂºÂ§n nhÃƒÂ¡p thay Ã„â€˜Ã¡Â»â€¢i liÃƒÂªn tÃ¡Â»Â¥c (khÃƒÂ´ng Ã„â€˜Ã†Â°Ã¡Â»Â£c phÃƒÂ©p phÃƒÂ¡ commit)
+  // draft: phần nháp thay đổi liên tục (không được phép phá commit)
   let viDraftText = "";
   let viDraftEnabled = false;
-  // ops apply lÃƒÂªn COMMIT (delta/commit/patch)
+  // ops apply lên COMMIT (delta/commit/patch)
   let scheduledVI = false;
   const opsVI = []; // { del, ins, seq }
 
   let lastViCommitSeqApplied = -1; // guard seq cho commit/delta/stable
   let lastViDraftSeqApplied = -1;  // guard seq cho draft
-  let lastViEnSeqApplied = -1;     // guard theo en_seq nÃ¡ÂºÂ¿u cÃƒÂ³
-  let viEpoch = 0;                // guard theo epoch nÃ¡ÂºÂ¿u cÃƒÂ³
-  let viLastReqId = -1;           // guard theo req_id nÃ¡ÂºÂ¿u cÃƒÂ³
+  let lastViEnSeqApplied = -1;     // guard theo en_seq nếu có
+  let viEpoch = 0;                // guard theo epoch nếu có
+  let viLastReqId = -1;           // guard theo req_id nếu có
   let viDraftUpdatedAt = 0;
 
   function getVIVisibleText() {
@@ -511,7 +511,7 @@
       }
     }
 
-    // req_id guard (chÃ¡Â»â€° Ã„â€˜Ã¡Â»Æ’ chÃ¡Â»â€˜ng draft cÃ…Â© Ã„â€˜ÃƒÂ¨ draft mÃ¡Â»â€ºi)
+    // req_id guard (chỉ để chống draft cũ đè draft mới)
     if (reqId != null) {
       const r = Number(reqId);
       if (Number.isFinite(r)) {
@@ -524,7 +524,7 @@
       }
     }
 
-    // en_seq guard (Ã„â€˜Ã¡ÂºÂ£m bÃ¡ÂºÂ£o VI khÃƒÂ´ng Ã¢â‚¬Å“Ã„â€˜i lÃƒÂ¹iÃ¢â‚¬Â theo EN stable cÃ…Â©)
+    // en_seq guard (đảm bảo VI không “đi lùi” theo EN stable cũ)
     if (enSeq != null) {
       const es = Number(enSeq);
       if (Number.isFinite(es)) {
@@ -588,7 +588,7 @@
     }
   }
 
-  // throttle render VI: ra theo word/cÃ¡Â»Â¥m, trÃƒÂ¡nh update liÃƒÂªn tÃ¡Â»Â¥c gÃƒÂ¢y loÃ¡ÂºÂ¡n
+  // throttle render VI: ra theo word/cụm, tránh update liên tục gây loạn
   let viRenderTimer = null;
 
   function shouldRenderVI(text, force = false) {
@@ -596,10 +596,10 @@
     const t = nowMs();
     const dt = DBG.viLastRenderAt ? (t - DBG.viLastRenderAt) : 999999;
 
-    // nÃ¡ÂºÂ¿u tÃ¡Â»â€ºi hÃ¡ÂºÂ¡n bÃ¡ÂºÂ¯t buÃ¡Â»â„¢c thÃƒÂ¬ render
+    // nếu tới hạn bắt buộc thì render
     if (dt >= VI_FORCE_RENDER_MS) return true;
 
-    // nÃ¡ÂºÂ¿u gÃ¡ÂºÂ·p boundary thÃƒÂ¬ render sÃ¡Â»â€ºm hÃ†Â¡n
+    // nếu gặp boundary thì render sớm hơn
     if (dt >= VI_MIN_RENDER_MS && VI_RENDER_BOUNDARY_RE.test(text)) return true;
 
     return false;
@@ -612,7 +612,7 @@
     const t = nowMs();
     const can = shouldRenderVI(text, force);
     if (!can) {
-      // Ã„â€˜Ã¡ÂºÂ£m bÃ¡ÂºÂ£o khÃƒÂ´ng Ã¢â‚¬Å“kÃ¡ÂºÂ¹tÃ¢â‚¬Â quÃƒÂ¡ lÃƒÂ¢u: setTimeout ÃƒÂ©p render
+      // đảm bảo không “kẹt” quá lâu: setTimeout ép render
       if (!viRenderTimer) {
         viRenderTimer = setTimeout(() => {
           viRenderTimer = null;
@@ -648,10 +648,10 @@
         viCommitText = tailForLayout(viCommitText, VI_STATE_MAX_CHARS);
       }
 
-      // nÃ¡ÂºÂ¿u draft khÃƒÂ´ng cÃƒÂ²n extends commit => bÃ¡Â»Â draft (trÃƒÂ¡nh draft cÃ…Â© Ã„â€˜ÃƒÂ¨ commit mÃ¡Â»â€ºi)
+      // nếu draft không còn extends commit => bỏ draft (tránh draft cũ đè commit mới)
       if (viDraftText && !viDraftText.startsWith(viCommitText)) {
-        // nhÃ†Â°ng nÃ¡ÂºÂ¿u commit lÃ¡ÂºÂ¡i lÃƒÂ  prefix cÃ¡Â»Â§a draft (ngÃ†Â°Ã¡Â»Â£c) => vÃ¡ÂºÂ«n ok (Ã„â€˜ÃƒÂ£ check)
-        // Ã¡Â»Å¸ Ã„â€˜ÃƒÂ¢y lÃƒÂ  diverge => drop draft
+        // nhưng nếu commit lại là prefix của draft (ngược) => vẫn ok (đã check)
+        // ở đây là diverge => drop draft
         viDraftText = "";
         viDraftUpdatedAt = 0;
       }
@@ -694,7 +694,7 @@
     if (!viDraftEnabled) return;
     if (!viGuardAndUpdate(meta || {}, "vi-draft")) return;
 
-    // draft khÃƒÂ´ng Ã„â€˜Ã†Â°Ã¡Â»Â£c phÃƒÂ©p phÃƒÂ¡ commit => nÃ¡ÂºÂ¿u diverge thÃƒÂ¬ drop
+    // draft không được phép phá commit => nếu diverge thì drop
     if (viCommitText && !full.startsWith(viCommitText)) {
       DBG.viDropDiverge++;
       tracePush("vi-drop-diverge", { draftLen: full.length, commitLen: viCommitText.length });
@@ -865,7 +865,7 @@
       return;
     }
 
-    // Ã¢Å“â€¦ RESET VI ONLY (khÃƒÂ´ng Ã„â€˜Ã¡Â»Â¥ng EN)
+    // ✅ RESET VI ONLY (không đụng EN)
     if (type === "__TRANS_VI_RESET__") {
       if (scheduledVI) flushVI();
 
