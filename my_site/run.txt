@@ -1,0 +1,34 @@
+$env:STRICT_STABLE_SENTENCE_ONLY="1"
+$env:STRICT_SENT_STABLE_COUNT="2"
+$env:TR_SENTENCE_LAG="1"
+$env:ENABLE_VI_DRAFT="0"
+$env:CT2_MODEL = "D:\models\opus-mt-en-vi-ct2-int8"
+$env:SPM_SRC   = "$env:CT2_MODEL\source.spm"       
+$env:SPM_TGT   = "$env:CT2_MODEL\target.spm"
+$env:LOG_LEVEL = "DEBUG"  
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+$env:MT_PREFIX=">>vie<<" 
+python .\translator.py
+
+
+conda activate exe
+cd .\EXE101_VTranser\
+cd .\my-tab-audio-ext\
+python .\server.py
+
+
+conda activate exe
+cd .\EXE101_VTranser\
+cd .\chatbot_rag_system\
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+
+$exe = Get-ChildItem -Path "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter caddy.exe -ErrorAction SilentlyContinue |
+       Select-Object -First 1 -ExpandProperty FullName
+
+if (-not $exe) { throw "Không tìm thấy caddy.exe trong WinGet Packages" }
+
+"Using caddy: $exe"
+& $exe run --config D:\vtranser\Caddyfile
+
+cloudflared tunnel --url http://localhost:8080
