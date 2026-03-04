@@ -29,6 +29,10 @@ document.addEventListener('DOMContentLoaded', () => {
     voice: true,
     record: true,
   });
+  const CHAT_LOCKED_TOGGLES = Object.freeze({
+    r1: true,
+  });
+  const ADVANCED_FEATURE_LOCK_TEXT = 'Vui l\u00f2ng n\u00e2ng c\u1ea5p g\u00f3i \u0111\u1ec3 s\u1eed d\u1ee5ng c\u00e1c t\u00ednh n\u0103ng n\u00e2ng cao';
 
   // Persist chat toggles
   const LS_CHAT_USE_RAG = 'sttChatUseRag';
@@ -703,14 +707,44 @@ document.addEventListener('DOMContentLoaded', () => {
   const voiceBtn = document.getElementById('btn-voice');
   const recordBtn = document.getElementById('btn-record');
 
+  function getDefaultTitleAttr(el) {
+    if (!el) return '';
+    const cached = el.getAttribute('data-default-title');
+    if (cached !== null) return cached;
+    const title = el.getAttribute('title') || '';
+    el.setAttribute('data-default-title', title);
+    return title;
+  }
+
+  function setLockedControlUi(el, locked) {
+    if (!el) return;
+    const isLocked = !!locked;
+    const defaultTitle = getDefaultTitleAttr(el);
+    el.classList.toggle('is-locked', isLocked);
+    el.setAttribute('aria-disabled', isLocked ? 'true' : 'false');
+    if (isLocked) {
+      el.setAttribute('title', ADVANCED_FEATURE_LOCK_TEXT);
+      el.setAttribute('data-lock-tooltip', ADVANCED_FEATURE_LOCK_TEXT);
+      return;
+    }
+    if (defaultTitle) {
+      el.setAttribute('title', defaultTitle);
+    } else {
+      el.removeAttribute('title');
+    }
+    el.removeAttribute('data-lock-tooltip');
+  }
+
   function syncLockedTranscriptControlsUi() {
     if (voiceBtn) {
-      voiceBtn.disabled = !!STT_LOCKED_MODES.voice;
-      voiceBtn.setAttribute('aria-disabled', STT_LOCKED_MODES.voice ? 'true' : 'false');
+      // Keep button enabled so hover tooltip can be shown when feature is locked.
+      voiceBtn.disabled = false;
+      setLockedControlUi(voiceBtn, !!STT_LOCKED_MODES.voice);
     }
     if (recordBtn) {
-      recordBtn.disabled = !!STT_LOCKED_MODES.record;
-      recordBtn.setAttribute('aria-disabled', STT_LOCKED_MODES.record ? 'true' : 'false');
+      // Keep button enabled so hover tooltip can be shown when feature is locked.
+      recordBtn.disabled = false;
+      setLockedControlUi(recordBtn, !!STT_LOCKED_MODES.record);
     }
     if (settingsModeVoice) {
       settingsModeVoice.disabled = !!STT_LOCKED_MODES.voice;
@@ -2313,12 +2347,17 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function applyChatTogglesUI() {
+    const r1Locked = !!CHAT_LOCKED_TOGGLES.r1;
+    if (r1Locked) chatToggles.useR1 = false;
     if (chipRag) chipRag.classList.toggle('active', !!chatToggles.useRag);
     if (chipRealtime) chipRealtime.classList.toggle('active', !!chatToggles.useRealtime);
-    if (chipR1) chipR1.classList.toggle('active', !!chatToggles.useR1);
+    if (chipR1) {
+      setLockedControlUi(chipR1, r1Locked);
+      chipR1.classList.toggle('active', !r1Locked && !!chatToggles.useR1);
+    }
     writeBoolLS(LS_CHAT_USE_RAG, !!chatToggles.useRag);
     writeBoolLS(LS_CHAT_USE_REALTIME, !!chatToggles.useRealtime);
-    writeBoolLS(LS_CHAT_USE_R1, !!chatToggles.useR1);
+    writeBoolLS(LS_CHAT_USE_R1, !r1Locked && !!chatToggles.useR1);
     updateRagPickerPinUi();
   }
 
@@ -2331,6 +2370,10 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   if (chipR1) chipR1.addEventListener('click', () => {
+    if (CHAT_LOCKED_TOGGLES.r1) {
+      applyChatTogglesUI();
+      return;
+    }
     chatToggles.useR1 = !chatToggles.useR1;
     applyChatTogglesUI();
   });

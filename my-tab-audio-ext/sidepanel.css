@@ -715,6 +715,24 @@ html,body{
   opacity:1;
   filter:invert(34%) sepia(73%) saturate(1914%) hue-rotate(206deg) brightness(95%) contrast(92%);
 }
+.chip-button.is-locked{
+  cursor:not-allowed;
+  color:#9CA3AF;
+  background:#F3F4F6;
+  border-color:#E5E7EB;
+  box-shadow:none;
+}
+.chip-button.is-locked:hover,
+.chip-button.is-locked.active{
+  color:#9CA3AF;
+  background:#F3F4F6;
+  border-color:#E5E7EB;
+  box-shadow:none;
+}
+.chip-button.is-locked .input-btn-icon{
+  opacity:.45;
+  filter:grayscale(1);
+}
 
 .textarea-wrapper{
   width:100%;
@@ -1284,6 +1302,24 @@ html,body{
 }
 
 .transcript-btn:disabled .action-btn-icon{
+  opacity:.45;
+  filter:grayscale(1);
+}
+.transcript-btn.is-locked{
+  cursor:not-allowed;
+  color:#9CA3AF;
+  background:#F3F4F6;
+  border-color:#E5E7EB;
+  box-shadow:none;
+}
+.transcript-btn.is-locked:hover,
+.transcript-btn.is-locked.active{
+  color:#9CA3AF;
+  background:#F3F4F6;
+  border-color:#E5E7EB;
+  box-shadow:none;
+}
+.transcript-btn.is-locked .action-btn-icon{
   opacity:.45;
   filter:grayscale(1);
 }
