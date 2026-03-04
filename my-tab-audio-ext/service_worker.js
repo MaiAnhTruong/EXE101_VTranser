@@ -54,7 +54,8 @@ function maybeLogTranscriptRate(kind) {
 const TAG = "[VT][SW]";
 function log(...args) { console.log(TAG, ...args); }
 function warn(...args) { console.warn(TAG, ...args); }
-function err(...args) { console.error(TAG, ...args); }
+function err(...args) { console.warn(TAG, ...args); }
+const SYSTEM_BUSY_TEXT = "Hệ thống đang bận, vui lòng thử lại sau.";
 
 const offscreenUrl = chrome.runtime.getURL("offscreen.html");
 
@@ -492,6 +493,26 @@ async function notifyPanel(tabId, payload) {
   if (!tabId) return;
   await safeSendTab(tabId, { __cmd: "__PANEL_NOTIFY__", payload });
 }
+function buildSystemBusyResponse(extra = {}) {
+  return { ok: false, code: "SYSTEM_BUSY", error: SYSTEM_BUSY_TEXT, ...extra };
+}
+async function notifySystemBusy(tabId) {
+  if (!tabId) return;
+  await notifyPanel(tabId, { level: "error", text: SYSTEM_BUSY_TEXT });
+}
+async function resetRuntimeAfterFailure(reason = "backend-failure") {
+  try { await stopCapture(); } catch (e) { warn("stopCapture failed while resetting:", String(e?.message || e)); }
+  try { setCurrentStopped(); } catch {}
+  try { maybeUpdateTranslator(true); } catch {}
+  warn("runtime reset after failure:", reason);
+}
+async function handleBackendFailure({ sendResponse, tabId, error, reason = "backend-failure", reset = true } = {}) {
+  const msgErr = String(error?.message || error || "");
+  warn(reason, msgErr);
+  if (reset) await resetRuntimeAfterFailure(reason);
+  await notifySystemBusy(tabId);
+  try { sendResponse?.(buildSystemBusyResponse()); } catch {}
+}
 async function notifyAuthRequired({ action, tabId, sendResponse }) {
   const text = "🔒 Vui lòng đăng nhập để sử dụng tính năng này.";
   await markNeedAuth(action);
@@ -844,7 +865,7 @@ chrome.action.onClicked.addListener((tab) => {
   // fallback open if setPanelBehavior not available
   if (!chrome.sidePanel?.setPanelBehavior && chrome.sidePanel?.open) {
     chrome.sidePanel.open({ windowId: tab.windowId })
-      .catch((e) => console.error("open sidepanel failed (fallback)", e));
+      .catch((e) => console.warn("open sidepanel failed (fallback)", e));
   }
 });
 
@@ -1214,7 +1235,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
           await notifyPanel(current.tabId, { level: "error", text: "Bạn đã đăng xuất. Capture đã dừng." });
         }
       }
-    })();
+    })().catch((e) => warn("storage.onChanged handler failed:", String(e?.message || e)));
   }
 });
 
@@ -1226,7 +1247,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
       await stopCapture();
       disconnectTranslator(true);
       current = null;
-    })();
+    })().catch((e) => warn("tabs.onRemoved handler failed:", String(e?.message || e)));
   }
 });
 
@@ -1243,17 +1264,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (s === "running") setCurrentRunning();
       else if (s === "stopped") setCurrentStopped();
       else if (s === "server-busy" || s === "server-error") {
-        setCurrentStopped();
-        if (current?.tabId) {
-          await notifyPanel(current.tabId, {
-            level: "error",
-            text: s === "server-busy" ? "Hệ thống bận. Vui lòng thử lại sau." : `Lỗi server: ${p?.error || "unknown"}`,
-            detail: p,
-          });
-        }
+        await resetRuntimeAfterFailure(`offscreen-${s}`);
+        if (current?.tabId) await notifySystemBusy(current.tabId);
       } else if (s === "error") {
         // đảm bảo không giữ trạng thái running/starting giả nếu offscreen lỗi
-        setCurrentStopped();
+        await resetRuntimeAfterFailure("offscreen-error");
+        if (current?.tabId) await notifySystemBusy(current.tabId);
       } else if (s === "recording-saved") {
         log("recording saved:", p);
       } else if (s === "recording-error") {
@@ -1498,13 +1514,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const mode = auth ? "auth-message" : ((isWss && accessToken && apiBase) ? "ticket" : "direct");
         sendResponse?.({ ok: true, mode, ws: finalWsUrl });
       } catch (e) {
-        const msgErr = String(e?.message || e);
         if (transcriptPersist) {
           try { await transcriptPersist.stop(lastEnStable?.full || ""); } catch {}
           transcriptPersist = null;
         }
-        await notifyPanel(tab.id, { level: "error", text: msgErr });
-        sendResponse?.({ ok: false, error: msgErr });
+        await handleBackendFailure({
+          sendResponse,
+          tabId: tab?.id || current?.tabId || null,
+          error: e,
+          reason: "__PANEL_START__ failed",
+        });
       }
       return;
     }
@@ -1611,7 +1630,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           return;
         }
-        sendResponse?.({ ok: false, error: msgErr });
+        if (tabIdForNotify) await notifySystemBusy(tabIdForNotify);
+        sendResponse?.(buildSystemBusyResponse());
       }
       return;
     }
@@ -1655,7 +1675,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           return;
         }
-        sendResponse?.({ ok: false, error: msgErr });
+        if (tabIdForNotify) await notifySystemBusy(tabIdForNotify);
+        sendResponse?.(buildSystemBusyResponse());
       }
       return;
     }
@@ -1708,7 +1729,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           return;
         }
-        sendResponse?.({ ok: false, error: msgErr });
+        if (tabIdForNotify) await notifySystemBusy(tabIdForNotify);
+        sendResponse?.(buildSystemBusyResponse());
       }
       return;
     }
@@ -1783,7 +1805,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           return;
         }
-        sendResponse?.({ ok: false, error: msgErr });
+        if (tabIdForNotify) await notifySystemBusy(tabIdForNotify);
+        sendResponse?.(buildSystemBusyResponse());
       }
       return;
     }
@@ -1827,14 +1850,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           status: r.status,
         });
       } catch (e) {
-        sendResponse({ ok: false, error: String(e) });
+        await handleBackendFailure({
+          sendResponse,
+          tabId: tabIdForNotify,
+          error: e,
+          reason: "__CHAT_REST__ failed",
+          reset: false,
+        });
       }
       return;
     }
-  })();
+  })().catch((e) => {
+    const tabId = current?.tabId || sender?.tab?.id || null;
+    handleBackendFailure({
+      sendResponse,
+      tabId,
+      error: e,
+      reason: "onMessage uncaught",
+    }).catch(() => {});
+  });
 
   // keep channel open for async sendResponse
   return true;
+});
+
+self.addEventListener("unhandledrejection", (event) => {
+  try { event.preventDefault(); } catch {}
+  warn("unhandledrejection captured:", String(event?.reason?.message || event?.reason || "unknown"));
+});
+
+self.addEventListener("error", (event) => {
+  try { event.preventDefault?.(); } catch {}
+  warn("error captured:", String(event?.message || "unknown"));
 });
 
 // đảm bảo mọi tab đều dùng sidepanel.html

@@ -917,9 +917,12 @@
     if (showVI) doRenderVI(true);
   });
 
-  try { chrome.runtime.sendMessage({ __cmd: "__OVERLAY_PING__" }, () => {}); } catch {}
+  try {
+    chrome.runtime.sendMessage({ __cmd: "__OVERLAY_PING__" }, () => {
+      void chrome.runtime?.lastError;
+    });
+  } catch {}
 
   dlog("overlay mounted OK");
 })();
-
 

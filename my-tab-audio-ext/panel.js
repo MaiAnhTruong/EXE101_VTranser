@@ -15,6 +15,7 @@
 
   const DEFAULT_SERVER = "wss://api.example.com/stt"; // TODO đổi domain thật
   const STORE_KEYS = ["sttServerWs", "sttApiToken", "vtAuth", "vtNeedAuth"];
+  const SYSTEM_BUSY_TEXT = "Hệ thống đang bận, vui lòng thử lại sau.";
 
   function storeGet(keys) {
     return new Promise((resolve) => {
@@ -30,9 +31,13 @@
   function sendMessageAsync(msg) {
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage(msg, (res) => resolve(res || null));
+        chrome.runtime.sendMessage(msg, (res) => {
+          const runtimeErr = chrome.runtime?.lastError;
+          if (runtimeErr) return resolve({ ok: false, code: "SYSTEM_BUSY", error: SYSTEM_BUSY_TEXT });
+          resolve(res || null);
+        });
       } catch {
-        resolve(null);
+        resolve({ ok: false, code: "SYSTEM_BUSY", error: SYSTEM_BUSY_TEXT });
       }
     });
   }
@@ -187,7 +192,7 @@
         return;
       }
 
-      const msg = String(res?.error || "Start failed");
+      const msg = SYSTEM_BUSY_TEXT;
       addSystem("❌ " + msg);
       alert(msg);
       return;
@@ -274,6 +279,11 @@
 
     // ping SW để sync state lần đầu
     chrome.runtime.sendMessage({ __cmd: "__OVERLAY_PING__" }, (res) => {
+      const runtimeErr = chrome.runtime?.lastError;
+      if (runtimeErr) {
+        setActive(false, false);
+        return;
+      }
       setActive(!!(res && res.active), !!(res && res.starting));
     });
 
@@ -305,7 +315,7 @@
     // SW -> notify errors, including BUSY
     if (m.__cmd === "__PANEL_NOTIFY__") {
       const p = m.payload || {};
-      const text = String(p.text || "");
+      const text = p.level === "error" ? SYSTEM_BUSY_TEXT : String(p.text || "");
       if (text) addSystem("❌ " + text);
     }
 
@@ -326,15 +336,15 @@
       }
       if (s === "server-busy") {
         setActive(false, false);
-        addSystem("⚠️ Hệ thống bận. Vui lòng thử lại sau.");
+        addSystem("⚠️ " + SYSTEM_BUSY_TEXT);
       }
       if (s === "server-error") {
         setActive(false, false);
-        addSystem("⚠️ Lỗi server: " + String(p.error || "unknown"));
+        addSystem("⚠️ " + SYSTEM_BUSY_TEXT);
       }
       if (s === "error") {
         setActive(false, false);
-        addSystem("⚠️ Lỗi: " + String(p.error || "unknown"));
+        addSystem("⚠️ " + SYSTEM_BUSY_TEXT);
       }
     }
 

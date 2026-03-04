@@ -12,6 +12,7 @@
 
   const TAG = "[VT][OFF]";
   const offscreenUrl = chrome.runtime.getURL("offscreen.html");
+  const SYSTEM_BUSY_TEXT = "Hệ thống đang bận, vui lòng thử lại sau.";
 
   let audioCtx = null;
   let mediaStream = null;
@@ -963,7 +964,8 @@
           await start(msg.payload || {});
           sendResponse?.({ ok: true });
         } catch (e) {
-          sendResponse?.({ ok: false, error: String(e?.message || e) });
+          try { await stopAll("start-error"); } catch {}
+          sendResponse?.({ ok: false, code: "SYSTEM_BUSY", error: SYSTEM_BUSY_TEXT });
         }
         return;
       }
@@ -983,9 +985,25 @@
         sendResponse?.({ ok: true });
         return;
       }
-    })();
+    })().catch(async (e) => {
+      try { await stopAll("onmessage-error"); } catch {}
+      sendStatus({ state: "server-error", error: String(e?.message || e) });
+      try { sendResponse?.({ ok: false, code: "SYSTEM_BUSY", error: SYSTEM_BUSY_TEXT }); } catch {}
+    });
 
     return true;
+  });
+
+  self.addEventListener("unhandledrejection", (event) => {
+    try { event.preventDefault(); } catch {}
+    sendStatus({ state: "server-error", error: "UNHANDLED_REJECTION" });
+    stopAll("unhandledrejection").catch(() => {});
+  });
+
+  self.addEventListener("error", (event) => {
+    try { event.preventDefault?.(); } catch {}
+    sendStatus({ state: "server-error", error: String(event?.message || "OFFSCREEN_ERROR") });
+    stopAll("error").catch(() => {});
   });
 
   log("offscreen loaded:", offscreenUrl);

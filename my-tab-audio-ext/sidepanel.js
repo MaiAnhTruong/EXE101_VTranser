@@ -47,6 +47,8 @@ document.addEventListener('DOMContentLoaded', () => {
     typeof chrome !== 'undefined' &&
     chrome.runtime &&
     typeof chrome.runtime.sendMessage === 'function';
+  const SYSTEM_BUSY_TEXT = 'Hệ thống đang bận, vui lòng thử lại sau.';
+  const VT_LANDING_URL = 'https://maianhtruong.github.io/page_vtranser/';
 
   // ===== Utils =====
   const escapeHtml = (s) =>
@@ -561,7 +563,15 @@ document.addEventListener('DOMContentLoaded', () => {
   function sendRuntime(msg) {
     return new Promise((resolve) => {
       if (!hasChromeRuntime) return resolve(null);
-      try { chrome.runtime.sendMessage(msg, (res) => resolve(res || null)); } catch { resolve(null); }
+      try {
+        chrome.runtime.sendMessage(msg, (res) => {
+          const runtimeErr = chrome.runtime?.lastError;
+          if (runtimeErr) return resolve(null);
+          resolve(res || null);
+        });
+      } catch {
+        resolve(null);
+      }
     });
   }
 
@@ -624,6 +634,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const bottomGreetingEl = document.getElementById('bottomGreeting');
   const toolbarAccountPlanEl = document.getElementById('toolbarAccountPlan');
   const loginBtns = document.querySelectorAll('.login-btn');
+  const iconGiftBtn = document.getElementById('icon-btn-gift');
+  const iconHeartBtn = document.getElementById('icon-btn-heart');
+  const iconHelpBtn = document.getElementById('icon-btn-help');
+  const iconMailBtn = document.getElementById('icon-btn-mail');
 
   // chat view elements
   const chatTextArea = document.querySelector('#chat-content .textarea-wrapper textarea');
@@ -723,6 +737,47 @@ document.addEventListener('DOMContentLoaded', () => {
       document.querySelector('[data-vt-account]');
     if (btnAccount) btnAccount.click();
   }
+
+  let lastLandingOpenAt = 0;
+  function openLandingPage() {
+    const url = String(VT_LANDING_URL || '').trim();
+    if (!url) return;
+
+    const now = Date.now();
+    if (now - lastLandingOpenAt < 700) return;
+    lastLandingOpenAt = now;
+
+    let normalized = '';
+    try {
+      normalized = new URL(url).toString();
+    } catch {
+      return;
+    }
+
+    try {
+      if (typeof chrome !== 'undefined' && chrome?.tabs?.create) {
+        chrome.tabs.create({ url: normalized });
+        return;
+      }
+    } catch {}
+
+    try {
+      const opened = window.open(normalized, '_blank');
+      if (opened) return;
+    } catch {}
+
+    try {
+      window.location.href = normalized;
+    } catch {}
+  }
+
+  [iconGiftBtn, iconHeartBtn, iconHelpBtn, iconMailBtn].forEach((btn) => {
+    if (!btn) return;
+    btn.addEventListener('click', (e) => {
+      e.preventDefault?.();
+      openLandingPage();
+    });
+  });
 
   // bottom-bar login buttons
   if (loginBtns && loginBtns.length) {
@@ -1139,13 +1194,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ===== Busy modal =====
-  function showBusyModal(text = 'Hệ thống đang bận, vui lòng thử lại sau.') {
+  function showBusyModal(text = SYSTEM_BUSY_TEXT) {
     if (busyText) busyText.textContent = text;
     if (busyModal) busyModal.classList.remove('hidden');
   }
   function hideBusyModal() {
     if (busyModal) busyModal.classList.add('hidden');
   }
+  try { window.__vtShowBusyModal = showBusyModal; } catch {}
   if (busyClose) busyClose.addEventListener('click', hideBusyModal);
 
   // ===== Error modal =====
@@ -1188,6 +1244,15 @@ document.addEventListener('DOMContentLoaded', () => {
     transcriptStart.classList.toggle('is-playing', play);
     if (play) startPlayGifLoop();
     else stopPlayGifLoop();
+  }
+
+  function resetRealtimeUiAfterError() {
+    setRealtimeSnapshotCache({ active: false, starting: false });
+    setStartActive(false);
+    startInFlight = false;
+    setStartLoading(false);
+    setPlayVisual(false);
+    if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
   }
 
   function setStartActive(on) {
@@ -1270,27 +1335,21 @@ document.addEventListener('DOMContentLoaded', () => {
           chrome.runtime.sendMessage(
             { __cmd: '__PANEL_START__', payload: { server: getServer() } },
             (res) => {
+              const runtimeErr = chrome.runtime?.lastError;
+              if (runtimeErr) {
+                resetRealtimeUiAfterError();
+                showBusyModal();
+                return;
+              }
               if (!res?.ok) {
-                setRealtimeSnapshotCache({ active: false, starting: false });
-                setStartActive(false);
-                startInFlight = false;
-                setStartLoading(false);
-                setPlayVisual(false);
-                if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
+                resetRealtimeUiAfterError();
 
                 if (res?.code === 'AUTH_REQUIRED') {
                   openAuthOverlayFromPanel();
                   return;
                 }
 
-                if (res?.error) {
-                  const msgErr = String(res.error || '');
-                  if (/bận|busy/i.test(msgErr)) {
-                    showBusyModal(msgErr);
-                  } else {
-                    showErrorModal(msgErr);
-                  }
-                }
+                showBusyModal();
               }
             }
           );
@@ -1307,11 +1366,7 @@ document.addEventListener('DOMContentLoaded', () => {
           sendTranscriptModes();
           // timer & play visual sẽ bật khi nhận state 'running' từ OFFSCREEN_STATUS
         } else {
-          setRealtimeSnapshotCache({ active: false, starting: false });
-          setStartActive(false);
-          startInFlight = false;
-          setStartLoading(false);
-          setPlayVisual(false);
+          resetRealtimeUiAfterError();
           chrome.runtime.sendMessage({ __cmd: '__PANEL_STOP__' });
         }
       }
@@ -1374,19 +1429,13 @@ document.addEventListener('DOMContentLoaded', () => {
       if (msg.__cmd === '__PANEL_NOTIFY__') {
         const level = msg.payload?.level || '';
         const text = msg.payload?.text || '';
+        const isAuthMsg = /đăng nhập|auth_required/i.test(String(text || ''));
         if (level === 'info' && text) {
           addTranscriptRow(text, 'System • info');
         }
-        if (level === 'error' && /bận|busy/i.test(text || '')) {
-          showBusyModal(text || undefined);
-        }
-        if (level === 'error') {
-          setRealtimeSnapshotCache({ active: false, starting: false });
-          setPlayVisual(false);
-          setStartActive(false);
-          if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
-          startInFlight = false;
-          setStartLoading(false);
+        if (level === 'error' && !isAuthMsg) {
+          showBusyModal();
+          resetRealtimeUiAfterError();
         }
         return;
       }
@@ -1432,15 +1481,8 @@ document.addEventListener('DOMContentLoaded', () => {
           if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live • Đang ghi';
         }
         if (s === 'stopped' || s === 'server-busy' || s === 'server-error' || s === 'error') {
-          setRealtimeSnapshotCache({ active: false, starting: false });
-          if (s === 'server-busy') {
-            showBusyModal(msg.payload?.text || 'Hệ thống đang bận, vui lòng thử lại sau.');
-          }
-          setPlayVisual(false);
-          setStartActive(false);
-          if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live';
-          startInFlight = false;
-          setStartLoading(false);
+          if (s === 'server-busy' || s === 'server-error' || s === 'error') showBusyModal();
+          resetRealtimeUiAfterError();
         }
         return;
       }
@@ -1475,6 +1517,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       try {
         chrome.runtime.sendMessage({ __cmd: '__OVERLAY_PING__' }, (res) => {
+          const runtimeErr = chrome.runtime?.lastError;
+          if (runtimeErr) return;
           if (transcriptStart && typeof res?.active === 'boolean') {
             const active = !!res.active;
             const starting = !!res.starting;
@@ -1828,13 +1872,8 @@ document.addEventListener('DOMContentLoaded', () => {
         ragPickerState.filtered = [];
         ragPickerState.loaded = true;
         renderRagPickerList();
-        const dbg = formatUserIdDebug(res?.debug);
-        setRagPickerEmpty(
-          dbg
-            ? `Không tìm thấy user id hợp lệ cho tài khoản hiện tại.\n[debug] ${dbg}`
-            : 'Không tìm thấy user id hợp lệ cho tài khoản hiện tại.',
-          true
-        );
+        setRagPickerEmpty(SYSTEM_BUSY_TEXT, true);
+        showBusyModal();
         return;
       }
       if (!res?.ok) throw new Error(String(res?.error || 'HISTORY_LIST_FAILED'));
@@ -1854,7 +1893,8 @@ document.addEventListener('DOMContentLoaded', () => {
       ragPickerState.filtered = [];
       ragPickerState.loaded = false;
       renderRagPickerList();
-      setRagPickerEmpty(`Không tải được transcript history: ${String(e?.message || e)}`, true);
+      setRagPickerEmpty(SYSTEM_BUSY_TEXT, true);
+      showBusyModal();
     } finally {
       setRagPickerLoading(false);
       positionRagPicker();
@@ -2057,24 +2097,21 @@ document.addEventListener('DOMContentLoaded', () => {
         return { ok: false, code: 'AUTH_REQUIRED', item: baseItem, fullText: '' };
       }
       if (res?.code === 'USER_ID_INVALID') {
+        showBusyModal();
         return {
           ok: false,
           code: 'USER_ID_INVALID',
           item: baseItem,
-          fullText: (() => {
-            const dbg = formatUserIdDebug(res?.debug);
-            return dbg
-              ? `Không tìm thấy user id hợp lệ cho tài khoản hiện tại.\n\n[debug] ${dbg}`
-              : 'Không tìm thấy user id hợp lệ cho tài khoản hiện tại.';
-          })(),
+          fullText: SYSTEM_BUSY_TEXT,
         };
       }
       if (!res?.ok) {
+        showBusyModal();
         return {
           ok: false,
           code: 'DETAIL_FAILED',
           item: baseItem,
-          fullText: `Không tải được transcript: ${String(res?.error || 'DETAIL_FAILED')}`,
+          fullText: SYSTEM_BUSY_TEXT,
         };
       }
 
@@ -2084,12 +2121,15 @@ document.addEventListener('DOMContentLoaded', () => {
       ragPickerState.details.set(sid, out);
       return out;
     })()
-      .catch((e) => ({
-        ok: false,
-        code: 'DETAIL_FAILED',
-        item: findRagItem(sid) || { id: sid },
-        fullText: `Không tải được transcript: ${String(e?.message || e)}`,
-      }))
+      .catch((e) => {
+        showBusyModal();
+        return {
+          ok: false,
+          code: 'DETAIL_FAILED',
+          item: findRagItem(sid) || { id: sid },
+          fullText: SYSTEM_BUSY_TEXT,
+        };
+      })
       .finally(() => {
         ragPickerState.detailInflight.delete(sid);
       });
@@ -3089,8 +3129,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const okBase = await probeApiBase(apiBase);
     if (!okBase) {
-      const errText = `Không kết nối được API ở ${apiBase}. Mở Setting để nhập đúng base (vd: http://127.0.0.1:8000).`;
-      if (assistBubble) assistBubble.textContent = errText;
+      if (assistBubble) assistBubble.textContent = SYSTEM_BUSY_TEXT;
+      showBusyModal();
       return;
     }
 
@@ -3203,8 +3243,8 @@ document.addEventListener('DOMContentLoaded', () => {
         dlog('persist assistant chat failed:', e);
       }
     } catch (err) {
-      const errText = `Lỗi: ${String(err)}`;
-      if (assistBubble) assistBubble.textContent = errText;
+      if (assistBubble) assistBubble.textContent = SYSTEM_BUSY_TEXT;
+      showBusyModal();
     }
   }
   // ===== Chat events =====
@@ -3228,6 +3268,18 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  window.addEventListener('unhandledrejection', (event) => {
+    try { event.preventDefault(); } catch {}
+    resetRealtimeUiAfterError();
+    showBusyModal();
+  });
+
+  window.addEventListener('error', (event) => {
+    try { event.preventDefault?.(); } catch {}
+    resetRealtimeUiAfterError();
+    showBusyModal();
+  });
+
   // ===== Init =====
   initTranscriptLanguagePicker();
   bindModeButtons();
@@ -3245,5 +3297,7 @@ document.addEventListener('DOMContentLoaded', () => {
   (async () => {
     await rotateChatSessionIfRuntimeChanged();
     restoreChatHistory();
-  })();
+  })().catch(() => {
+    showBusyModal();
+  });
 });

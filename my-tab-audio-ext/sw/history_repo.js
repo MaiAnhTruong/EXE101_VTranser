@@ -362,7 +362,8 @@ export async function listTranscriptSessionsForUser(
   const out = [];
   for (const r of rows) {
     const n = normalizeSessionRow(r);
-    if (n) out.push(n);
+    // Hide failed/empty rows that only show placeholder "Đang cập nhật transcript..."
+    if (n && String(n.latest_text_en || "").trim()) out.push(n);
   }
   return sortSessionsDesc(out);
 }

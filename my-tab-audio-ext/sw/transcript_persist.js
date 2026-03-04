@@ -66,6 +66,8 @@ export function createTranscriptPersist(opts) {
     lastSnapshotHash: "",
     startedAt: Date.now(),
     stopped: false,
+    persistChain: Promise.resolve(),
+    startingPromise: null,
   };
 
   async function fetchUserId() {
@@ -126,11 +128,16 @@ export function createTranscriptPersist(opts) {
   }
 
   async function startSession() {
+    if (state.stopped) return false;
+    if (state.trSessionId) return true;
+    if (state.startingPromise) return state.startingPromise;
+
+    state.startingPromise = (async () => {
     const resolvedUserId = await fetchUserId();
     if (!resolvedUserId) {
       console.warn("[persist] skip: cannot resolve users.id");
       state.stopped = true;
-      return;
+      return false;
     }
 
     const body = {
@@ -160,14 +167,30 @@ export function createTranscriptPersist(opts) {
       if (!sidNorm) {
         console.warn("[persist] startSession got invalid id -> stop", sid);
         state.stopped = true;
-        return;
+        return false;
       }
       state.trSessionId = sidNorm;
       console.log("[persist] startSession OK trSessionId=", state.trSessionId);
+      return true;
     } catch (e) {
       console.warn("[persist] startSession failed", e?.message || e);
       state.stopped = true;
+      return false;
     }
+    })().finally(() => {
+      state.startingPromise = null;
+    });
+
+    return state.startingPromise;
+  }
+
+  function queuePersist(task) {
+    state.persistChain = state.persistChain
+      .then(() => task())
+      .catch((e) => {
+        console.warn("[persist] queue task failed", e?.message || e);
+      });
+    return state.persistChain;
   }
 
   async function updateLatest(fullText, seq) {
@@ -223,7 +246,7 @@ export function createTranscriptPersist(opts) {
   }
 
   function handleStable(fullText = "", seq = null) {
-    if (state.stopped || !state.trSessionId) return;
+    if (state.stopped) return;
     const text = (fullText || "").toString();
     const seqNum = seq ?? state.fullSeq;
     const hash = `${seqNum || ""}|${text}`;
@@ -231,17 +254,29 @@ export function createTranscriptPersist(opts) {
     state.fullLatest = text;
     state.fullSeq = seqNum;
     state.lastSnapshotHash = hash;
+    if (!text.trim()) return;
 
-    // snapshot full transcript on every stable
-    insertFullSnapshot(text);
-    updateLatest(text, seqNum);
+    // Lazy-create session: only persist when we have real stable text.
+    void queuePersist(async () => {
+      if (state.stopped) return;
+      const ok = await startSession();
+      if (!ok || !state.trSessionId) return;
+      await insertFullSnapshot(text);
+      await updateLatest(text, seqNum);
+    });
   }
 
   async function stop(finalText = "") {
     state.stopped = true;
     const finalTextStr = (finalText || state.fullLatest || "").toString();
-    await insertFullSnapshot(finalTextStr);
-    await updateLatest(finalTextStr, state.fullSeq);
+
+    try { await state.persistChain; } catch {}
+    if (!state.trSessionId) return;
+
+    if (finalTextStr.trim()) {
+      await insertFullSnapshot(finalTextStr);
+      await updateLatest(finalTextStr, state.fullSeq);
+    }
 
     const body = {
       status: "stopped",
@@ -262,7 +297,7 @@ export function createTranscriptPersist(opts) {
   }
 
   return {
-    start: startSession,
+    start: async () => { state.stopped = false; state.startedAt = Date.now(); },
     handleStable,
     stop,
     getSessionId: () => state.trSessionId,

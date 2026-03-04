@@ -58,6 +58,8 @@
   // ========= Helpers =========
   const EXT_ORIGIN = location.origin; // chrome-extension://<id>
   let currentSession = null; // { provider, profile, tokens, updated_at }
+  const VT_LANDING_URL = "https://maianhtruong.github.io/page_vtranser/";
+  let lastLandingOpenAt = 0;
 
   // ---- Global toast (for guest lock) ----
   function ensureGlobalToast() {
@@ -81,6 +83,32 @@
     el.classList.add("show");
     clearTimeout(el._t);
     el._t = setTimeout(() => el.classList.remove("show"), ms);
+  }
+
+  function openVtLandingPage() {
+    const url = String(VT_LANDING_URL || "").trim();
+    if (!url) return;
+    const now = Date.now();
+    if (now - lastLandingOpenAt < 700) return;
+    lastLandingOpenAt = now;
+    try {
+      const normalized = new URL(url).toString();
+
+      try {
+        if (typeof chrome !== "undefined" && chrome?.tabs?.create) {
+          chrome.tabs.create({ url: normalized });
+          return;
+        }
+      } catch {}
+
+      let opened = null;
+      try { opened = window.open(normalized, "_blank"); } catch {}
+      if (opened) return;
+
+      location.href = normalized;
+    } catch {
+      toastAccount("Khong mo duoc trang web.");
+    }
   }
 
   function applyLockState(isAuthed) {
@@ -869,11 +897,17 @@
         return;
       }
 
-      if (act === "help") return toastAccount("Help center: Coming soon…");
-      if (act === "feedback") return toastAccount("Feedback: Coming soon…");
-      if (act === "my_website") return toastAccount("My website: Coming soon…");
-      if (act === "whats_new") return toastAccount("What's new: Coming soon…");
-      if (act === "rewards") return toastAccount("Rewards center: Coming soon…");
+      if (
+        act === "help" ||
+        act === "feedback" ||
+        act === "my_website" ||
+        act === "whats_new" ||
+        act === "rewards"
+      ) {
+        closeAccountOverlay();
+        openVtLandingPage();
+        return;
+      }
 
       toastAccount("Coming soon…");
     });

@@ -1,5 +1,6 @@
 // History view controller for sidepanel: list/search/detail/download/delete transcript sessions.
 (() => {
+  const SYSTEM_BUSY_TEXT = "Hệ thống đang bận, vui lòng thử lại sau.";
   const hasChromeRuntime =
     typeof chrome !== "undefined" &&
     chrome.runtime &&
@@ -131,11 +132,23 @@
     return new Promise((resolve) => {
       if (!hasChromeRuntime) return resolve(null);
       try {
-        chrome.runtime.sendMessage(msg, (res) => resolve(res || null));
+        chrome.runtime.sendMessage(msg, (res) => {
+          const runtimeErr = chrome.runtime?.lastError;
+          if (runtimeErr) return resolve({ ok: false, code: "SYSTEM_BUSY", error: SYSTEM_BUSY_TEXT });
+          resolve(res || null);
+        });
       } catch {
-        resolve(null);
+        resolve({ ok: false, code: "SYSTEM_BUSY", error: SYSTEM_BUSY_TEXT });
       }
     });
+  }
+
+  function showBusyPopup() {
+    try {
+      if (typeof window.__vtShowBusyModal === "function") {
+        window.__vtShowBusyModal(SYSTEM_BUSY_TEXT);
+      }
+    } catch {}
   }
 
   function formatUserIdDebug(debug) {
@@ -422,20 +435,15 @@
           state.items = [];
           state.filtered = [];
           renderList();
-          const dbg = formatUserIdDebug(res?.debug);
-          setEmpty(
-            dbg
-              ? "Không tìm thấy user id hợp lệ cho tài khoản hiện tại.\n[debug] " + dbg
-              : "Không tìm thấy user id hợp lệ cho tài khoản hiện tại.",
-            true
-          );
-          if (refs.userNote) refs.userNote.textContent = "User ID: (không xác định)";
+          setEmpty(SYSTEM_BUSY_TEXT, true);
+          if (refs.userNote) refs.userNote.textContent = "";
+          showBusyPopup();
           state.loaded = true;
           return;
         }
 
         if (!res?.ok) {
-          throw new Error(String(res?.error || "HISTORY_LIST_FAILED"));
+          throw new Error(SYSTEM_BUSY_TEXT);
         }
 
         const rows = Array.isArray(res.items) ? res.items.slice() : [];
@@ -448,7 +456,8 @@
         state.items = [];
         state.filtered = [];
         renderList();
-        setEmpty(`Không tải được lịch sử: ${String(e?.message || e)}`, true);
+        setEmpty(SYSTEM_BUSY_TEXT, true);
+        showBusyPopup();
       } finally {
         setLoading(false);
       }
@@ -531,12 +540,7 @@
       }
 
       if (res?.code === "USER_ID_INVALID") {
-        const dbg = formatUserIdDebug(res?.debug);
-        throw new Error(
-          dbg
-            ? "Không xác định được user id hợp lệ.\n[debug] " + dbg
-            : "Không xác định được user id hợp lệ."
-        );
+        throw new Error(SYSTEM_BUSY_TEXT);
       }
 
       if (res?.code === "NOT_FOUND") {
@@ -544,7 +548,7 @@
       }
 
       if (!res?.ok) {
-        throw new Error(String(res?.error || "HISTORY_DELETE_FAILED"));
+        throw new Error(SYSTEM_BUSY_TEXT);
       }
 
       return { ok: true, notFound: false };
@@ -572,12 +576,13 @@
         state.deletingIds.delete(sid);
         renderList();
         if (refs.deleteText) {
-          refs.deleteText.textContent = `Xóa thất bại: ${String(e?.message || e)}`;
+          refs.deleteText.textContent = `Xóa thất bại: ${SYSTEM_BUSY_TEXT}`;
         }
         if (refs.deleteConfirmBtn) {
           refs.deleteConfirmBtn.disabled = false;
           refs.deleteConfirmBtn.textContent = "Thử xóa lại";
         }
+        showBusyPopup();
       }
     }
 
@@ -610,20 +615,16 @@
       }
 
       if (res?.code === "USER_ID_INVALID") {
-        const dbg = formatUserIdDebug(res?.debug);
-        fillModalText(
-          baseItem,
-          dbg
-            ? "Không tìm thấy user id hợp lệ cho tài khoản hiện tại.\n\n[debug] " + dbg
-            : "Không tìm thấy user id hợp lệ cho tài khoản hiện tại."
-        );
+        fillModalText(baseItem, SYSTEM_BUSY_TEXT);
         if (refs.modalDownload) refs.modalDownload.disabled = true;
+        showBusyPopup();
         return;
       }
 
       if (!res?.ok) {
-        fillModalText(baseItem, `Không tải được nội dung transcript: ${String(res?.error || "DETAIL_FAILED")}`);
+        fillModalText(baseItem, SYSTEM_BUSY_TEXT);
         if (refs.modalDownload) refs.modalDownload.disabled = true;
+        showBusyPopup();
         return;
       }
 
