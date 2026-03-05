@@ -14,18 +14,12 @@
     "storage",
     "tabs",
     "sidePanel",
-    "identity",
     "offscreen",
     "tabCapture"
   ],
   "host_permissions": [
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",
-    "https://oauth2.googleapis.com/*",
-    "https://accounts.google.com/*",
-    "https://www.googleapis.com/*",
-    "https://www.facebook.com/*",
-    "https://graph.facebook.com/*",
     "http://*/*",
     "https://*/*"
   ],
