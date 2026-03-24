@@ -13,6 +13,8 @@
   const TAG = "[VT][OFF]";
   const offscreenUrl = chrome.runtime.getURL("offscreen.html");
   const SYSTEM_BUSY_TEXT = "Hệ thống đang bận, vui lòng thử lại sau.";
+  const BENIGN_RUNTIME_MESSAGE_RE = /receiving end does not exist|message port closed before a response was received|the message port closed/i;
+  const OFFSCREEN_DEBUG = false;
 
   let audioCtx = null;
   let mediaStream = null;
@@ -45,6 +47,7 @@
   // Keep websocket send buffer bounded to avoid long "audio backlog" latency.
   const WS_BUFFER_HIGH_WATERMARK = 256 * 1024;
   const WS_BUFFER_RESUME_WATERMARK = 64 * 1024;
+  const UI_STABLE_MAX_CHARS = 6000;
 
   const SUPABASE_URL = "https://izziphjuznnzhcdbbptw.supabase.co";
   const SUPABASE_KEY = "sb_publishable_YNUg4THwvvBurGGn59s8Kg_OSkVpVfh";
@@ -68,19 +71,89 @@
   let handshakeReject = null;
   let handshakeTimer = null;
   let handshakeOk = false;
+  let swStablePort = null;
 
   // ---- connect timeout ----
   let connectTimer = null;
 
-  function log(...args) { console.log(TAG, ...args); }
+  function log(...args) { if (OFFSCREEN_DEBUG) console.log(TAG, ...args); }
+
+  function isBenignRuntimeMessagingError(err) {
+    const msg = String(err?.message || err || "").trim();
+    return !!msg && BENIGN_RUNTIME_MESSAGE_RE.test(msg);
+  }
+
+  function fireAndForgetRuntimeMessage(message) {
+    try {
+      const maybePromise = chrome.runtime.sendMessage(message);
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise.catch((err) => {
+          if (!isBenignRuntimeMessagingError(err)) {
+            log("runtime.sendMessage failed:", message?.__cmd || "unknown", String(err?.message || err || "unknown"));
+          }
+        });
+      }
+    } catch (err) {
+      if (!isBenignRuntimeMessagingError(err)) {
+        log("runtime.sendMessage threw:", message?.__cmd || "unknown", String(err?.message || err || "unknown"));
+      }
+    }
+  }
 
   function sendStatus(payload = {}) {
+    fireAndForgetRuntimeMessage({
+      __cmd: "__OFFSCREEN_STATUS__",
+      payload: { ts: Date.now(), ...payload }
+    });
+  }
+
+  function trimStableForUi(text, maxChars = UI_STABLE_MAX_CHARS) {
+    const s = String(text || "");
+    const n = Number(maxChars) | 0;
+    if (n <= 0 || s.length <= n) return s;
+    let from = s.length - n;
+    const head = s.slice(from, Math.min(s.length, from + 180));
+    const sentBoundary = head.match(/[.!?â€¦]\s+/);
+    if (sentBoundary && Number.isFinite(sentBoundary.index)) {
+      from += sentBoundary.index + sentBoundary[0].length;
+      return s.slice(from);
+    }
+    const wsIdx = s.indexOf(" ", from);
+    if (wsIdx > from && wsIdx - from < 100) from = wsIdx + 1;
+    return s.slice(from);
+  }
+
+  function closeStableSwPort() {
     try {
-      chrome.runtime.sendMessage({
-        __cmd: "__OFFSCREEN_STATUS__",
-        payload: { ts: Date.now(), ...payload }
-      });
+      if (swStablePort) swStablePort.disconnect();
     } catch {}
+    swStablePort = null;
+  }
+
+  function ensureStableSwPort() {
+    if (swStablePort) return swStablePort;
+    try {
+      swStablePort = chrome.runtime.connect({ name: "__OFFSCREEN_STABLE_STREAM__" });
+      swStablePort.onDisconnect.addListener(() => {
+        swStablePort = null;
+      });
+      return swStablePort;
+    } catch {
+      swStablePort = null;
+      return null;
+    }
+  }
+
+  function postStableFullToSw(payload = {}) {
+    try {
+      const port = ensureStableSwPort();
+      if (!port) return false;
+      port.postMessage({ __cmd: "__TRANSCRIPT_STABLE_FULL__", payload });
+      return true;
+    } catch {
+      closeStableSwPort();
+      return false;
+    }
   }
 
   function clearHandshake() {
@@ -511,6 +584,7 @@
     sendStatus({ state: "stopping", reason });
 
     await closeWs({ sendStop: true });
+    closeStableSwPort();
 
     try { if (workletNode) workletNode.port.onmessage = null; } catch {}
     try { if (srcNode) srcNode.disconnect(); } catch {}
@@ -643,17 +717,20 @@
 
     // transcript relay (accept both type/event)
     if (kind === "delta") {
-      chrome.runtime.sendMessage({ __cmd: "__TRANSCRIPT_DELTA__", payload: obj });
+      fireAndForgetRuntimeMessage({ __cmd: "__TRANSCRIPT_DELTA__", payload: obj });
       resolveHandshakeIfAny("delta");
       return;
     }
     if (kind === "stable") {
-      chrome.runtime.sendMessage({ __cmd: "__TRANSCRIPT_STABLE__", payload: obj });
+      const fullText = String(obj?.full ?? obj?.text ?? "");
+      const uiPayload = { ...obj, full: trimStableForUi(fullText, UI_STABLE_MAX_CHARS), ui_only: true };
+      postStableFullToSw(obj);
+      fireAndForgetRuntimeMessage({ __cmd: "__TRANSCRIPT_STABLE__", payload: uiPayload });
       resolveHandshakeIfAny("stable");
       return;
     }
     if (kind === "patch") {
-      chrome.runtime.sendMessage({ __cmd: "__TRANSCRIPT_PATCH__", payload: obj });
+      fireAndForgetRuntimeMessage({ __cmd: "__TRANSCRIPT_PATCH__", payload: obj });
       resolveHandshakeIfAny("patch");
       return;
     }
@@ -854,7 +931,7 @@
       numberOfInputs: 1,
       numberOfOutputs: 1,
       outputChannelCount: [1],
-      processorOptions: { chunkSize: 2048, meterEveryNChunks: 8 }
+      processorOptions: { chunkSize: 4096, meterEveryNChunks: 16 }
     });
 
     silentGain = audioCtx.createGain();
@@ -995,12 +1072,22 @@
   });
 
   self.addEventListener("unhandledrejection", (event) => {
+    const reason = event?.reason;
+    if (isBenignRuntimeMessagingError(reason)) {
+      log("ignore benign unhandledrejection:", String(reason?.message || reason || "unknown"));
+      return;
+    }
     try { event.preventDefault(); } catch {}
     sendStatus({ state: "server-error", error: "UNHANDLED_REJECTION" });
     stopAll("unhandledrejection").catch(() => {});
   });
 
   self.addEventListener("error", (event) => {
+    const reason = event?.error || event?.message;
+    if (isBenignRuntimeMessagingError(reason)) {
+      log("ignore benign error:", String(reason?.message || reason || "unknown"));
+      return;
+    }
     try { event.preventDefault?.(); } catch {}
     sendStatus({ state: "server-error", error: String(event?.message || "OFFSCREEN_ERROR") });
     stopAll("error").catch(() => {});

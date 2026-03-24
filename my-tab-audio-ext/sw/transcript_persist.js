@@ -66,7 +66,8 @@ export function createTranscriptPersist(opts) {
     lastSnapshotHash: "",
     startedAt: Date.now(),
     stopped: false,
-    persistChain: Promise.resolve(),
+    pendingSnapshot: null,
+    flushPromise: null,
     startingPromise: null,
   };
 
@@ -184,13 +185,32 @@ export function createTranscriptPersist(opts) {
     return state.startingPromise;
   }
 
-  function queuePersist(task) {
-    state.persistChain = state.persistChain
-      .then(() => task())
-      .catch((e) => {
-        console.warn("[persist] queue task failed", e?.message || e);
-      });
-    return state.persistChain;
+  async function flushLatestSnapshotLoop() {
+    while (state.pendingSnapshot && !state.stopped) {
+      const pending = state.pendingSnapshot;
+      state.pendingSnapshot = null;
+      const ok = await startSession();
+      if (!ok || !state.trSessionId) continue;
+      await insertFullSnapshot(pending.text);
+      await updateLatest(pending.text, pending.seq);
+    }
+  }
+
+  function kickSnapshotFlush() {
+    if (state.flushPromise) return state.flushPromise;
+    state.flushPromise = (async () => {
+      try {
+        await flushLatestSnapshotLoop();
+      } catch (e) {
+        console.warn("[persist] flush failed", e?.message || e);
+      } finally {
+        state.flushPromise = null;
+        if (state.pendingSnapshot && !state.stopped) {
+          return kickSnapshotFlush();
+        }
+      }
+    })();
+    return state.flushPromise;
   }
 
   async function updateLatest(fullText, seq) {
@@ -256,27 +276,22 @@ export function createTranscriptPersist(opts) {
     state.lastSnapshotHash = hash;
     if (!text.trim()) return;
 
-    // Lazy-create session: only persist when we have real stable text.
-    void queuePersist(async () => {
-      if (state.stopped) return;
-      const ok = await startSession();
-      if (!ok || !state.trSessionId) return;
-      await insertFullSnapshot(text);
-      await updateLatest(text, seqNum);
-    });
+    // Coalesce to the latest stable snapshot so slow networks do not build up
+    // a queue of full transcript copies in memory.
+    state.pendingSnapshot = { text, seq: seqNum };
+    void kickSnapshotFlush();
   }
 
   async function stop(finalText = "") {
-    state.stopped = true;
     const finalTextStr = (finalText || state.fullLatest || "").toString();
 
-    try { await state.persistChain; } catch {}
-    if (!state.trSessionId) return;
-
     if (finalTextStr.trim()) {
-      await insertFullSnapshot(finalTextStr);
-      await updateLatest(finalTextStr, state.fullSeq);
+      state.pendingSnapshot = { text: finalTextStr, seq: state.fullSeq };
+      try { await kickSnapshotFlush(); } catch {}
     }
+
+    state.stopped = true;
+    if (!state.trSessionId) return;
 
     const body = {
       status: "stopped",
@@ -297,7 +312,12 @@ export function createTranscriptPersist(opts) {
   }
 
   return {
-    start: async () => { state.stopped = false; state.startedAt = Date.now(); },
+    start: async () => {
+      state.stopped = false;
+      state.startedAt = Date.now();
+      state.pendingSnapshot = null;
+      state.flushPromise = null;
+    },
     handleStable,
     stop,
     getSessionId: () => state.trSessionId,

@@ -60,11 +60,15 @@
   let $token = null;
   let $sub = null;
   let $log = null;
+  let $systemLog = null;
+  let $liveLog = null;
   let $btnStart = null;
   let $btnStop = null;
 
   // Đếm số câu đã log (không tính 1 câu cuối đang pending)
-  let loggedSentCount = 0;
+  const LIVE_LOG_MAX_ROWS = 80;
+  const LIVE_LOG_MAX_CHARS = 4000;
+  let lastLiveRenderKey = "";
   let isActive = false;
   let isStarting = false;
 
@@ -99,9 +103,23 @@
     return { sents, tail };
   }
 
-  function addRow(timeStr, text, meta = "") {
-    if (!$log) return;
+  function clipStableText(text, maxLen = LIVE_LOG_MAX_CHARS) {
+    const s = String(text || "");
+    const n = Number(maxLen) | 0;
+    if (n <= 0 || s.length <= n) return s;
+    let from = s.length - n;
+    const head = s.slice(from, Math.min(s.length, from + 180));
+    const sentBoundary = head.match(/[.!?â€¦]\s+/);
+    if (sentBoundary && Number.isFinite(sentBoundary.index)) {
+      from += sentBoundary.index + sentBoundary[0].length;
+      return s.slice(from);
+    }
+    const ws = s.indexOf(" ", from);
+    if (ws > from && ws - from < 100) from = ws + 1;
+    return s.slice(from);
+  }
 
+  function createRowEl(timeStr, text, meta = "") {
     const row = document.createElement("div");
     row.className = "stt-row";
 
@@ -126,8 +144,44 @@
 
     row.appendChild(t);
     row.appendChild(right);
+    return row;
+  }
 
-    $log.appendChild(row);
+  function addRow(timeStr, text, meta = "") {
+    const target = $systemLog || $log;
+    if (!target) return;
+    target.appendChild(createRowEl(timeStr, text, meta));
+    $log.parentElement?.scrollTo({ top: $log.parentElement.scrollHeight, behavior: "smooth" });
+  }
+
+  function renderStableWindow(fullText, seq = 0) {
+    if (!$liveLog) return;
+    const clipped = clipStableText(fullText, LIVE_LOG_MAX_CHARS);
+    if (!clipped) {
+      lastLiveRenderKey = "";
+      $liveLog.replaceChildren();
+      return;
+    }
+
+    const { sents } = splitSentencesAndTail(clipped);
+    const targetCount = Math.max(0, sents.length - 1);
+    const start = Math.max(0, targetCount - LIVE_LOG_MAX_ROWS);
+    const rows = [];
+    for (let i = start; i < targetCount; i++) {
+      const s = String(sents[i] || "").trim();
+      if (s) rows.push(s);
+    }
+
+    const key = `${Number(seq || 0)}|${rows.length}|${rows[0] || ""}|${rows[rows.length - 1] || ""}`;
+    if (key === lastLiveRenderKey) return;
+    lastLiveRenderKey = key;
+
+    const now = new Date().toLocaleTimeString();
+    const frag = document.createDocumentFragment();
+    for (const rowText of rows) {
+      frag.appendChild(createRowEl(now, rowText, "Speaker â€¢ en â€¢ live"));
+    }
+    $liveLog.replaceChildren(frag);
     $log.parentElement?.scrollTo({ top: $log.parentElement.scrollHeight, behavior: "smooth" });
   }
 
@@ -263,6 +317,12 @@
     $token = root.querySelector("#stt-sp-token");
     $sub = root.querySelector("#stt-sp-sub");
     $log = root.querySelector("#stt-log");
+    $systemLog = document.createElement("div");
+    $systemLog.id = "stt-system-log";
+    $liveLog = document.createElement("div");
+    $liveLog.id = "stt-live-log";
+    $log.appendChild($systemLog);
+    $log.appendChild($liveLog);
     $btnStart = root.querySelector("#btn-start");
     $btnStop = root.querySelector("#btn-stop");
 
@@ -295,8 +355,8 @@
     if (root) root.remove();
     document.documentElement.classList.remove("stt-panel-open");
 
-    $root = $server = $token = $sub = $log = $btnStart = $btnStop = null;
-    loggedSentCount = 0;
+    $root = $server = $token = $sub = $log = $systemLog = $liveLog = $btnStart = $btnStop = null;
+    lastLiveRenderKey = "";
     isActive = false;
     isStarting = false;
   }
@@ -351,7 +411,10 @@
     // Transcript stable -> log theo câu
     if (m.__cmd === "__TRANSCRIPT_STABLE__") {
       const full = String(m.payload?.full ?? m.full ?? "");
-      if (!full || !$log) return;
+      const seq = Number(m.payload?.seq ?? m.seq ?? 0);
+      if (!full || !$liveLog) return;
+      renderStableWindow(full, seq);
+      /*
 
       const { sents } = splitSentencesAndTail(full);
       const targetCount = Math.max(0, sents.length - 1); // giữ lại 1 câu cuối
@@ -364,6 +427,7 @@
         }
         loggedSentCount = targetCount;
       }
+      */
     }
   });
 

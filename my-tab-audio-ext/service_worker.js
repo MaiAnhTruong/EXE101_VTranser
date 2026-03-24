@@ -52,7 +52,9 @@ function maybeLogTranscriptRate(kind) {
 
 // -------------------- Const / Logging --------------------
 const TAG = "[VT][SW]";
-function log(...args) { console.log(TAG, ...args); }
+const SW_DEBUG = false;
+const BENIGN_RUNTIME_MESSAGE_RE = /receiving end does not exist|message port closed before a response was received|the message port closed/i;
+function log(...args) { if (SW_DEBUG) console.log(TAG, ...args); }
 function warn(...args) { console.warn(TAG, ...args); }
 function err(...args) { console.warn(TAG, ...args); }
 const SYSTEM_BUSY_TEXT = "Hệ thống đang bận, vui lòng thử lại sau.";
@@ -106,6 +108,70 @@ function buildOverlayStableRelayMsg(msg, fullText) {
     out.detail = { ...msg.detail, full: trimmed };
   }
   return out;
+}
+
+function extractStableRelayData(msg, stableFullOverride = null) {
+  const p = msg?.payload || msg?.detail || {};
+  const stableFull = (
+    stableFullOverride ??
+    p.full ??
+    msg?.full ??
+    p.text ??
+    msg?.text ??
+    p.detail?.full ??
+    p.detail?.text ??
+    ""
+  ).toString();
+  const stableSeq = p.seq ?? msg?.seq ?? p.stable_seq ?? null;
+  const stableTms = p.t_ms ?? msg?.t_ms ?? null;
+  return { stableFull, stableSeq, stableTms };
+}
+
+function isBenignRuntimeMessagingError(err) {
+  const msg = String(err?.message || err || "").trim();
+  return !!msg && BENIGN_RUNTIME_MESSAGE_RE.test(msg);
+}
+
+function fireAndForgetRuntimeMessage(message) {
+  try {
+    const maybePromise = chrome.runtime.sendMessage(message);
+    if (maybePromise && typeof maybePromise.then === "function") {
+      maybePromise.catch((err) => {
+        if (!isBenignRuntimeMessagingError(err)) {
+          warn("runtime.sendMessage failed:", message?.__cmd || "unknown", String(err?.message || err || "unknown"));
+        }
+      });
+    }
+  } catch (err) {
+    if (!isBenignRuntimeMessagingError(err)) {
+      warn("runtime.sendMessage threw:", message?.__cmd || "unknown", String(err?.message || err || "unknown"));
+    }
+  }
+}
+
+async function handleStableTranscriptRelay(msg, stableFullOverride = null) {
+  if (!(current?.tabId && (current?.startedAt || current?.starting))) {
+    return;
+  }
+
+  maybeLogTranscriptRate("stable");
+  const { stableFull, stableSeq, stableTms } = extractStableRelayData(msg, stableFullOverride);
+
+  if (current?.tabId) {
+    const relayMsg = buildOverlayStableRelayMsg(msg, stableFull);
+    await safeSendTab(current.tabId, relayMsg);
+  }
+
+  lastEnStable = {
+    full: stableFull,
+    seq: Number(stableSeq || 0),
+    t_ms: Number(stableTms || 0),
+  };
+
+  feedTranslatorStable(stableFull, stableSeq, stableTms);
+  if (transcriptPersist) {
+    try { transcriptPersist.handleStable(stableFull, stableSeq); } catch {}
+  }
 }
 
 // -------------------- chrome.storage helpers --------------------
@@ -485,9 +551,7 @@ async function markNeedAuth(action = "unknown") {
   } catch {}
 }
 function broadcastAuthRequired(action = "unknown") {
-  try {
-    chrome.runtime.sendMessage({ __cmd: "__AUTH_REQUIRED__", payload: { action } });
-  } catch {}
+  fireAndForgetRuntimeMessage({ __cmd: "__AUTH_REQUIRED__", payload: { action } });
 }
 async function notifyPanel(tabId, payload) {
   if (!tabId) return;
@@ -1252,6 +1316,20 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 // -------------------- Message bus --------------------
+chrome.runtime.onConnect.addListener((port) => {
+  if (!port || port.name !== "__OFFSCREEN_STABLE_STREAM__") return;
+  port.onMessage.addListener((msg) => {
+    (async () => {
+      if (!msg || msg.__cmd !== "__TRANSCRIPT_STABLE_FULL__") return;
+      await handleStableTranscriptRelay({
+        __cmd: "__TRANSCRIPT_STABLE__",
+        payload: msg.payload || {},
+      });
+    })().catch((e) => warn("stable port handler failed:", String(e?.message || e)));
+  });
+});
+
+// -------------------- Message bus --------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (!msg || !msg.__cmd) return;
@@ -1307,6 +1385,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (current?.tabId) {
         await safeSendTab(current.tabId, msg);
       }
+      sendResponse?.({ ok: true });
       return;
     }
 
@@ -1316,14 +1395,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       msg.__cmd === "__TRANSCRIPT_STABLE__" ||
       msg.__cmd === "__TRANSCRIPT_PATCH__"
     ) {
+      if (msg.__cmd === "__TRANSCRIPT_STABLE__" && msg?.payload?.ui_only) {
+        sendResponse?.({ ok: true, uiOnly: true });
+        return;
+      }
+
       // Drop transcript from stale sessions (e.g., packets arriving right after Stop).
       if (!(current?.tabId && (current?.startedAt || current?.starting))) {
+        sendResponse?.({ ok: true, dropped: true });
         return;
       }
 
       if (msg.__cmd === "__TRANSCRIPT_PATCH__") maybeLogTranscriptRate("patch");
       else if (msg.__cmd === "__TRANSCRIPT_DELTA__") maybeLogTranscriptRate("delta");
-      else if (msg.__cmd === "__TRANSCRIPT_STABLE__") maybeLogTranscriptRate("stable");
+      else if (msg.__cmd === "__TRANSCRIPT_STABLE__") {}
 
       const isStable = msg.__cmd === "__TRANSCRIPT_STABLE__";
       let stableFull = "";
@@ -1347,24 +1432,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       // relay to overlay (trim heavy stable payload for long-running sessions)
       if (current?.tabId) {
-        const relayMsg = isStable ? buildOverlayStableRelayMsg(msg, stableFull) : msg;
+        const relayMsg = msg;
         await safeSendTab(current.tabId, relayMsg);
       }
 
       // ✅ STABLE-ONLY translation: chỉ feed stable.full sang translator
       if (isStable) {
-        // cache for baseline on connect
-        lastEnStable = { full: stableFull, seq: Number(stableSeq || 0), t_ms: Number(stableTms || 0) };
-
-        // feed stable if translator online
-        feedTranslatorStable(stableFull, stableSeq, stableTms);
-
-        // persist to Supabase (delay 1 sentence)
-        if (transcriptPersist) {
-          try { transcriptPersist.handleStable(stableFull, stableSeq); } catch {}
-        }
+        await handleStableTranscriptRelay(msg, stableFull);
       }
 
+      sendResponse?.({ ok: true });
       return;
     }
 
@@ -1875,11 +1952,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 self.addEventListener("unhandledrejection", (event) => {
+  if (isBenignRuntimeMessagingError(event?.reason)) {
+    try { event.preventDefault(); } catch {}
+    return;
+  }
   try { event.preventDefault(); } catch {}
   warn("unhandledrejection captured:", String(event?.reason?.message || event?.reason || "unknown"));
 });
 
 self.addEventListener("error", (event) => {
+  if (isBenignRuntimeMessagingError(event?.error || event?.message)) {
+    try { event.preventDefault?.(); } catch {}
+    return;
+  }
   try { event.preventDefault?.(); } catch {}
   warn("error captured:", String(event?.message || "unknown"));
 });

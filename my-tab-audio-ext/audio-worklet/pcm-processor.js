@@ -3,14 +3,29 @@ class PCMProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
     const opts = options?.processorOptions || {};
-    this.chunkSize = opts.chunkSize || 2048;
-    this.buffer = new Float32Array(0);
+    this.chunkSize = Math.max(512, opts.chunkSize || 4096);
+    this.buffer = new Float32Array(this.chunkSize * 2);
+    this.buffered = 0;
     this.meterEveryNChunks = Math.max(1, opts.meterEveryNChunks || 8);
     this._chunksSinceMeter = 0;
   }
 
+  _ensureCapacity(extraSamples) {
+    const needed = this.buffered + extraSamples;
+    if (needed <= this.buffer.length) return;
+
+    let nextCap = this.buffer.length || this.chunkSize * 2;
+    while (nextCap < needed) nextCap *= 2;
+
+    const next = new Float32Array(nextCap);
+    if (this.buffered > 0) {
+      next.set(this.buffer.subarray(0, this.buffered), 0);
+    }
+    this.buffer = next;
+  }
+
   _emitChunks() {
-    while (this.buffer.length >= this.chunkSize) {
+    while (this.buffered >= this.chunkSize) {
       const slice = this.buffer.subarray(0, this.chunkSize);
 
       // ---- meter (rms/peak) ----
@@ -38,7 +53,10 @@ class PCMProcessor extends AudioWorkletProcessor {
       }
       this.port.postMessage({ type: "pcm-int16", payload: out.buffer }, [out.buffer]);
 
-      this.buffer = this.buffer.subarray(this.chunkSize);
+      this.buffered -= this.chunkSize;
+      if (this.buffered > 0) {
+        this.buffer.copyWithin(0, this.chunkSize, this.chunkSize + this.buffered);
+      }
     }
   }
 
@@ -46,10 +64,9 @@ class PCMProcessor extends AudioWorkletProcessor {
     const input = inputs[0];
     if (input && input[0] && input[0].length) {
       const ch = input[0];
-      const merged = new Float32Array(this.buffer.length + ch.length);
-      merged.set(this.buffer, 0);
-      merged.set(ch, this.buffer.length);
-      this.buffer = merged;
+      this._ensureCapacity(ch.length);
+      this.buffer.set(ch, this.buffered);
+      this.buffered += ch.length;
       this._emitChunks();
     }
     return true;

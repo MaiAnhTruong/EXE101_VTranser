@@ -148,12 +148,12 @@ _win_bootstrap_dlls_early()
 # ──────────────────────────────────────────────────────────────────────────────
 # LOGGING
 # ──────────────────────────────────────────────────────────────────────────────
-LOG_LEVEL = (os.getenv("LOG_LEVEL", "DEBUG") or "DEBUG").upper()
+LOG_LEVEL = (os.getenv("LOG_LEVEL", "INFO") or "INFO").upper()
 LOG_TO_FILE = (os.getenv("LOG_TO_FILE", "0").strip().lower() in {"1", "true", "yes"})
 LOG_FILE = os.getenv("LOG_FILE", "stt_server_debug.log")
 LOG_STDERR = (os.getenv("LOG_STDERR", "1").strip().lower() in {"1", "true", "yes"})
-LOG_WS_EVERY_N = int(os.getenv("LOG_WS_EVERY_N", "25"))
-LOG_AUDIO_EVERY_N = int(os.getenv("LOG_AUDIO_EVERY_N", "50"))
+LOG_WS_EVERY_N = int(os.getenv("LOG_WS_EVERY_N", "200"))
+LOG_AUDIO_EVERY_N = int(os.getenv("LOG_AUDIO_EVERY_N", "250"))
 LOG_STATUS_EVERY = float(os.getenv("LOG_STATUS_EVERY", "2.0"))
 
 def _setup_logging():
@@ -195,6 +195,8 @@ def _setup_logging():
     return logger
 
 logger = _setup_logging()
+RTSTT_LOG_LEVEL_NAME = (os.getenv("RTSTT_LOG_LEVEL", "WARNING") or "WARNING").upper()
+RTSTT_LOG_LEVEL = getattr(logging, RTSTT_LOG_LEVEL_NAME, logging.WARNING)
 
 # Suppress noisy shutdown traceback from RealtimeSTT on Windows ("Error receiving data from connection: [WinError 6]")
 class _NoiseFilter(logging.Filter):
@@ -203,6 +205,27 @@ class _NoiseFilter(logging.Filter):
         return "Error receiving data from connection" not in msg
 
 logging.getLogger().addFilter(_NoiseFilter())
+
+def _reset_realtimestt_logger():
+    try:
+        rt_logger = logging.getLogger("realtimestt")
+        for handler in list(rt_logger.handlers):
+            try:
+                handler.flush()
+            except Exception:
+                pass
+            try:
+                handler.close()
+            except Exception:
+                pass
+            try:
+                rt_logger.removeHandler(handler)
+            except Exception:
+                pass
+        rt_logger.propagate = False
+        rt_logger.setLevel(RTSTT_LOG_LEVEL)
+    except Exception:
+        pass
 
 def _pkg_version(dist_name: str) -> Optional[str]:
     try:
@@ -298,6 +321,16 @@ WEBRTC_SENSITIVITY = int(os.getenv("WEBRTC_SENSITIVITY", "3"))
 SILERO_SENSITIVITY = float(os.getenv("SILERO_SENSITIVITY", "0.6"))
 SILERO_DEACTIVITY = os.getenv("SILERO_DEACTIVITY", "0").strip().lower() in {"1","true","yes"}
 POST_SPEECH_SILENCE = float(os.getenv("POST_SPEECH_SILENCE", "0.25"))
+STATUS_INTERVAL_SEC = float(os.getenv("STATUS_INTERVAL_SEC", "1.0"))
+
+# RealtimeSTT internal safeguards: keep its own queue and logging bounded so
+# long sessions cannot build up hidden latency or excessive I/O/console churn.
+RTSTT_ALLOWED_LATENCY_LIMIT = int(os.getenv("RTSTT_ALLOWED_LATENCY_LIMIT", "24"))
+RTSTT_REALTIME_PROCESSING_PAUSE = float(os.getenv("RTSTT_REALTIME_PROCESSING_PAUSE", "0.25"))
+RTSTT_INIT_REALTIME_AFTER_SECONDS = float(os.getenv("RTSTT_INIT_REALTIME_AFTER_SECONDS", "0.25"))
+RTSTT_REALTIME_BATCH_SIZE = int(os.getenv("RTSTT_REALTIME_BATCH_SIZE", "8"))
+RTSTT_BEAM_SIZE_REALTIME = int(os.getenv("RTSTT_BEAM_SIZE_REALTIME", "1"))
+RTSTT_NO_LOG_FILE = os.getenv("RTSTT_NO_LOG_FILE", "1").strip().lower() in {"1","true","yes"}
 
 FRAME_MS = float(os.getenv("FRAME_MS", "20"))
 TAIL_SILENCE_SEC = float(os.getenv("TAIL_SILENCE_SEC", "1.0"))
@@ -1411,11 +1444,13 @@ async def handler(websocket):
         def _make_recorder(ct: str) -> AudioToTextRecorder:
             logger.info("[%s] init recorder: model=%s device=%s compute_type=%s lang=%s",
                         sess_id, STT_MODEL, STT_DEVICE, ct, STT_LANGUAGE)
+            _reset_realtimestt_logger()
             return AudioToTextRecorder(
                 use_microphone=False,
                 device=STT_DEVICE,
                 model=STT_MODEL,
                 compute_type=ct,
+                level=RTSTT_LOG_LEVEL,
                 enable_realtime_transcription=True,
                 language=STT_LANGUAGE,
                 normalize_audio=True,
@@ -1424,6 +1459,13 @@ async def handler(websocket):
                 silero_sensitivity=SILERO_SENSITIVITY,
                 silero_deactivity_detection=SILERO_DEACTIVITY,
                 post_speech_silence_duration=POST_SPEECH_SILENCE,
+                handle_buffer_overflow=True,
+                allowed_latency_limit=RTSTT_ALLOWED_LATENCY_LIMIT,
+                realtime_processing_pause=RTSTT_REALTIME_PROCESSING_PAUSE,
+                init_realtime_after_seconds=RTSTT_INIT_REALTIME_AFTER_SECONDS,
+                realtime_batch_size=RTSTT_REALTIME_BATCH_SIZE,
+                beam_size_realtime=RTSTT_BEAM_SIZE_REALTIME,
+                no_log_file=RTSTT_NO_LOG_FILE,
                 on_realtime_transcription_update=_on_update_cb,
                 on_realtime_transcription_stabilized=_on_stable_cb,
             )
@@ -1624,7 +1666,7 @@ async def handler(websocket):
                                     _buf_ms_now(), frames_fed_total, ui_e2e_last_ms)
                         last_log_t = now_m
 
-                    if now_m - last_status_t >= float(os.getenv("STATUS_INTERVAL_SEC", "0.5")):
+                    if now_m - last_status_t >= STATUS_INTERVAL_SEC:
                         rss_mb = (_PROC.memory_info().rss / (1024.0*1024.0)) if _PROC else None
                         nvml_pair = _nvml_mem_mb()
 
@@ -1903,6 +1945,8 @@ async def handler(websocket):
                 logger.info("[%s] recorder stopped", sess_id)
             except Exception as e:
                 logger.warning("[%s] recorder stop/shutdown error: %r", sess_id, e)
+            finally:
+                _reset_realtimestt_logger()
 
             # stop txt writer
             if txt_enable and txt_q is not None and txt_task is not None:

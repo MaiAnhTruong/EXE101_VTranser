@@ -1,7 +1,10 @@
 // overlay.js
 (() => {
+  const lifecycle = (window.__sttOverlayLifecycle = window.__sttOverlayLifecycle || {});
+  if (lifecycle.active) return;
+  lifecycle.active = true;
+
   const ROOT_ID = "stt-yt-overlay";
-  if (document.getElementById(ROOT_ID)) return;
 
   const DEBUG = localStorage.getItem("sttOverlayDebug") === "1";
   const dlog = (...a) => { if (DEBUG) console.log("[stt-overlay]", ...a); };
@@ -69,6 +72,47 @@
   const VI_RENDER_BOUNDARY_RE = /(\s|[.!?\u2026,:;\uFF0C\u3002\uFF1F\uFF01])$/;
   const VI_DRAFT_MIN_APPEND_CHARS = Number(localStorage.getItem("sttViDraftMinAppendChars") || 10);
   const VI_DRAFT_HOLD_MS = Number(localStorage.getItem("sttViDraftHoldMs") || 320);
+
+  let runtimeMessageHandler = null;
+  let port = null;
+  let portMessageHandler = null;
+  let windowMessageHandler = null;
+  let resizeHandler = null;
+
+  function cleanupOverlayRuntime() {
+    lifecycle.active = false;
+    lifecycle.cleanup = null;
+
+    try {
+      if (runtimeMessageHandler) chrome.runtime.onMessage.removeListener(runtimeMessageHandler);
+    } catch {}
+    runtimeMessageHandler = null;
+
+    try {
+      if (port && portMessageHandler) port.onMessage.removeListener(portMessageHandler);
+    } catch {}
+    portMessageHandler = null;
+
+    try { port?.disconnect?.(); } catch {}
+    port = null;
+
+    try {
+      if (windowMessageHandler) window.removeEventListener("message", windowMessageHandler);
+    } catch {}
+    windowMessageHandler = null;
+
+    try {
+      if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+    } catch {}
+    resizeHandler = null;
+
+    if (viRenderTimer) {
+      clearTimeout(viRenderTimer);
+      viRenderTimer = null;
+    }
+  }
+
+  lifecycle.cleanup = cleanupOverlayRuntime;
 
   // ---------- mount UI ----------
   const root = document.createElement("div");
@@ -893,6 +937,7 @@
 
     // TEARDOWN
     if (type === "__OVERLAY_TEARDOWN__") {
+      cleanupOverlayRuntime();
       try { root.remove(); } catch {}
       try { measurerEN.remove(); } catch {}
       try { measurerVI.remove(); } catch {}
@@ -901,21 +946,25 @@
   }
 
   // ---------- wiring ----------
-  try { chrome.runtime.onMessage.addListener((m) => handleMessage(m)); } catch {}
+  runtimeMessageHandler = (m) => handleMessage(m);
+  try { chrome.runtime.onMessage.addListener(runtimeMessageHandler); } catch {}
   try {
-    const port = chrome.runtime.connect({ name: "stt-overlay" });
-    port.onMessage.addListener((m) => handleMessage(m));
+    port = chrome.runtime.connect({ name: "stt-overlay" });
+    portMessageHandler = (m) => handleMessage(m);
+    port.onMessage.addListener(portMessageHandler);
   } catch {}
-  window.addEventListener("message", (ev) => {
+  windowMessageHandler = (ev) => {
     const m = ev?.data;
     if (m && (m.__cmd || m.type)) handleMessage(m);
-  });
+  };
+  window.addEventListener("message", windowMessageHandler);
 
-  window.addEventListener("resize", () => {
+  resizeHandler = () => {
     syncMeasureStyle();
     if (showEN) renderTwoLines(fullTextEN, bubbleEN, l1EN, l2EN, textWidthEN, EN_LAYOUT_WINDOW_CHARS);
     if (showVI) doRenderVI(true);
-  });
+  };
+  window.addEventListener("resize", resizeHandler);
 
   try {
     chrome.runtime.sendMessage({ __cmd: "__OVERLAY_PING__" }, () => {
@@ -925,4 +974,3 @@
 
   dlog("overlay mounted OK");
 })();
-

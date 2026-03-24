@@ -1114,9 +1114,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!hasChromeRuntime) return;
     applyModesToUI();
     const payload = { en: !!modes.en, vi: !!modes.vi, voice: !!modes.voice, record: !!modes.record };
-    try {
-      chrome.runtime.sendMessage({ __cmd: '__TRANSCRIPT_MODES__', payload });
-    } catch {}
+    void sendRuntime({ __cmd: '__TRANSCRIPT_MODES__', payload });
   }
 
   function bindModeButtons() {
@@ -1195,16 +1193,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // refresh transcript url when open transcript
-    if (viewId === 'transcript-content') updateTranscriptHeaderUrl();
+    if (viewId === 'transcript-content') {
+      updateTranscriptHeaderUrl();
+      renderTranscriptStableWindow(realtimeSnapshotCache.full, realtimeSnapshotCache.seq);
+    }
     if (viewId === 'history-content') historyController?.onViewShown?.();
   }
 
   if (chatButton) chatButton.addEventListener('click', () => showView('chat-content', chatButton));
   if (transcriptButton) transcriptButton.addEventListener('click', () => showView('transcript-content', transcriptButton));
   if (historyButton) historyButton.addEventListener('click', () => showView('history-content', historyButton));
-
-  if (transcriptButton) showView('transcript-content', transcriptButton);
-  else showView('chat-content', chatButton);
 
   // ===== Toolbar utilities: collapse / fullscreen / more =====
   function setCollapsed() {
@@ -1299,8 +1297,10 @@ document.addEventListener('DOMContentLoaded', () => {
     transcriptStart.classList.toggle('is-loading', !!on);
   }
 
-  // ===== Transcript sentence delay logging =====
-  let loggedSentCount = 0;
+  // ===== Transcript live rendering =====
+  const LIVE_TRANSCRIPT_RENDER_MAX_ROWS = 120;
+  const LIVE_TRANSCRIPT_RENDER_MAX_CHARS = 6000;
+  let lastTranscriptRenderKey = '';
   const realtimeSnapshotCache = {
     active: false,
     starting: false,
@@ -1322,11 +1322,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return { sents, tail: text.slice(lastEnd) };
   }
 
-  function addTranscriptRow(text, meta = 'Speaker • en • live') {
-    if (!transcriptBody) return;
-    const placeholder = transcriptBody.querySelector('.transcript-placeholder');
-    if (placeholder) placeholder.remove();
-
+  function createTranscriptRowEl(text, meta = 'Speaker • en • live') {
     const row = document.createElement('div');
     row.className = 'transcript-entry';
     row.innerHTML = `
@@ -1335,11 +1331,78 @@ document.addEventListener('DOMContentLoaded', () => {
         <span class="speaker-info">${escapeHtml(meta)}</span>
       </div>
     `;
-    // Luôn hiển thị câu mới nhất ở trên cùng;
-    // câu cũ vẫn giữ lại và cuộn xuống sẽ thấy.
-    transcriptBody.prepend(row);
+    return row;
+  }
+
+  function removeTranscriptPlaceholder() {
+    if (!transcriptBody) return;
+    const placeholder = transcriptBody.querySelector('.transcript-placeholder');
+    if (placeholder) placeholder.remove();
+  }
+
+  function getOrCreateTranscriptLiveList() {
+    if (!transcriptBody) return null;
+    let list = transcriptBody.querySelector('.transcript-live-list');
+    if (!list) {
+      list = document.createElement('div');
+      list.className = 'transcript-live-list';
+      transcriptBody.appendChild(list);
+    }
+    return list;
+  }
+
+  function resetTranscriptLiveRender() {
+    lastTranscriptRenderKey = '';
+    if (!transcriptBody) return;
+    const list = transcriptBody.querySelector('.transcript-live-list');
+    if (list) list.remove();
+  }
+
+  function renderTranscriptStableWindow(fullText = '', seq = 0) {
+    if (!transcriptBody) return;
+    const clipped = clipRealtimeSnapshotText(fullText, LIVE_TRANSCRIPT_RENDER_MAX_CHARS);
+    if (!clipped) {
+      resetTranscriptLiveRender();
+      return;
+    }
+
+    const { sents } = splitSentencesAndTail(clipped);
+    const target = Math.max(0, sents.length - 1);
+    const start = Math.max(0, target - LIVE_TRANSCRIPT_RENDER_MAX_ROWS);
+    const rows = [];
+    for (let i = start; i < target; i++) {
+      const s = String(sents[i] || '').trim();
+      if (s) rows.push(s);
+    }
+
+    const key = `${Number(seq || 0)}|${rows.length}|${rows[0] || ''}|${rows[rows.length - 1] || ''}`;
+    if (key === lastTranscriptRenderKey) return;
+    lastTranscriptRenderKey = key;
+
+    removeTranscriptPlaceholder();
+    const list = getOrCreateTranscriptLiveList();
+    if (!list) return;
+
+    const frag = document.createDocumentFragment();
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = createTranscriptRowEl(rows[i], 'Speaker • en • live');
+      row.dataset.kind = 'live';
+      frag.appendChild(row);
+    }
+    list.replaceChildren(frag);
     transcriptBody.scrollTop = 0;
   }
+
+  function addTranscriptRow(text, meta = 'Speaker • en • live') {
+    if (!transcriptBody) return;
+    removeTranscriptPlaceholder();
+    const row = createTranscriptRowEl(text, meta);
+    row.dataset.kind = 'system';
+    transcriptBody.prepend(row);
+  }
+
+  if (transcriptButton) showView('transcript-content', transcriptButton);
+  else showView('chat-content', chatButton);
 
   // ===== START/STOP capture =====
   if (transcriptStart) {
@@ -1395,13 +1458,13 @@ document.addEventListener('DOMContentLoaded', () => {
               </div>`;
           }
 
-          loggedSentCount = 0;
+          resetTranscriptLiveRender();
           updateTranscriptHeaderUrl();
           sendTranscriptModes();
           // timer & play visual sẽ bật khi nhận state 'running' từ OFFSCREEN_STATUS
         } else {
           resetRealtimeUiAfterError();
-          chrome.runtime.sendMessage({ __cmd: '__PANEL_STOP__' });
+          void sendRuntime({ __cmd: '__PANEL_STOP__' });
         }
       }
 
@@ -1525,25 +1588,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const full = String(msg.payload?.full ?? msg.full ?? '');
         const seq = Number(msg.payload?.seq ?? msg.seq ?? 0);
         const tMs = Number(msg.payload?.t_ms ?? msg.t_ms ?? 0);
+        const clippedFull = clipRealtimeSnapshotText(full, LIVE_TRANSCRIPT_RENDER_MAX_CHARS);
         setRealtimeSnapshotCache({
           active: true,
           starting: false,
           seq: Number.isFinite(seq) ? seq : 0,
           tMs: Number.isFinite(tMs) ? tMs : 0,
-          full,
+          full: clippedFull,
         });
-        if (!full) return;
-        const { sents } = splitSentencesAndTail(full);
+        if (!clippedFull) return;
 
-        // delay 1 sentence
-        const target = Math.max(0, sents.length - 1);
-        if (target > loggedSentCount) {
-          for (let i = loggedSentCount; i < target; i++) {
-            const s = sents[i].trim();
+        if (transcriptView && !transcriptView.classList.contains('hidden')) {
+          renderTranscriptStableWindow(clippedFull, seq);
+          if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live • Đang ghi';
+          /*
+          if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live • Đang ghi';
+        }
+          if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live â€¢ Äang ghi';
             if (s) addTranscriptRow(s, 'Speaker • en • live');
           }
           loggedSentCount = target;
           if (transcriptLiveFooter) transcriptLiveFooter.textContent = 'Live • Đang ghi';
+        }
+        */
         }
         return;
       }
